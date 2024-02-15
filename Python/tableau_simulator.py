@@ -26,13 +26,16 @@ def apply_H(tableau, qudit_index):
     """
     Apply H gate to qudit at qudit_index
     """
-    for i in range(tableau.num_qudits):
-        tempx = tableau.xlogical[i].xpow[qudit_index]
-        tableau.xlogical[i].xpow[qudit_index] = tableau.xlogical[i].zpow[qudit_index]
-        tableau.xlogical[i].zpow[qudit_index] = tempx
-        tempz = tableau.zlogical[i].xpow[qudit_index]
-        tableau.zlogical[i].xpow[qudit_index] = tableau.zlogical[i].zpow[qudit_index]
-        tableau.zlogical[i].zpow[qudit_index] = tempz
+    ind = qudit_index
+
+    for pauli in tableau.xlogical:
+        pauli.phase = (pauli.phase + pauli.xpow[ind] * pauli.zpow[ind]) % tableau.dimension
+        pauli.xpow[ind], pauli.zpow[ind] = pauli.zpow[ind] * (tableau.dimension - 1), pauli.xpow[ind] 
+
+    for pauli in tableau.zlogical:
+        pauli.phase = (pauli.phase + pauli.xpow[ind] * pauli.zpow[ind]) % tableau.dimension
+        pauli.xpow[ind], pauli.zpow[ind] = pauli.zpow[ind] * (tableau.dimension - 1), pauli.xpow[ind]
+
     return tableau
 
 
@@ -40,15 +43,13 @@ def apply_P(tableau, qudit_index):
     """
     Apply P gate to qudit at qudit_index
     """
-    for i in range(tableau.num_qudits):
-        tableau.xlogical[i].zpow[qudit_index] = (
-            tableau.xlogical[i].zpow[qudit_index]
-            + tableau.xlogical[i].xpow[qudit_index]
-        ) % tableau.dimension
-        tableau.zlogical[i].zpow[qudit_index] = (
-            tableau.zlogical[i].zpow[qudit_index]
-            + tableau.zlogical[i].xpow[qudit_index]
-        ) % tableau.dimension
+    ind = qudit_index
+    for pauli in tableau.xlogical:
+        pauli.phase = (pauli.phase + pauli.xpow[ind] * pauli.zpow[ind]) % tableau.dimension
+        pauli.zpow[ind] = (pauli.xpow[ind] + pauli.zpow[ind]) % tableau.dimension
+    for pauli in tableau.zlogical:
+        pauli.phase = (pauli.phase + pauli.xpow[ind] * pauli.zpow[ind]) % tableau.dimension
+        pauli.zpow[ind] = (pauli.xpow[ind] + pauli.zpow[ind]) % tableau.dimension
     return tableau
 
 
@@ -56,16 +57,9 @@ def apply_CNOT(tableau, control, target):
     """
     Apply CNOT gate to control and target qudits
     """
-    for i in range(tableau.num_qudits):
-        tableau.xlogical[i].xpow[target] = (
-            tableau.xlogical[i].xpow[target] + tableau.xlogical[i].xpow[control]
-        ) % tableau.dimension
-        tableau.xlogical[i].zpow[control] = (
-            tableau.xlogical[i].zpow[target] + tableau.xlogical[i].zpow[control]
-        ) % tableau.dimension
-        tableau.zlogical[i].xpow[target] = (
-            tableau.zlogical[i].xpow[target] + tableau.zlogical[i].xpow[control]
-        ) % tableau.dimension
-        tableau.zlogical[i].zpow[control] = (
-            tableau.zlogical[i].zpow[target] + tableau.zlogical[i].zpow[control]
-        ) % tableau.dimension
+    for pauli in tableau.xlogical:
+        pauli.xpow[target] = (pauli.xpow[target] + pauli.xpow[control]) % tableau.dimension
+        pauli.zpow[control] = (pauli.zpow[target] * (tableau.dimension - 1) + pauli.zpow[control]) % tableau.dimension
+    for pauli in tableau.zlogical:
+        pauli.xpow[target] = (pauli.xpow[target] + pauli.xpow[control]) % tableau.dimension
+        pauli.zpow[control] = (pauli.zpow[target]* (tableau.dimension - 1) + pauli.zpow[control]) % tableau.dimension

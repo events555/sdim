@@ -22,10 +22,12 @@ class Tableau:
         print("X-Logical:")
         for ps in self.xlogical:
             row = [f"{xpow} {zpow}" for xpow, zpow in zip(ps.xpow, ps.zpow)]
+            row.append(f"|{ps.phase}")
             print("\t".join(row))
         print("Z-Logical:")
         for ps in self.zlogical:
             row = [f"{xpow} {zpow}" for xpow, zpow in zip(ps.xpow, ps.zpow)]
+            row.append(f"|{ps.phase}")
             print("\t".join(row))
 
     def identity(self):
