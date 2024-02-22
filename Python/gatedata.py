@@ -17,6 +17,7 @@ class GateData:
         self.add_gate_data_pauli(dimension)
         self.add_gate_hada(dimension)
         self.add_gate_controlled(dimension)
+        self.add_gate_collapsing(dimension)
 
     def __str__(self):
         return "\n".join(str(gate) for gate in self.gateDataMap.values())
@@ -67,4 +68,12 @@ class GateData:
             2,
             Tableau(2, d).gate2(["(X)(X)", "(I)(X)"], ["(Z)(I)", "(Z!)(Z)"]),
             np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]]),
+        )
+    def add_gate_collapsing(self, d):
+        # wrong tableau and array
+        self.add_gate(
+            "M",
+            1,
+            Tableau(1, d).gate1("Z", "Z"),
+            np.array([[1, 0], [0, 1]]),
         )

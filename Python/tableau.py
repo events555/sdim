@@ -1,5 +1,4 @@
 from paulistring import PauliString
-from tableau_simulator import apply_gate as apply_gate
 
 
 class Tableau:
@@ -58,22 +57,3 @@ class Tableau:
         """
         self.xlogical = [PauliString(self.num_qudits, x) for x in xmap]
         self.zlogical = [PauliString(self.num_qudits, z) for z in zmap]
-
-
-class Program:
-    def __init__(self, circuit, tableau=None):
-        if tableau is None:
-            self.stabilizer_tableau = Tableau(circuit.num_qudits, circuit.dimension)
-            self.stabilizer_tableau.identity()
-        else:
-            self.stabilizer_tableau = tableau
-        self.circuit = circuit
-
-    def simulate(self):
-        for time, gate in enumerate(self.circuit.operations):
-            print("Time step", time)
-            self.stabilizer_tableau.print_tableau_num()
-            self.stabilizer_tableau = apply_gate(self.stabilizer_tableau, gate)
-            print("\n")
-        print("Final state")
-        self.stabilizer_tableau.print_tableau_num()

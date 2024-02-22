@@ -5,6 +5,7 @@ class CircuitInstruction:
     def __init__(self, gate_name, qudit_index, gate_data, target_index=None):
         self.qudit_index = qudit_index
         self.target_index = target_index
+        self.name = gate_name
         gate_id = gate_data.gateDataMap[gate_name].gate_id
         if gate_id is None:
             raise ValueError(f"Gate {gate_name} not found")
