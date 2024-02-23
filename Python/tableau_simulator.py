@@ -6,11 +6,11 @@ def apply_H(tableau, qudit_index, _):
     X -> Z
     Z -> X!
     """
+    phase_order = 2 if tableau.dimension % 2 == 0 else 1
     for pauli in tableau.xlogical+tableau.zlogical:
         pauli.xpow[qudit_index], pauli.zpow[qudit_index] = (pauli.zpow[qudit_index]) * (tableau.dimension - 1), pauli.xpow[qudit_index] # swap and set xpow to (d-1)*zpow
         # We gain a phase from commuting XZ that depends on the product of xpow and zpow but multiply by 2 because we are tracking omega 1/2
         # ie. HXZP' = ZX! = w^d-1 XZ
-        phase_order = 2 if tableau.dimension % 2 == 0 else 1
         pauli.phase = (pauli.phase - phase_order*(pauli.xpow[qudit_index] * pauli.zpow[qudit_index])) % (phase_order*tableau.dimension)
     return tableau, None
 
@@ -71,6 +71,7 @@ def measure(tableau, qudit_index, _):
     first_xpow = None
     iden_pauli = PauliString(tableau.num_qudits, dimension=tableau.dimension)
     is_deterministic = False #deterministic measurement is true
+    phase_order = 2 if tableau.dimension % 2 == 0 else 1
     # Find the first non-zero X in the tableau zlogical
     for row, pauli in enumerate(tableau.zlogical):
         if pauli.xpow[qudit_index] > 0:
@@ -87,14 +88,14 @@ def measure(tableau, qudit_index, _):
         tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
         iden_pauli.zpow[qudit_index] = 1
         # trunk-ignore(bandit/B311)
-        iden_pauli.phase = random.choice(range(tableau.dimension)) * (2 if tableau.dimension % 2 == 0 else 1)
+        iden_pauli.phase = random.choice(range(tableau.dimension)) * phase_order
         tableau.zlogical[first_xpow] = iden_pauli
     else:
         is_deterministic = True
         for row, pauli in enumerate(tableau.xlogical):
             if pauli.xpow[qudit_index] > 0:
                 rowsum(tableau, iden_pauli, tableau.zlogical[row])
-    return tableau, (is_deterministic, iden_pauli.phase)
+    return tableau, (is_deterministic, iden_pauli.phase//phase_order)
 
 def rowsum(tableau, hrow, irow):
     phase_order = 2 if tableau.dimension % 2 == 0 else 1
@@ -112,7 +113,7 @@ def commute_phase(row1, row2):
     Returns:
         The phase of the commutator
     """
-    sum = 0
+    total_phase = 0
     for i in range(len(row1.xpow)):
-            sum += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
-    return sum
+            total_phase += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
+    return total_phase
