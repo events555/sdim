@@ -20,24 +20,21 @@ class Program:
         else:
             self.stabilizer_tableau = tableau
         self.circuit = circuit
+        self.measurement_results = []
 
     def simulate(self):
-        measurement_results = []
         for time, gate in enumerate(self.circuit.operations):
             print("Time step", time, "\t", gate.name)
-            self.stabilizer_tableau.print_tableau_num()
-            self.stabilizer_tableau, measurement_type = self.apply_gate(gate)
+            self.print_tableau()
+            self.stabilizer_tableau, measurement = self.apply_gate(gate)
             if gate.gate_id == 6:
-                measurement_value = self.stabilizer_tableau.zlogical[gate.qudit_index].phase
-                measurement_results.append((gate.qudit_index, measurement_value, measurement_type))
+                self.measurement_results.append((gate.qudit_index, measurement[0], measurement[1]))
             print("\n")
         print("Final state")
-        self.stabilizer_tableau.print_tableau_num()
+        self.print_tableau()
         
         print("Measurement results:")
-        for qudit_index, measurement_value, measurement_type in measurement_results:
-            measurement_type_str = "deterministic" if measurement_type else "random"
-            print(f"Measured qudit ({qudit_index}) as ({measurement_value}) and was {measurement_type_str}.")
+        self.print_measurements()
 
     def apply_gate(self, instruc):
         """
@@ -52,3 +49,10 @@ class Program:
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
         updated_tableau, measurement_type = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
         return updated_tableau, measurement_type
+
+    def print_tableau(self):
+        self.stabilizer_tableau.print_tableau_num()
+    def print_measurements(self):
+        for qudit_index, measurement_type, measurement_value in self.measurement_results:
+            measurement_type_str = "deterministic" if measurement_type else "random"
+            print(f"Measured qudit ({qudit_index}) as ({measurement_value}) and was {measurement_type_str}.")

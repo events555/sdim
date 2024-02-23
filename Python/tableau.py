@@ -57,3 +57,9 @@ class Tableau:
         """
         self.xlogical = [PauliString(self.num_qudits, x) for x in xmap]
         self.zlogical = [PauliString(self.num_qudits, z) for z in zmap]
+
+    def get_root_unity(self, qudit_index):
+        if self.dimension % 2 == 0:
+            return self.zlogical[qudit_index].phase//2
+        else:
+            return self.zlogical[qudit_index].phase
