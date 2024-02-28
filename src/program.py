@@ -22,14 +22,16 @@ class Program:
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self):
+    def simulate(self, verbose=False):
         for time, gate in enumerate(self.circuit.operations):
-            print("Time step", time, "\t", gate.name)
-            self.print_tableau()
+
             self.stabilizer_tableau, measurement = self.apply_gate(gate)
             if gate.gate_id == 6:
                 self.measurement_results.append((gate.qudit_index, measurement[0], measurement[1]))
-            print("\n")
+            print("Time step", time, "\t", gate.name)
+            if verbose:
+                self.print_tableau()
+                print("\n")
         print("Final state")
         self.print_tableau()
         
