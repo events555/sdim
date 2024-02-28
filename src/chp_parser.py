@@ -34,6 +34,8 @@ def read_circuit(filename):
 
     # Append the gates to the circuit
     for line in gate_lines:
+        if not line.strip():
+            continue
         parts = line.split()
         gate_name = parts[0].upper()
         gate_qubits = [int(qubit) for qubit in parts[1:]]

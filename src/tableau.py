@@ -5,6 +5,7 @@ class Tableau:
     def __init__(self, num_qudits, dimension=2):
         self.num_qudits = num_qudits
         self.dimension = dimension
+        self.phase_order = 2 if dimension % 2 == 0 else 1
         self.xlogical = [
             PauliString(num_qudits, dimension=dimension) for _ in range(num_qudits)
         ]
@@ -59,7 +60,4 @@ class Tableau:
         self.zlogical = [PauliString(self.num_qudits, z) for z in zmap]
 
     def get_root_unity(self, qudit_index):
-        if self.dimension % 2 == 0:
-            return self.zlogical[qudit_index].phase//2
-        else:
-            return self.zlogical[qudit_index].phase
+            return self.zlogical[qudit_index].phase//self.phase_order
