@@ -32,8 +32,8 @@ class Program:
             if verbose:
                 self.print_tableau()
                 print("\n")
-        print("Final state")
-        self.print_tableau()
+                print("Final state")
+                self.print_tableau()
         
         print("Measurement results:")
         self.print_measurements()
