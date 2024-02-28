@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-
 from gate import Gate
 from tableau import Tableau
 from unitary import generate_cnot_matrix, generate_h_matrix, generate_identity_matrix, generate_p_matrix, generate_x_matrix, generate_z_matrix
@@ -60,6 +59,6 @@ class GateData:
             "M",
             1,
             Tableau(1, d).gate1("Z", "Z"),
-            generate_z_matrix(d),
+            generate_identity_matrix(d),
         )
         self.add_gate_alias("M", ["MEASURE", "COLLAPSE", "MZ"])

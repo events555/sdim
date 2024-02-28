@@ -4,7 +4,7 @@ from chp_parser import read_circuit
 from program import Program
 
 def main():
-    circuit = read_circuit("profiling/random_circuit.chp")
+    circuit = read_circuit("circuits/epr.chp")
     program = Program(circuit)
     program.simulate()
 
