@@ -1,4 +1,4 @@
-from gatedata import GateData
+from .gatedata import GateData
 
 
 class CircuitInstruction:
@@ -22,6 +22,11 @@ class CircuitInstruction:
         for name, gate in gate_data.gateDataMap.items():
             if gate.gate_id == gate_id:
                 return name
+        raise ValueError(f"Gate ID {gate_id} not found")
+    def get_gate_matrix(self, gate_id, gate_data):
+        for _, gate in gate_data.gateDataMap.items():
+            if gate.gate_id == gate_id:
+                return gate.unitary_matrix
         raise ValueError(f"Gate ID {gate_id} not found")
 
     def __str__(self):

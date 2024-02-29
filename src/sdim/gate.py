@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
-from tableau import Tableau
+from .tableau import Tableau
 
 
 

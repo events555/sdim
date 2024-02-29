@@ -1,5 +1,5 @@
-from tableau import Tableau
-from tableau_simulator import apply_H, apply_P, apply_CNOT, measure
+from .tableau import Tableau
+from .tableau_simulator import apply_H, apply_P, apply_CNOT, measure
 
 GATE_FUNCTIONS = {
     0: lambda tableau, qudit_index, target_index: None,  # I gate
@@ -22,7 +22,7 @@ class Program:
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self, verbose=False, show_gate=False):
+    def simulate(self, measurement=True, verbose=False, show_gate=False):
         for time, gate in enumerate(self.circuit.operations):
             self.stabilizer_tableau, measurement = self.apply_gate(gate)
             if gate.gate_id == 6:
@@ -35,8 +35,9 @@ class Program:
         if verbose:
             print("Final state:")
             self.print_tableau()
-        print("Measurement results:")
-        self.print_measurements()
+        if measurement:
+            print("Measurement results:")
+            self.print_measurements()
 
     def apply_gate(self, instruc):
         """

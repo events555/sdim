@@ -1,12 +1,13 @@
-from circuit import Circuit
+from .circuit import Circuit
 import os
 
 def read_circuit(filename):
     # Get the directory of the current script
     script_dir = os.path.dirname(os.path.realpath(__file__))
+    parent_dir = os.path.join(script_dir, '..')
 
     # Construct the absolute path to the file
-    abs_file_path = os.path.join(script_dir, filename)
+    abs_file_path = os.path.join(parent_dir, filename)
 
     with open(abs_file_path, 'r') as file:
         lines = file.readlines()

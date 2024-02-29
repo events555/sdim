@@ -1,12 +1,12 @@
 import cProfile
 import pstats
-from chp_parser import read_circuit
-from program import Program
+from sdim.chp_parser import read_circuit
+from sdim.program import Program
 
 def main():
     circuit = read_circuit("circuits/epr.chp")
     program = Program(circuit)
-    program.simulate()
+    program.simulate(verbose=True, show_gate=True)
 
 if __name__ == "__main__":
     profiler = cProfile.Profile()

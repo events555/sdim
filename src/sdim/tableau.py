@@ -1,4 +1,4 @@
-from paulistring import PauliString
+from .paulistring import PauliString
 
 
 class Tableau:

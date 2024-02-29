@@ -1,5 +1,5 @@
 import random
-from paulistring import PauliString
+from .paulistring import PauliString
 def apply_H(tableau, qudit_index, _):
     """
     Apply H gate to qudit at qudit_index

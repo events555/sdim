@@ -15,7 +15,7 @@ def state_vector(circuit):
     # Apply each gate in the circuit.
     for op in circuit.operations:
         # Get the unitary for this gate.
-        U = op.gate.unitary_matrix
+        U = op.get_gate_matrix(op.gate_id, circuit.gate_data)
 
         # Create a Cirq gate from the unitary.
         gate = cirq.MatrixGate(U)

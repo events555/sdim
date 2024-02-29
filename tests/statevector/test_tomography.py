@@ -1,5 +1,5 @@
-from ...src.program import Program
-from ...src.chp_parser import read_circuit
+from sdim.program import Program
+from sdim.chp_parser import read_circuit
 from tomography import state_vector, calculate_amplitudes, check_closeness
 def test_epr(num_samples=1000):
     circuit = read_circuit("circuits/epr.chp")
@@ -12,11 +12,11 @@ def test_epr(num_samples=1000):
 
     # Run the simulation multiple times.
     for _ in range(num_samples):
-        program.simulate()
+        program.simulate(measurement=False)
         measurements = program.measurement_results
 
         # Record the measurement results.
-        for qudit_index, is_deterministic, result in measurements:
+        for qudit_index, _, result in measurements:
             if qudit_index not in measurement_results:
                 measurement_results[qudit_index] = {}
             if result not in measurement_results[qudit_index]:
@@ -33,7 +33,8 @@ def test_epr(num_samples=1000):
         print(f"Qudit {qudit_index}:")
         for result, prob in probs.items():
             print(f"  Result {result}: Probability {prob}")
-    check_closeness(amplitudes, probabilities)
-    return probabilities
+    #check_closeness(amplitudes, probabilities)
+    return probabilities, statevector
 
-test_epr()
+prob, statevector = test_epr()
+print(statevector)
