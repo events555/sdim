@@ -1,40 +1,55 @@
 from sdim.program import Program
 from sdim.chp_parser import read_circuit
-from tomography import state_vector, calculate_amplitudes, check_closeness
-def test_epr(num_samples=1000):
-    circuit = read_circuit("circuits/epr.chp")
-    statevector = state_vector(circuit)
-    amplitudes = calculate_amplitudes(statevector)
-    program = Program(circuit)
+from tomography import cirq_statevector_from_circuit
+import numpy as np
+import itertools
+def test_rand_circuit(num_samples=100000, print_prob=False):
+    circuit = read_circuit("profiling/random_circuit.chp")
+    statevector = cirq_statevector_from_circuit(circuit)
+    amplitudes = np.abs(statevector)**2
 
-    # Initialize a dictionary to store the measurement results.
-    measurement_results = {}
+    # Get the number of qudits and the dimension from the circuit.
+    n = circuit.num_qudits
+    D = [str(i) for i in range(circuit.dimension)]
+
+    # Generate all possible keys.
+    all_possible_keys = [''.join(key) for key in itertools.product(D, repeat=n)]
+
+    # Initialize the dictionary with all possible keys.
+    measurement_results = {key: 0 for key in all_possible_keys}
 
     # Run the simulation multiple times.
     for _ in range(num_samples):
-        program.simulate(measurement=False)
+        program = Program(circuit)
+        program.simulate()
         measurements = program.measurement_results
 
-        # Record the measurement results.
-        for qudit_index, _, result in measurements:
-            if qudit_index not in measurement_results:
-                measurement_results[qudit_index] = {}
-            if result not in measurement_results[qudit_index]:
-                measurement_results[qudit_index][result] = 0
-            measurement_results[qudit_index][result] += 1
+        # Construct a key for each sample.
+        key = ''.join(str(result) for _, _, result in measurements)
 
-    # Normalize the measurement results to get probabilities.
-    probabilities = {}
-    for qudit_index, results in measurement_results.items():
-        probabilities[qudit_index] = {result: count / num_samples for result, count in results.items()}
+        # Increment the count for this key.
+        if key not in measurement_results:
+            measurement_results[key] = 0
+        measurement_results[key] += 1
 
-    # Print the estimated probabilities.
-    for qudit_index, probs in probabilities.items():
-        print(f"Qudit {qudit_index}:")
-        for result, prob in probs.items():
-            print(f"  Result {result}: Probability {prob}")
-    #check_closeness(amplitudes, probabilities)
-    return probabilities, statevector
+    probabilities = np.array([count / num_samples for key, count in sorted(measurement_results.items())])
+    if print_prob:
+        for key, prob in zip(sorted(measurement_results.keys()), probabilities):
+            print(f"State {key}: Probability {prob}")
+    if not np.isclose(np.sum(probabilities), 1, atol=1e-6):
+        raise ValueError("The sum of the probabilities is not approximately 1")
+    if not np.isclose(np.sum(amplitudes), 1, atol=1e-6):
+        raise ValueError("The sum of the amplitudes is not approximately 1")
 
-prob, statevector = test_epr()
-print(statevector)
+    # Return the probabilities and amplitudes.
+    return probabilities, amplitudes
+
+prob, amp = test_rand_circuit()
+threshold = 1e-14
+cleaned_amp = np.where(np.abs(amp) < threshold, 0, amp)
+
+print(prob)
+print(cleaned_amp)
+
+# close = np.allclose(prob, amp, atol=1e-3)
+# print(close)

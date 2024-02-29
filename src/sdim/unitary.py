@@ -1,4 +1,5 @@
 import numpy as np
+from itertools import product
 
 def generate_identity_matrix(d):
     return np.eye(d)
@@ -24,16 +25,18 @@ def generate_h_matrix(d):
 
 def generate_p_matrix(d):
     P = np.eye(d, dtype=np.complex128)
-    if d == 2:
-        P[d - 1, d - 1] = np.exp(1j * np.pi / 2)
-    else:
-        P[d - 1, d - 1] = np.exp(1j * 2 * np.pi / d)
+    omega = np.exp(2j * np.pi / d)
+    for j in range(d):
+        if d % 2 == 1:  # For odd d
+            P[j, j] = omega ** (j * (j - 1) / 2)
+        else:  # For even d
+            P[j, j] = omega ** (j ** 2 / 2)
     return P
 
 def generate_cnot_matrix(d):
-    CNOT = np.zeros((d**d, d**d))
-    for i in range(d):
-        for j in range(d):
-            CNOT[d * i + j, d * i + (i + j) % d] = 1
+    CNOT = np.zeros((d**2, d**2))
+    for i, j in product(range(d), repeat=2):
+        CNOT[d * i + j, d * i + (i + j) % d] = 1
+    CNOT = CNOT.reshape(d**2, d**2)
     CNOT = CNOT.transpose()
     return CNOT

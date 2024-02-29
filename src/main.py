@@ -4,9 +4,9 @@ from sdim.chp_parser import read_circuit
 from sdim.program import Program
 
 def main():
-    circuit = read_circuit("circuits/epr.chp")
+    circuit = read_circuit("profiling/random_circuit.chp")
     program = Program(circuit)
-    program.simulate(verbose=True, show_gate=True)
+    program.simulate(verbose=False, show_gate=False)
 
 if __name__ == "__main__":
     profiler = cProfile.Profile()

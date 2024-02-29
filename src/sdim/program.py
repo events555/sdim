@@ -22,7 +22,7 @@ class Program:
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self, measurement=True, verbose=False, show_gate=False):
+    def simulate(self, show_measurement=False, verbose=False, show_gate=False):
         for time, gate in enumerate(self.circuit.operations):
             self.stabilizer_tableau, measurement = self.apply_gate(gate)
             if gate.gate_id == 6:
@@ -35,7 +35,7 @@ class Program:
         if verbose:
             print("Final state:")
             self.print_tableau()
-        if measurement:
+        if show_measurement:
             print("Measurement results:")
             self.print_measurements()
 
@@ -55,6 +55,7 @@ class Program:
 
     def print_tableau(self):
         self.stabilizer_tableau.print_tableau_num()
+
     def print_measurements(self):
         for qudit_index, measurement_type, measurement_value in self.measurement_results:
             measurement_type_str = "deterministic" if measurement_type else "random"

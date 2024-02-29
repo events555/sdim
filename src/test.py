@@ -57,7 +57,8 @@ def generate_clifford(d):
     for i, j in product(range(d), repeat=2):
         SUM[d * i + j, d * i + (i + j) % d] = 1
     SUM = SUM.reshape(d**2, d**2)
-    return P, R, SUM.transpose()
+    SUM = SUM.transpose()
+    return P, R, SUM
 
 
 def discard_global_phase_state(mat):
