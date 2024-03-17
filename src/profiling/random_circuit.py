@@ -49,4 +49,4 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
 
 
 # Call the function to generate the .chp file
-generate_chp_file(30, 30, 40, 0, 3, 150, 2, 1)
+generate_chp_file(30, 30, 40, 0, 3, 10, 2, 1)

@@ -72,12 +72,20 @@ def measure(tableau, qudit_index, _):
             break
     if first_xpow is not None:
         # call rowsum(i, p) for all paulis in tableau such that i =/= p and pauli has a non-zero X on qudit_index
-        for pauli in tableau.xlogical:
-            if pauli.xpow[qudit_index] > 0:
-                rowsum(tableau, pauli, tableau.zlogical[first_xpow])
-        for row, pauli in enumerate(tableau.zlogical):
-            if row != first_xpow and pauli.xpow[qudit_index] > 0:
-                rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+        # for pauli in tableau.xlogical:
+        #     if pauli.xpow[qudit_index] > 0:
+        #         rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+        # for row, pauli in enumerate(tableau.zlogical):
+        #     if row != first_xpow and pauli.xpow[qudit_index] > 0:
+        #         rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+        while any(pauli.xpow[qudit_index] > 0 for pauli in tableau.xlogical):
+            for pauli in tableau.xlogical:
+                if pauli.xpow[qudit_index] > 0:
+                    rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+        while any(pauli.xpow[qudit_index] > 0 for row, pauli in enumerate(tableau.zlogical) if row != first_xpow):
+            for row, pauli in enumerate(tableau.zlogical):
+                if row != first_xpow and pauli.xpow[qudit_index] > 0:
+                    rowsum(tableau, pauli, tableau.zlogical[first_xpow])
         tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
         iden_pauli.zpow[qudit_index] = 1
         # trunk-ignore(bandit/B311)
@@ -108,6 +116,6 @@ def commute_phase(row1, row2):
     total_phase = 0
     for i in range(len(row1.xpow)):
         # total_phase += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
-        # i think we only care about the phase from multiplying not commuting the entire string
+        # i think we only care about the phase from commuting into the form XX..X * ZZ..Z and not commuting the entire strings
         total_phase += row2.xpow[i] * row1.zpow[i]
     return total_phase

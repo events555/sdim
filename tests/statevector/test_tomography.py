@@ -49,5 +49,5 @@ threshold = 1e-14
 cleaned_amp = np.where(np.abs(amp) < threshold, 0, amp)
 tvd = np.sum(np.abs(prob - cleaned_amp)) / 2
 print(f"Total Variation Distance: {tvd}")
-# print(f"Amplitudes: {cleaned_amp}")
-# print(f"Probabilities: {prob}")
+print(f"Amplitudes: {cleaned_amp}")
+print(f"Probabilities: {prob}")

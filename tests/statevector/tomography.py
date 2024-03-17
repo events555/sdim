@@ -39,7 +39,7 @@ def cirq_statevector_from_circuit(circuit):
     # Simulate the Cirq circuit.
     simulator = cirq.Simulator()
     result = simulator.simulate(cirq_circuit, initial_state=state)
-    # print(cirq_circuit)
+    print(cirq_circuit)
     # Return the final state vector.
     return result.final_state_vector
 
