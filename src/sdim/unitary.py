@@ -34,9 +34,12 @@ def generate_p_matrix(d):
     return P
 
 def generate_cnot_matrix(d):
-    CNOT = np.zeros((d**2, d**2))
+    omega = np.exp(2j * np.pi / d)
+    CNOT = np.zeros((d**2, d**2),dtype=np.complex128)
     for i, j in product(range(d), repeat=2):
-        CNOT[d * i + j, d * i + (i + j) % d] = 1
+        # phase = omega**((i + j) / 2) if d % 2 == 0 else 1
+        phase = 1
+        CNOT[d * i + j, d * i + (i + j) % d] = phase
     CNOT = CNOT.reshape(d**2, d**2)
     CNOT = CNOT.transpose()
     return CNOT

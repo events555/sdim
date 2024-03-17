@@ -41,7 +41,7 @@ class GeneralizedCNOTGate(cirq.Gate):
         return unitary.generate_cnot_matrix(self.d)
 
     def _circuit_diagram_info_(self, args):
-        return ("CNOT_{self.d}_control", "CNOT_{self.d}_target")
+        return (f"CNOT_{self.d}_control", f"CNOT_{self.d}_target")
     
 class IdentityGate(cirq.Gate):
     def __init__(self, d):

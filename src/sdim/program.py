@@ -28,7 +28,7 @@ class Program:
             if gate.gate_id == 6:
                 self.measurement_results.append((gate.qudit_index, measurement[0], measurement[1]))
             if show_gate:
-                print("Time step", time, "\t", gate.name)
+                print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
             if verbose:
                 self.print_tableau()
                 print("\n")

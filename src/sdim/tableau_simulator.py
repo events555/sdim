@@ -10,7 +10,7 @@ def apply_H(tableau, qudit_index, _):
         pauli.xpow[qudit_index], pauli.zpow[qudit_index] = (pauli.zpow[qudit_index]) * (tableau.dimension - 1), pauli.xpow[qudit_index] # swap and set xpow to (d-1)*zpow
         # We gain a phase from commuting XZ that depends on the product of xpow and zpow but multiply by 2 because we are tracking omega 1/2
         # ie. HXZP' = ZX! = w^d-1 XZ
-        pauli.phase = (pauli.phase - tableau.phase_order*(pauli.xpow[qudit_index] * pauli.zpow[qudit_index])) % (tableau.phase_order*tableau.dimension)
+        pauli.phase = (pauli.phase + tableau.phase_order*(pauli.xpow[qudit_index] * pauli.zpow[qudit_index])) % (tableau.phase_order*tableau.dimension)
     return tableau, None
 
 
@@ -28,11 +28,10 @@ def apply_P(tableau, qudit_index, _):
     """
     for pauli in tableau.xlogical+tableau.zlogical:
         if tableau.dimension % 2 == 0:
-            # P gate in even dimensions gains omega 1/2
-            # Therefore original commutation was xpow*(xpow-1)/2, but we are tracking number of omega 1/2 so we multiply by 2
+            # Original commutation was xpow*(xpow-1)/2, but we are tracking number of omega 1/2 so we multiply by 2
             # We also gain an omega 1/2 for every xpow so we get 2*xpow*(xpow-1)/2 + xpow
             # This simplifies to xpow^2
-            pauli.phase = (pauli.phase + pauli.xpow[qudit_index]*pauli.xpow[qudit_index]) % (2*tableau.dimension)
+            pauli.phase = (pauli.phase + pauli.xpow[qudit_index]**2) % (tableau.phase_order*tableau.dimension)
         else:
             # We gain a phase from commuting XZ depending on the number of X from PXP' = XZ
             # ie. PXXXP' = XZXZXZ = w^3 XXXZZZ
@@ -50,15 +49,11 @@ def apply_CNOT(tableau, control, target):
     ZI -> ZI
     IZ -> Z!Z
 
-    Include w^(1/2) phase for all terms if d is even
+    Include w^(1/2) phase for all conjugations if d is even
     """
     for pauli in tableau.xlogical+tableau.zlogical:
-        if tableau.dimension % 2 == 0:
-            pauli.phase = (pauli.phase + (pauli.xpow[control]+pauli.xpow[target]+pauli.zpow[control]+pauli.zpow[target])) % (2*tableau.dimension)
-        # else:
-        #     # THIS MIGHT BE WRONG
-        #     #      # ACTUALLY I THINK U DONT EVEN NEED IT
-        #     pauli.phase = (pauli.phase + (pauli.xpow[control] * pauli.zpow[target])) % tableau.dimension
+        # if tableau.dimension % 2 == 0:
+        #     pauli.phase = (pauli.phase + ((pauli.xpow[control] + pauli.xpow[target]) + (pauli.zpow[control] + pauli.zpow[target]))) % (tableau.phase_order * tableau.dimension)
         pauli.xpow[target] = (pauli.xpow[target] + pauli.xpow[control]) % tableau.dimension
         pauli.zpow[control] = (pauli.zpow[control]+((pauli.zpow[target])  * (tableau.dimension - 1))) % tableau.dimension
     return tableau, None
@@ -112,5 +107,7 @@ def commute_phase(row1, row2):
     """
     total_phase = 0
     for i in range(len(row1.xpow)):
-            total_phase += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
+        # total_phase += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
+        # i think we only care about the phase from multiplying not commuting the entire string
+        total_phase += row2.xpow[i] * row1.zpow[i]
     return total_phase
