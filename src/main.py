@@ -4,7 +4,7 @@ from sdim.chp_parser import read_circuit
 from sdim.program import Program
 
 def main():
-    circuit = read_circuit("profiling/random_circuit.chp")
+    circuit = read_circuit("circuits/random_circuit.chp")
     program = Program(circuit)
     program.simulate(show_measurement=True,verbose=True, show_gate=True)
 

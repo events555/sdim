@@ -23,18 +23,19 @@ class Program:
         self.measurement_results = []
 
     def simulate(self, show_measurement=False, verbose=False, show_gate=False):
+        length = len(self.circuit.operations)
         for time, gate in enumerate(self.circuit.operations):
             self.stabilizer_tableau, measurement = self.apply_gate(gate)
             if gate.gate_id == 6:
                 self.measurement_results.append((gate.qudit_index, measurement[0], measurement[1]))
             if show_gate:
-                print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
+                if time < length - 1:
+                    print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
+                else:
+                    print("Final step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
             if verbose:
                 self.print_tableau()
                 print("\n")
-        if verbose:
-            print("Final state:")
-            self.print_tableau()
         if show_measurement:
             print("Measurement results:")
             self.print_measurements()

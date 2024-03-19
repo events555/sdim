@@ -38,7 +38,8 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
             chp_content += f"m {qubit}\n"
 
     # Define the directory where the file will be saved
-    directory = "src/profiling/"
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    directory = os.path.join(script_dir, '../circuits/')
 
     # Join the directory with the output file name
     output_path = os.path.join(directory, output_file)
@@ -46,7 +47,3 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
     # Write the content to the .chp file
     with open(output_path, "w") as file:
         file.write(chp_content)
-
-
-# Call the function to generate the .chp file
-generate_chp_file(30, 30, 40, 0, 3, 10, 2, 1)
