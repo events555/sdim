@@ -4,20 +4,18 @@ from tomography import cirq_statevector_from_circuit, numpy_statevector_from_cir
 from sdim.random_circuit import generate_chp_file
 import numpy as np
 import itertools
-def test_rand_circuit(num_samples=10000, print_prob=False):
+def test_rand_circuit(num_samples=30000, print_prob=False):
     circuit = read_circuit("circuits/random_circuit.chp")
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
 
     # Get the number of qudits and the dimension from the circuit.
     n = circuit.num_qudits
-    basis_states = [str(i) for i in range(circuit.dimension)]
-
-    # Generate all possible keys.
-    all_possible_keys = [''.join(key) for key in itertools.product(basis_states, repeat=n)]
-
-    # Initialize the dictionary with all possible keys.
-    measurement_results = {key: 0 for key in all_possible_keys}
+    basis_states = range(circuit.dimension)
+    measurement_results = {
+        ''.join(map(str, key)): 0
+        for key in itertools.product(basis_states, repeat=n)
+    }
 
     # Run the simulation multiple times.
     for _ in range(num_samples):
@@ -47,30 +45,36 @@ def test_rand_circuit(num_samples=10000, print_prob=False):
 
 if __name__ == "__main__":
     # Parameters for generate_chp_file
-    num_qubits = 5
     depth = 10
     seed = 42
 
-    # Generate the chp file
-    # generate_chp_file(30, 30, 40, 0, 3, 15, 3, 1, seed=None)
+    successful_circuits = 0
 
-    # Run the test_rand_circuit function
-    prob, amp = test_rand_circuit()
+    for _ in range(100):
+        # Generate the chp file
+        generate_chp_file(30, 30, 40, 0, 2, 20, 11, 1, seed=None)
 
-    # Clean the amplitudes
-    threshold = 1e-14
-    cleaned_amp = np.where(np.abs(amp) < threshold, 0, amp)
+        # Run the test_rand_circuit function
+        prob, amp = test_rand_circuit()
 
-    # Calculate the Total Variation Distance
-    tvd = np.sum(np.abs(prob - cleaned_amp)) / 2
-    print(f"Total Variation Distance: {tvd}")
+        # Clean the amplitudes
+        threshold = 1e-14
+        cleaned_amp = np.where(np.abs(amp) < threshold, 0, amp)
 
-    # Check if the TVD is less than 5%
-    if tvd < 0.05:
-        print("TVD is less than 0.05")
-    else:
-        print("TVD is not less than 0.05")
+        # Calculate the Total Variation Distance
+        tvd = np.sum(np.abs(prob - cleaned_amp)) / 2
+        print(f"Total Variation Distance: {tvd}")
+
+        # Check if the TVD is less than 5%
+        if tvd < 0.05:
+            successful_circuits += 1
+        else:
+            print("TVD is not less than 0.05")
+            break
+
+        if successful_circuits >= 1000:
+            break
 
     # Uncomment the following lines if you want to print the amplitudes and probabilities
-    print(f"Amplitudes: {cleaned_amp}")
-    print(f"Probabilities: {prob}")
+    # print(f"Amplitudes: {cleaned_amp}")
+    # print(f"Probabilities: {prob}")

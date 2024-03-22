@@ -24,12 +24,12 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
     chp_content = "Randomly-generated Clifford group quantum circuit\n"
     chp_content += f"# \nd {dimension}\n"
     for gate in gates:
-        # qudits = random.sample(range(num_qudits), 1 if gate != 'c' else 2)
-        if gate == 'c':
-            start_qudit = random.randint(0, num_qudits - 2)  # -2 to ensure we have room for a consecutive qudit
-            qudits = [start_qudit, start_qudit + 1]
-        else:
-            qudits = random.sample(range(num_qudits), 1)
+        qudits = random.sample(range(num_qudits), 1 if gate != 'c' else 2)
+        # if gate == 'c':
+        #     start_qudit = random.randint(0, num_qudits - 2)  # -2 to ensure we have room for a consecutive qudit
+        #     qudits = [start_qudit, start_qudit + 1]
+        # else:
+        #     qudits = random.sample(range(num_qudits), 1)
         chp_content += f"{gate} {' '.join(map(str, qudits))}\n"
 
     # Append measurements across every qubit based on the number of measurement rounds

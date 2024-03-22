@@ -1,4 +1,5 @@
 import random
+import math
 from .paulistring import PauliString
 def apply_H(tableau, qudit_index, _):
     """
@@ -69,16 +70,18 @@ def measure(tableau, qudit_index, _):
     for row, pauli in enumerate(tableau.zlogical):
         xpow = pauli.xpow[qudit_index]
         if xpow > 0:
-            first_xpow = row
-            # guarantees that the pauli found anti commutes by a single omega
-            if xpow != 1:
-                pauli = exponentiate(pauli, xpow**(tableau.dimension-2), phase_order=tableau.phase_order)
-            break
+            if math.gcd(xpow, tableau.dimension) == 1:
+                first_xpow = row
+                # guarantees that the pauli found anti commutes by a single omega
+                if xpow != 1:
+                    exponent = pow(xpow, -1, tableau.dimension)
+                    pauli = exponentiate(pauli, exponent, tableau.dimension, phase_order=tableau.phase_order)
+                break
     if first_xpow is not None:
         # call rowsum(i, p) for all paulis in tableau such that i =/= p and pauli has a non-zero X on qudit_index
         # this effectively makes all other paulis commute with the first non-zero X we found
         # the following is guaranteed to converge within d-1 iterations because the first_xpow pauli has xpow == 1
-        for pauli in tableau.xlogical:
+        for row, pauli in enumerate(tableau.xlogical):
             while pauli.xpow[qudit_index] != 0:
                 rowsum(tableau, pauli, tableau.zlogical[first_xpow])
         for row, pauli in enumerate(tableau.zlogical):
@@ -87,16 +90,17 @@ def measure(tableau, qudit_index, _):
         tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
         measurement_outcome = random.choice(range(tableau.dimension))
         iden_pauli.zpow[qudit_index] = 1
-        iden_pauli.phase = measurement_outcome*tableau.phase_order
+        iden_pauli.phase = (-measurement_outcome*tableau.phase_order) % (tableau.phase_order*tableau.dimension)
         tableau.zlogical[first_xpow] = iden_pauli
-        return tableau, (is_deterministic, measurement_outcome)
     else:
         is_deterministic = True
         for row, pauli in enumerate(tableau.xlogical):
-            if pauli.xpow[qudit_index] > 0:
+            for _ in range(pauli.xpow[qudit_index]):
                 rowsum(tableau, iden_pauli, tableau.zlogical[row])
-        # iden_pauli.phase = (iden_pauli.phase*iden_pauli.zpow[qudit_index]) % (tableau.phase_order*tableau.dimension)
-        return tableau, (is_deterministic, iden_pauli.phase//tableau.phase_order)
+        measurement_outcome = (-iden_pauli.phase // tableau.phase_order) % tableau.dimension
+        #measurement_outcome = iden_pauli.phase // tableau.phase_order
+        #print(iden_pauli)
+    return tableau, (is_deterministic, measurement_outcome)
 
 def rowsum(tableau, hrow, irow):
     hrow.phase = (hrow.phase + irow.phase + tableau.phase_order * commute_phase(hrow, irow)) % (tableau.phase_order * tableau.dimension)
@@ -115,15 +119,15 @@ def commute_phase(row1, row2):
     """
     total_phase = 0
     for i in range(len(row1.xpow)):
-        # total_phase += row1.xpow[i] * row2.zpow[i] - row2.xpow[i] * row1.zpow[i]
-        total_phase += row2.xpow[i] * row1.zpow[i]
+        total_phase += row1.zpow[i] * row2.xpow[i]
     return total_phase
 
-def exponentiate(row, n, phase_order=1):
+def exponentiate(row, n, dimension, phase_order=1):
     """
     Exponentiate a Pauli string by n
     Example:
-    (X^a Z^b)^n = w^(nab)) X^(na) Z^(nb) 
+    (X^a Z^b)^n = w^(abn(n-1)/2)) X^(na) Z^(nb) 
+    Reminder that we multiply the global phase by n because it is outside the parentheses
     Args:
         row: Pauli string
         n: int
@@ -131,8 +135,10 @@ def exponentiate(row, n, phase_order=1):
     Returns:
         The Pauli string after exponentiation
     """
+    row.phase *= n
     for i in range(len(row.xpow)):
-        row.phase += row.xpow[i] * row.zpow[i] * n * phase_order
-        row.xpow[i] = (row.xpow[i] * n)
-        row.zpow[i] = (row.zpow[i] * n)
+        row.phase += row.xpow[i] * row.zpow[i] * n*(n-1)//2 * phase_order
+        row.xpow[i] = (row.xpow[i] * n) % dimension
+        row.zpow[i] = (row.zpow[i] * n) % dimension
+    row.phase = row.phase % (dimension * phase_order)
     return row
