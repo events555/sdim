@@ -1,6 +1,7 @@
 import os
 import random
-
+import cirq
+from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate
 def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds = 0, output_file="random_circuit.chp", seed=None):
     # Check that the percentages sum to 100
     if c_percentage + h_percentage + p_percentage + m_percentage != 100:
@@ -47,3 +48,39 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
     # Write the content to the .chp file
     with open(output_path, "w") as file:
         file.write(chp_content)
+
+def circuit_to_cirq_circuit(circuit, measurement=False):
+    # Create a list of qudits.
+    qudits = [cirq.LineQid(i, dimension=circuit.dimension) for i in range(circuit.num_qudits)]
+
+    # Create the generalized gates.
+    gate_map = {
+        "H": GeneralizedHadamardGate(circuit.dimension),
+        "P": GeneralizedPhaseShiftGate(circuit.dimension),
+        "CNOT": GeneralizedCNOTGate(circuit.dimension)
+    }
+
+    # Create a Cirq circuit.
+    cirq_circuit = cirq.Circuit()
+
+    # Apply each gate in the circuit.
+    for op in circuit.operations:
+        # Choose the appropriate gate.
+        if op.name in gate_map:
+            gate = gate_map[op.name]
+        elif op.name == "M":
+            if measurement:
+                cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
+            continue
+        else:
+            raise ValueError(f"Gate {op.name} not found")
+
+        # Add the gate to the Cirq circuit.
+        if op.target_index is None:
+            # Single-qudit gate.
+            cirq_circuit.append(gate.on(qudits[op.qudit_index]))
+        else:
+            # Two-qudit gate.
+            cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
+
+    return cirq_circuit

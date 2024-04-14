@@ -1,39 +1,38 @@
 from sdim.program import Program
 from sdim.chp_parser import read_circuit
-from tomography import cirq_statevector_from_circuit, numpy_statevector_from_circuit
 from sdim.random_circuit import generate_chp_file
+from tomography import cirq_statevector_from_circuit
 import numpy as np
 import itertools
-def test_rand_circuit(num_samples=30000, print_prob=False):
+def test_rand_circuit(num_samples=240000, print_prob=False):
     circuit = read_circuit("circuits/random_circuit.chp")
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
 
     # Get the number of qudits and the dimension from the circuit.
     n = circuit.num_qudits
-    basis_states = range(circuit.dimension)
-    measurement_results = {
-        ''.join(map(str, key)): 0
-        for key in itertools.product(basis_states, repeat=n)
-    }
+    dimension = circuit.dimension
+    num_states = dimension**n
+    measurement_counts = np.zeros(num_states, dtype=int)
+
 
     # Run the simulation multiple times.
     for _ in range(num_samples):
         program = Program(circuit)
         program.simulate()
         measurements = program.measurement_results
-        # Construct a key for each sample.
-        key = ''.join(str(result) for _, _, result in measurements)
+        # Calculate the index from the measurement results
+        key = 0
+        for _, _, result in measurements:
+            key = key * dimension + result
 
+        # Increment the count for this index
+        measurement_counts[key] += 1
 
-        # Increment the count for this key.
-        if key not in measurement_results:
-            measurement_results[key] = 0
-        measurement_results[key] += 1
-
-    probabilities = np.array([count / num_samples for key, count in sorted(measurement_results.items())])
+    probabilities = measurement_counts / num_samples
     if print_prob:
-        for key, prob in zip(sorted(measurement_results.keys()), probabilities):
+        for i, prob in enumerate(probabilities):
+            key = "".join(map(str, np.base_repr(i, base=dimension, padding=n)))
             print(f"State {key}: Probability {prob}")
     if not np.isclose(np.sum(probabilities), 1, atol=1e-6):
         raise ValueError("The sum of the probabilities is not approximately 1")
@@ -50,9 +49,9 @@ if __name__ == "__main__":
 
     successful_circuits = 0
 
-    for _ in range(100):
+    while True:
         # Generate the chp file
-        generate_chp_file(30, 30, 40, 0, 2, 20, 11, 1, seed=None)
+        generate_chp_file(30, 30, 40, 0, 3, 30, 13, 1, seed=None)
 
         # Run the test_rand_circuit function
         prob, amp = test_rand_circuit()
@@ -72,7 +71,7 @@ if __name__ == "__main__":
             print("TVD is not less than 0.05")
             break
 
-        if successful_circuits >= 1000:
+        if successful_circuits >= 500:
             break
 
     # Uncomment the following lines if you want to print the amplitudes and probabilities

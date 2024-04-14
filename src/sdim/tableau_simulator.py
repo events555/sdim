@@ -98,7 +98,6 @@ def measure(tableau, qudit_index, _):
             for _ in range(pauli.xpow[qudit_index]):
                 rowsum(tableau, iden_pauli, tableau.zlogical[row])
         measurement_outcome = (-iden_pauli.phase // tableau.phase_order) % tableau.dimension
-        #measurement_outcome = iden_pauli.phase // tableau.phase_order
         #print(iden_pauli)
     return tableau, (is_deterministic, measurement_outcome)
 

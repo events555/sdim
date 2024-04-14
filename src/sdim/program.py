@@ -39,6 +39,7 @@ class Program:
         if show_measurement:
             print("Measurement results:")
             self.print_measurements()
+        return self.measurement_results
 
     def apply_gate(self, instruc):
         """
