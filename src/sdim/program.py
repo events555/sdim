@@ -1,10 +1,13 @@
+from typing import Tuple, Optional
+from .circuit import CircuitInstruction, Circuit
 from .tableau import Tableau
 from .tableau_simulator import apply_H, apply_P, apply_CNOT, measure, MeasurementResult
+from .compound_gates import apply_PauliX, apply_PauliZ
 
 GATE_FUNCTIONS = {
     0: lambda tableau, qudit_index, target_index: None,  # I gate
-    1: lambda tableau, qudit_index, target_index: None,  # X gate
-    2: lambda tableau, qudit_index, target_index: None,  # Z gate
+    1: apply_PauliX,  # X gate
+    2: apply_PauliZ,  # Z gate
     3: apply_H,  # H gate
     4: apply_P,  # P gate
     5: apply_CNOT,  # CNOT gate
@@ -13,7 +16,7 @@ GATE_FUNCTIONS = {
 
 
 class Program:
-    def __init__(self, circuit, tableau=None):
+    def __init__(self, circuit: Circuit, tableau=None):
         if tableau is None:
             self.stabilizer_tableau = Tableau(circuit.num_qudits, circuit.dimension)
         else:
@@ -21,7 +24,7 @@ class Program:
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self, show_measurement=False, verbose=False, show_gate=False):
+    def simulate(self, show_measurement: bool=False, verbose: bool=False, show_gate: bool=False) -> list[MeasurementResult]:
         length = len(self.circuit.operations)
         for time, gate in enumerate(self.circuit.operations):
             self.stabilizer_tableau, measurement_result = self.apply_gate(gate)
@@ -40,13 +43,13 @@ class Program:
             self.print_measurements()
         return self.measurement_results
 
-    def apply_gate(self, instruc):
+    def apply_gate(self, instruc: CircuitInstruction) -> Tuple[Tableau, Optional[MeasurementResult]]:
         """
         Apply a gate to the stabilizer tableau
         Args:
-            instruc: A Gate object from Circuit
+            instruc: A CircuitInstruction object from a Circuit's operation list
         Returns:
-            The updated stabilizer tableau and a flag indicating whether the measurement was deterministic
+            The updated stabilizer tableau and a MeasurementResult
         """
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")

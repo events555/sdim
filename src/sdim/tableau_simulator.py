@@ -149,7 +149,7 @@ def exponentiate(row: PauliString, n: int, dimension: int, phase_order:int = 1) 
     """
     Exponentiate a Pauli string by n
     Example:
-    (X^a Z^b)^n = w^(abn(n-1)/2)) X^(na) Z^(nb) 
+    (X^a Z^b)^n = w^(ab*n(n-1)/2) X^(na) Z^(nb) 
     Reminder that we multiply the global phase by n because it is outside the parentheses
     Args:
         row: Pauli string

@@ -75,6 +75,34 @@ class GeneralizedPhaseShiftGate(cirq.Gate):
     def _circuit_diagram_info_(self, args):
         return f"P_{self.d}"
 
+class GeneralizedXPauliGate(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedXPauliGate, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return generate_x_matrix(self.d)
+
+    def _circuit_diagram_info_(self, args):
+        return f"X_{self.d}"
+    
+class GeneralizedZPauliGate(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedZPauliGate, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return generate_z_matrix(self.d)
+
+    def _circuit_diagram_info_(self, args):
+        return f"Z_{self.d}"
+    
 class GeneralizedCNOTGate(cirq.Gate):
     def __init__(self, d):
         super(GeneralizedCNOTGate, self).__init__()
@@ -102,17 +130,4 @@ class IdentityGate(cirq.Gate):
 
     def _circuit_diagram_info_(self, args):
         return f"I_{self.d}"
-    
-class IdentityGate(cirq.Gate):
-    def __init__(self, d):
-        super(IdentityGate, self).__init__()
-        self.d = d
 
-    def _qid_shape_(self):
-        return (self.d,)
-
-    def _unitary_(self):
-        return generate_identity_matrix(self.d)
-
-    def _circuit_diagram_info_(self, args):
-        return f"I_{self.d}"

@@ -2,8 +2,7 @@ import cProfile
 import pstats
 import matplotlib
 import matplotlib.pyplot as plt
-import json
-import os
+import cirq
 import numpy as np
 from sdim.chp_parser import read_circuit
 from sdim.program import Program
@@ -11,24 +10,14 @@ from sdim.random_circuit import generate_chp_file, circuit_to_cirq_circuit
 from sdim.circuit import Circuit
 
 def main():
-    circuit = Circuit(2, 2)
-    circuit.add_gate("H", 1)
-    circuit.add_gate("P", 1)
-
-    circuit.add_gate("H", 0)
-    circuit.add_gate("CNOT", 0, 1)
-    circuit.add_gate("H", 1)
-    circuit.add_gate("CNOT", 0, 1)
-    circuit.add_gate("H", 1)
-
-    circuit.add_gate("P", 0)
-    circuit.add_gate("H", 0)
-    circuit.add_gate("M", 0)
-    circuit.add_gate("P", 1)
-    circuit.add_gate("H", 1)
-    circuit.add_gate("M", 1)
+    circuit = read_circuit("circuits/pauli_x_odd.chp")
+    cirq_circuit = circuit_to_cirq_circuit(circuit, measurement=True)
+    print(cirq_circuit)
     program = Program(circuit)
-    program.simulate(show_measurement=True, verbose=True, show_gate=True)
+    cirq_simulator = cirq.Simulator()
+    cirq_result = cirq_simulator.simulate(cirq_circuit)
+    print(cirq_result)
+    #program.simulate(show_measurement=True, verbose=True, show_gate=True)
 
 if __name__ == "__main__":
     main()

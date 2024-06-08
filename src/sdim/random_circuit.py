@@ -2,7 +2,7 @@ import os
 import random
 import cirq
 import numpy as np
-from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate
+from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate
 def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds = 0, output_file="random_circuit.chp", seed=None):
     # Check that the percentages sum to 100
     if c_percentage + h_percentage + p_percentage + m_percentage != 100:
@@ -58,7 +58,8 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
     gate_map = {
         "H": GeneralizedHadamardGate(circuit.dimension),
         "P": GeneralizedPhaseShiftGate(circuit.dimension),
-        "CNOT": GeneralizedCNOTGate(circuit.dimension)
+        "CNOT": GeneralizedCNOTGate(circuit.dimension),
+        "X": GeneralizedXPauliGate(circuit.dimension),
     }
 
     # Create a Cirq circuit.
@@ -69,20 +70,19 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
         # Choose the appropriate gate.
         if op.name in gate_map:
             gate = gate_map[op.name]
+            # Add the gate to the Cirq circuit.
+            if op.target_index is None:
+                # Single-qudit gate.
+                cirq_circuit.append(gate.on(qudits[op.qudit_index]))
+            else:
+                # Two-qudit gate.
+                cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
         elif op.name == "M":
             if measurement:
                 cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
             continue
         else:
             raise ValueError(f"Gate {op.name} not found")
-
-        # Add the gate to the Cirq circuit.
-        if op.target_index is None:
-            # Single-qudit gate.
-            cirq_circuit.append(gate.on(qudits[op.qudit_index]))
-        else:
-            # Two-qudit gate.
-            cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
 
     return cirq_circuit
 
