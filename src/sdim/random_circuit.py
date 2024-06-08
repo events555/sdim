@@ -1,6 +1,7 @@
 import os
 import random
 import cirq
+import numpy as np
 from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate
 def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds = 0, output_file="random_circuit.chp", seed=None):
     # Check that the percentages sum to 100
@@ -84,3 +85,17 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
             cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
 
     return cirq_circuit
+
+def cirq_statevector_from_circuit(circuit):
+    # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
+    state = np.zeros((circuit.dimension**circuit.num_qudits,), dtype=np.complex128)
+    state[0] = 1
+
+    cirq_circuit = circuit_to_cirq_circuit(circuit)
+
+    # Simulate the Cirq circuit.
+    simulator = cirq.Simulator()
+    result = simulator.simulate(cirq_circuit, initial_state=state)
+    # print(cirq_circuit)
+    # Return the final state vector.
+    return result.final_state_vector

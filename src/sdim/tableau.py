@@ -12,7 +12,9 @@ class Tableau:
         self.zlogical = [
             PauliString(num_qudits, dimension=dimension) for _ in range(num_qudits)
         ]
-
+        for i in range(self.num_qudits):
+            self.xlogical[i][i] = "X"
+            self.zlogical[i][i] = "Z"
     def __str__(self):
         xlogical_str = ", ".join(str(ps) for ps in self.xlogical)
         zlogical_str = ", ".join(str(ps) for ps in self.zlogical)
@@ -29,14 +31,6 @@ class Tableau:
             row = [f"{xpow} {zpow}" for xpow, zpow in zip(ps.xpow, ps.zpow)]
             row.append(f"|{ps.phase}")
             print("\t".join(row))
-
-    def identity(self):
-        """
-        Creates a Tableau representing the identity operator.
-        """
-        for i in range(self.num_qudits):
-            self.xlogical[i][i] = "X"
-            self.zlogical[i][i] = "Z"
 
     def gate1(self, xmap, zmap):
         """

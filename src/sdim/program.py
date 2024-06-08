@@ -1,5 +1,5 @@
 from .tableau import Tableau
-from .tableau_simulator import apply_H, apply_P, apply_CNOT, measure
+from .tableau_simulator import apply_H, apply_P, apply_CNOT, measure, MeasurementResult
 
 GATE_FUNCTIONS = {
     0: lambda tableau, qudit_index, target_index: None,  # I gate
@@ -16,7 +16,6 @@ class Program:
     def __init__(self, circuit, tableau=None):
         if tableau is None:
             self.stabilizer_tableau = Tableau(circuit.num_qudits, circuit.dimension)
-            self.stabilizer_tableau.identity()
         else:
             self.stabilizer_tableau = tableau
         self.circuit = circuit
@@ -25,9 +24,9 @@ class Program:
     def simulate(self, show_measurement=False, verbose=False, show_gate=False):
         length = len(self.circuit.operations)
         for time, gate in enumerate(self.circuit.operations):
-            self.stabilizer_tableau, measurement = self.apply_gate(gate)
+            self.stabilizer_tableau, measurement_result = self.apply_gate(gate)
             if gate.gate_id == 6:
-                self.measurement_results.append((gate.qudit_index, measurement[0], measurement[1]))
+                self.measurement_results.append(measurement_result)
             if show_gate:
                 if time < length - 1:
                     print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
@@ -52,13 +51,12 @@ class Program:
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
-        updated_tableau, measurement_type = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
-        return updated_tableau, measurement_type
+        updated_tableau, measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
+        return updated_tableau, measurement_result
 
     def print_tableau(self):
         self.stabilizer_tableau.print_tableau_num()
 
     def print_measurements(self):
-        for qudit_index, measurement_type, measurement_value in self.measurement_results:
-            measurement_type_str = "deterministic" if measurement_type else "random"
-            print(f"Measured qudit ({qudit_index}) as ({measurement_value}) and was {measurement_type_str}.")
+        for result in self.measurement_results:
+            print(result)

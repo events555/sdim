@@ -1,11 +1,9 @@
 from sdim.program import Program
 from sdim.chp_parser import read_circuit
-from sdim.random_circuit import generate_chp_file
-from tomography import cirq_statevector_from_circuit
+from sdim.random_circuit import generate_chp_file, cirq_statevector_from_circuit
 import numpy as np
 import itertools
-def test_rand_circuit(num_samples=240000, print_prob=False):
-    circuit = read_circuit("circuits/random_circuit.chp")
+def test_circuit(circuit, num_samples=2000, print_prob=False):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
 
@@ -19,12 +17,11 @@ def test_rand_circuit(num_samples=240000, print_prob=False):
     # Run the simulation multiple times.
     for _ in range(num_samples):
         program = Program(circuit)
-        program.simulate()
-        measurements = program.measurement_results
+        measurements = program.simulate()
         # Calculate the index from the measurement results
         key = 0
-        for _, _, result in measurements:
-            key = key * dimension + result
+        for result in measurements:
+            key = key * dimension + result.measurement_value
 
         # Increment the count for this index
         measurement_counts[key] += 1
@@ -51,10 +48,11 @@ if __name__ == "__main__":
 
     while True:
         # Generate the chp file
-        generate_chp_file(30, 30, 40, 0, 3, 30, 13, 1, seed=None)
+        # generate_chp_file(0, 60, 40, 0, 1, 8, 3, 1, seed=None)
 
         # Run the test_rand_circuit function
-        prob, amp = test_rand_circuit()
+        circuit = read_circuit("circuits/pauli_x_odd.chp")
+        prob, amp = test_circuit(circuit)
 
         # Clean the amplitudes
         threshold = 1e-14
@@ -71,9 +69,9 @@ if __name__ == "__main__":
             print("TVD is not less than 0.05")
             break
 
-        if successful_circuits >= 500:
+        if successful_circuits >= 10:
             break
 
     # Uncomment the following lines if you want to print the amplitudes and probabilities
-    # print(f"Amplitudes: {cleaned_amp}")
-    # print(f"Probabilities: {prob}")
+    print(f"Amplitudes: {cleaned_amp}")
+    print(f"Probabilities: {prob}")

@@ -1,46 +1,43 @@
+from dataclasses import dataclass, field
 import re
+from typing import List, Tuple, Optional
 
-
+@dataclass
 class PauliString:
-    def __init__(self, num_qudits, pauli_string=None, dimension=2):
-        """
-        Initializes a PauliString object.
+    num_qudits: int
+    dimension: int = 2
+    xpow: List[int] = field(default_factory=list)
+    zpow: List[int] = field(default_factory=list)
+    phase: int = 0
 
-        Args:
-            num_qudits (int): The number of qudits in the Pauli string. Used to initialize xpow and zpow to all 0, representing the identity product.
-            string (str, optional): The string representation of the Pauli string. Defaults to None.
-            dimension (int, optional): The dimension of the qudits. Defaults to 2.
-        """
-        self.num_qudits = num_qudits
-        self.dimension = dimension
-        self.xpow = [0 for _ in range(num_qudits)]
-        self.zpow = [0 for _ in range(num_qudits)]
-        self.phase = 0
-        if pauli_string is not None:
-            self.from_str(pauli_string)
+    def __post_init__(self):
+        if not self.xpow:
+            self.xpow = [0 for _ in range(self.num_qudits)]
+        if not self.zpow:
+            self.zpow = [0 for _ in range(self.num_qudits)]
 
-    def __setitem__(self, index: int, new_pauli: object) -> None:
+    def __setitem__(self, index: int, new_pauli: str) -> None:
         if index < 0 or index >= self.num_qudits:
             raise IndexError("Index out of range.")
         if isinstance(new_pauli, str):
-            match = re.match(r"([A-Z][\d!]*)", new_pauli)
+            match = re.match(r"([A-Z][\-?\d!]*)", new_pauli)
             if match:
                 pauli_term = match.group()
                 pauli_char = pauli_term[0]
-                number = re.search(r"\d+", pauli_term)
-                if number:
-                    number = int(number.group())
+                number_match = re.search(r"-?\d+", pauli_term) 
+                number = None
+                if number_match:
+                    number_str = number_match.group()
+                    number = int(number_str)
+                    if number < 0:
+                        raise ValueError("Pauli operator has power negative value.")
+                    if number >= self.dimension:
+                        raise ValueError("Pauli operator has power greater than or equal to the dimension.")
                 if pauli_char == "X":
-                    if number == "!":
-                        self.xpow[index] = self.dimension - 1
-                    else:
-                        self.xpow[index] = int(number) if number else 1
+                    self.xpow[index] = self.dimension - 1 if "!" in pauli_term else number if number is not None else 1
                     self.zpow[index] = 0
                 elif pauli_char == "Z":
-                    if number == "!":
-                        self.zpow[index] = self.dimension - 1
-                    else:
-                        self.zpow[index] = int(number) if number else 1
+                    self.zpow[index] = self.dimension - 1 if "!" in pauli_term else number if number is not None else 1
                     self.xpow[index] = 0
                 elif pauli_char == "I":
                     self.xpow[index] = 0
@@ -52,20 +49,14 @@ class PauliString:
         else:
             raise ValueError("Invalid object types given.")
 
-    def __str__(self):
-        pauli_string = ""
-        if self.phase != 0:
-            pauli_string += f"w{self.phase}"
+    def __str__(self) -> str:
+        pauli_string = f"w{self.phase}" if self.phase != 0 else ""
         for i in range(self.num_qudits):
             term = ""
             if self.xpow[i] != 0:
-                term += (
-                    f"X{self.xpow[i]}" if self.xpow[i] != self.dimension - 1 else "X!"
-                )
+                term += f"X{self.xpow[i]}" if self.xpow[i] != self.dimension - 1 else "X!"
             if self.zpow[i] != 0:
-                term += (
-                    f"Z{self.zpow[i]}" if self.zpow[i] != self.dimension - 1 else "Z!"
-                )
+                term += f"Z{self.zpow[i]}" if self.zpow[i] != self.dimension - 1 else "Z!"
             if term == "":
                 term = "I"
             pauli_string += f"({term})"
@@ -74,7 +65,7 @@ class PauliString:
     def from_str(self, pauli_string: str):
         """
         Converts a string representation of a Pauli string to its xpow, zpow, and phase representation.
-        Expects every qudit to be explicitly represented in the string within it's own parentheses.
+        Expects every qudit to be explicitly represented in the string within its own parentheses.
 
         Examples:
         "(X2)(X3Z4)" -> ([2, 3], [0, 4], 0) for xpow, zpow, and phase, respectively.
@@ -85,35 +76,44 @@ class PauliString:
         Args:
             string (str): The string representation of the Pauli string.
         """
-
-        # Check if the Pauli string has a phase
         if pauli_string[0] == "w":
-            self.phase = int(pauli_string[1])
+            if self.dimension % 2 == 0:
+                self.phase = (int(pauli_string[1]) * 2) % self.dimension
+            else:
+                self.phase = int(pauli_string[1])
             pauli_string = pauli_string[2:]
-        # Get list of tuples containing every Pauli term
+        else:
+            self.phase = 0
+
         pauli_terms = get_list_paulis(pauli_string, self.dimension)
         for i, (x, z) in enumerate(pauli_terms):
-            # Check if X has value
-            # Tuple will be ('X', 'pow')
-            if x is not None:
+            if x:
                 if "!" in x[1]:
                     self.xpow[i] = self.dimension - 1
                 else:
-                    self.xpow[i] = int(x[1])
+                    x_value = int(x[1])
+                    if x_value < 0:
+                        raise ValueError("Pauli operator has a negative power value.")
+                    if x_value >= self.dimension:
+                        raise ValueError("Pauli operator power value is greater than or equal to the dimension.")
+                    self.xpow[i] = x_value
             else:
                 self.xpow[i] = 0
-            # Check if Z has value
-            if z is not None:
+
+            if z:
                 if "!" in z[1]:
                     self.zpow[i] = self.dimension - 1
                 else:
-                    self.zpow[i] = int(z[1])
+                    z_value = int(z[1])
+                    if z_value < 0:
+                        raise ValueError("Pauli operator has a negative power value.")
+                    if z_value >= self.dimension:
+                        raise ValueError("Pauli operator power value is greater than or equal to the dimension.")
+                    self.zpow[i] = z_value
             else:
                 self.zpow[i] = 0
-        return
 
-
-def get_list_paulis(pauli_string: str, dimension: int):
+def get_list_paulis(pauli_string: str, dimension: int) -> List[Tuple[Optional[Tuple[str, str]], Optional[Tuple[str, str]]]]:
     """
     Returns a list of Pauli terms in the Pauli string.
     It first separates it by parentheses and then creates tuples in (X,Z) ordering.
@@ -123,27 +123,23 @@ def get_list_paulis(pauli_string: str, dimension: int):
     "(X!)(Z)" -> [(('X', 'd-1'), None), (None, ('Z', 1))]
     """
     pauli_terms = []
-    substring_list = re.findall(r"\((.*?)\)", pauli_string)  # Separate parentheses
+    substring_list = re.findall(r"\((.*?)\)", pauli_string)
     for s in substring_list:
-        match = re.match(
-            r"([A-Z][\d!]*)((?:[A-Z][\d!]*)?)", s
-        )  # Split X#/Z# terms inside parentheses where # are numbers or !
+        match = re.match(r"([A-Z][\d!]*)((?:[A-Z][\d!]*)?)", s)
+        if not match:
+            raise ValueError(f"Invalid Pauli term: {s}")
         groups = match.groups()
         x_term = None
         z_term = None
         for group in groups:
             if group:
                 if group[0] == "X":
-                    x_term = (
-                        (group[0], str(dimension - 1))
-                        if "!" in group
-                        else (group[0], group[1:] if len(group) > 1 else "1")
-                    )
+                    x_term = (group[0], str(dimension - 1)) if "!" in group else (group[0], group[1:] if len(group) > 1 else "1")
                 elif group[0] == "Z":
-                    z_term = (
-                        (group[0], str(dimension - 1))
-                        if "!" in group
-                        else (group[0], group[1:] if len(group) > 1 else "1")
-                    )
+                    z_term = (group[0], str(dimension - 1)) if "!" in group else (group[0], group[1:] if len(group) > 1 else "1")
+                elif group[0] == "I":
+                    continue
+                else:
+                    raise ValueError(f"Invalid Pauli operator: {group[0]}")
         pauli_terms.append((x_term, z_term))
     return pauli_terms

@@ -1,7 +1,24 @@
 import random
 import math
+from typing import Tuple, Optional
+from dataclasses import dataclass
 from .paulistring import PauliString
-def apply_H(tableau, qudit_index, _):
+from .tableau import Tableau
+
+@dataclass
+class MeasurementResult:
+    qudit_index: int
+    deterministic: bool
+    measurement_value: int
+
+    def __str__(self):
+        measurement_type_str = "deterministic" if self.deterministic else "random"
+        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}."
+
+    def __repr__(self):
+        return str(self)
+
+def apply_H(tableau: Tableau, qudit_index: int, _) -> Tuple[Tableau, Optional[MeasurementResult]]:
     """
     Apply H gate to qudit at qudit_index
     X -> Z
@@ -15,7 +32,7 @@ def apply_H(tableau, qudit_index, _):
     return tableau, None
 
 
-def apply_P(tableau, qudit_index, _):
+def apply_P(tableau: Tableau, qudit_index: int, _) -> Tuple[Tableau, Optional[MeasurementResult]]:
     """
     Apply P gate to qudit at qudit_index
 
@@ -42,7 +59,7 @@ def apply_P(tableau, qudit_index, _):
     return tableau, None
 
 
-def apply_CNOT(tableau, control, target):
+def apply_CNOT(tableau: Tableau, control: int, target: int) -> Tuple[Tableau, Optional[MeasurementResult]]:
     """
     Apply CNOT gate to control and target qudits
     XI -> XX
@@ -59,13 +76,12 @@ def apply_CNOT(tableau, control, target):
         pauli.zpow[control] = (pauli.zpow[control]+((pauli.zpow[target])  * (tableau.dimension - 1))) % tableau.dimension
     return tableau, None
 
-def measure(tableau, qudit_index, _):
+def measure(tableau: Tableau, qudit_index: int, _) -> Tuple[Tableau, Optional[MeasurementResult]]:
     """
     Measure in Z basis qudit at qudit_index
     """
     first_xpow = None
-    iden_pauli = PauliString(tableau.num_qudits, dimension=tableau.dimension)
-    is_deterministic = False #deterministic measurement is true
+    result = MeasurementResult(qudit_index, False, 0)
     # Find the first non-zero X in the tableau zlogical
     for row, pauli in enumerate(tableau.zlogical):
         xpow = pauli.xpow[qudit_index]
@@ -78,36 +94,44 @@ def measure(tableau, qudit_index, _):
                     pauli = exponentiate(pauli, exponent, tableau.dimension, phase_order=tableau.phase_order)
                 break
     if first_xpow is not None:
-        # call rowsum(i, p) for all paulis in tableau such that i =/= p and pauli has a non-zero X on qudit_index
-        # this effectively makes all other paulis commute with the first non-zero X we found
-        # the following is guaranteed to converge within d-1 iterations because the first_xpow pauli has xpow == 1
-        for row, pauli in enumerate(tableau.xlogical):
-            while pauli.xpow[qudit_index] != 0:
-                rowsum(tableau, pauli, tableau.zlogical[first_xpow])
-        for row, pauli in enumerate(tableau.zlogical):
-            while row != first_xpow and pauli.xpow[qudit_index] != 0:
-                rowsum(tableau, pauli, tableau.zlogical[first_xpow])
-        tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
-        measurement_outcome = random.choice(range(tableau.dimension))
-        iden_pauli.zpow[qudit_index] = 1
-        iden_pauli.phase = (-measurement_outcome*tableau.phase_order) % (tableau.phase_order*tableau.dimension)
-        tableau.zlogical[first_xpow] = iden_pauli
+        result = _random_measurement(tableau, qudit_index, first_xpow)
     else:
-        is_deterministic = True
-        for row, pauli in enumerate(tableau.xlogical):
-            for _ in range(pauli.xpow[qudit_index]):
-                rowsum(tableau, iden_pauli, tableau.zlogical[row])
-        measurement_outcome = (-iden_pauli.phase // tableau.phase_order) % tableau.dimension
-        #print(iden_pauli)
-    return tableau, (is_deterministic, measurement_outcome)
+        result = _det_measurement(tableau, qudit_index)
+    return tableau, result
 
-def rowsum(tableau, hrow, irow):
+def _random_measurement(tableau: Tableau, qudit_index: int, first_xpow: int) -> MeasurementResult:
+    # call rowsum(i, p) for all paulis in tableau such that i =/= p and pauli has a non-zero X on qudit_index
+    # this effectively makes all other paulis commute with the first non-zero X we found
+    # the following is guaranteed to converge within d-1 iterations because the first_xpow pauli has xpow == 1
+    iden_pauli = PauliString(tableau.num_qudits, dimension=tableau.dimension)
+    for row, pauli in enumerate(tableau.xlogical):
+        while pauli.xpow[qudit_index] != 0:
+            rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+    for row, pauli in enumerate(tableau.zlogical):
+        while row != first_xpow and pauli.xpow[qudit_index] != 0:
+            rowsum(tableau, pauli, tableau.zlogical[first_xpow])
+    tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
+    measurement_outcome = random.choice(range(tableau.dimension))
+    iden_pauli.zpow[qudit_index] = 1
+    iden_pauli.phase = (-measurement_outcome*tableau.phase_order) % (tableau.phase_order*tableau.dimension)
+    tableau.zlogical[first_xpow] = iden_pauli
+    return MeasurementResult(qudit_index, False, measurement_outcome)
+
+def _det_measurement(tableau: Tableau, qudit_index: int) -> MeasurementResult:
+    iden_pauli = PauliString(tableau.num_qudits, dimension=tableau.dimension)
+    for row, pauli in enumerate(tableau.xlogical):
+        for _ in range(pauli.xpow[qudit_index]):
+            rowsum(tableau, iden_pauli, tableau.zlogical[row])
+    measurement_outcome = (-iden_pauli.phase // tableau.phase_order) % tableau.dimension
+    return MeasurementResult(qudit_index, True, measurement_outcome)
+
+def rowsum(tableau: Tableau, hrow: PauliString, irow: PauliString):
     hrow.phase = (hrow.phase + irow.phase + tableau.phase_order * commute_phase(hrow, irow)) % (tableau.phase_order * tableau.dimension)
     for i in range(tableau.num_qudits):
         hrow.xpow[i] = (hrow.xpow[i] + irow.xpow[i]) % tableau.dimension
         hrow.zpow[i] = (hrow.zpow[i] + irow.zpow[i]) % tableau.dimension
 
-def commute_phase(row1, row2):
+def commute_phase(row1: PauliString, row2: PauliString) -> int:
     """
     Computes the phase after multiplying two Pauli strings and commuting them into (XX..X)(ZZ..Z) form
     Args:
@@ -121,7 +145,7 @@ def commute_phase(row1, row2):
         total_phase += row1.zpow[i] * row2.xpow[i]
     return total_phase
 
-def exponentiate(row, n, dimension, phase_order=1):
+def exponentiate(row: PauliString, n: int, dimension: int, phase_order:int = 1) -> PauliString:
     """
     Exponentiate a Pauli string by n
     Example:
