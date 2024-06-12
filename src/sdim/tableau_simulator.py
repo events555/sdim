@@ -13,7 +13,7 @@ class MeasurementResult:
 
     def __str__(self):
         measurement_type_str = "deterministic" if self.deterministic else "random"
-        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}."
+        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}"
 
     def __repr__(self):
         return str(self)

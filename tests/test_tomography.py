@@ -3,7 +3,7 @@ from sdim.chp_parser import read_circuit
 from sdim.random_circuit import generate_chp_file, cirq_statevector_from_circuit
 import numpy as np
 import itertools
-def test_circuit(circuit, num_samples=2000, print_prob=False):
+def test_circuit(circuit, num_samples=5000, print_prob=False):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
 
@@ -48,10 +48,10 @@ if __name__ == "__main__":
 
     while True:
         # Generate the chp file
-        # generate_chp_file(0, 60, 40, 0, 1, 8, 3, 1, seed=None)
+        generate_chp_file(0, 60, 40, 0, 1, 15, 9, 1, seed=None)
 
         # Run the test_rand_circuit function
-        circuit = read_circuit("circuits/pauli_x_odd.chp")
+        circuit = read_circuit("circuits/random_circuit.chp")
         prob, amp = test_circuit(circuit)
 
         # Clean the amplitudes
@@ -69,7 +69,7 @@ if __name__ == "__main__":
             print("TVD is not less than 0.05")
             break
 
-        if successful_circuits >= 10:
+        if successful_circuits >= 100:
             break
 
     # Uncomment the following lines if you want to print the amplitudes and probabilities
