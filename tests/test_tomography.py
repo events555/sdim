@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     while True:
         # Generate the chp file
-        generate_chp_file(0, 60, 40, 0, 1, 15, 9, 1, seed=None)
+        generate_chp_file(20, 40, 40, 0, 3, 15, 3, 1, seed=None)
 
         # Run the test_rand_circuit function
         circuit = read_circuit("circuits/random_circuit.chp")

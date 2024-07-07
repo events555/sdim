@@ -28,7 +28,7 @@ def apply_H(tableau: Tableau, qudit_index: int, _) -> Tuple[Tableau, Optional[Me
         pauli.xpow[qudit_index], pauli.zpow[qudit_index] = (pauli.zpow[qudit_index]) * (tableau.dimension - 1), pauli.xpow[qudit_index] # swap and set xpow to (d-1)*zpow
         # We gain a phase from commuting XZ that depends on the product of xpow and zpow but multiply by 2 because we are tracking omega 1/2
         # ie. HXZP' = ZX! = w^d-1 XZ
-        pauli.phase = (pauli.phase + tableau.phase_order*(pauli.xpow[qudit_index] * pauli.zpow[qudit_index])) % (tableau.phase_order*tableau.dimension)
+        pauli.phase = (pauli.phase + tableau.phase_order*(pauli.xpow[qudit_index] * pauli.zpow[qudit_index])) % (tableau.order)
     return tableau, None
 
 
@@ -49,7 +49,7 @@ def apply_P(tableau: Tableau, qudit_index: int, _) -> Tuple[Tableau, Optional[Me
             # Original commutation was xpow*(xpow-1)/2, but we are tracking number of omega 1/2 so we multiply by 2
             # We also gain an omega 1/2 for every xpow so we get 2*xpow*(xpow-1)/2 + xpow
             # This simplifies to xpow^2
-            pauli.phase = (pauli.phase + pauli.xpow[qudit_index]**2) % (tableau.phase_order*tableau.dimension)
+            pauli.phase = (pauli.phase + pauli.xpow[qudit_index]**2) % (tableau.order)
         else:
             # We gain a phase from commuting XZ depending on the number of X from PXP' = XZ
             # ie. PXXXP' = XZXZXZ = w^3 XXXZZZ
@@ -113,7 +113,7 @@ def _random_measurement(tableau: Tableau, qudit_index: int, first_xpow: int) -> 
     tableau.xlogical[first_xpow] = tableau.zlogical[first_xpow]
     measurement_outcome = random.choice(range(tableau.dimension))
     iden_pauli.zpow[qudit_index] = 1
-    iden_pauli.phase = (-measurement_outcome*tableau.phase_order) % (tableau.phase_order*tableau.dimension)
+    iden_pauli.phase = (-measurement_outcome*tableau.phase_order) % (tableau.order)
     tableau.zlogical[first_xpow] = iden_pauli
     return MeasurementResult(qudit_index, False, measurement_outcome)
 
@@ -126,7 +126,7 @@ def _det_measurement(tableau: Tableau, qudit_index: int) -> MeasurementResult:
     return MeasurementResult(qudit_index, True, measurement_outcome)
 
 def rowsum(tableau: Tableau, hrow: PauliString, irow: PauliString):
-    hrow.phase = (hrow.phase + irow.phase + tableau.phase_order * commute_phase(hrow, irow)) % (tableau.phase_order * tableau.dimension)
+    hrow.phase = (hrow.phase + irow.phase + tableau.phase_order * commute_phase(hrow, irow)) % (tableau.order)
     for i in range(tableau.num_qudits):
         hrow.xpow[i] = (hrow.xpow[i] + irow.xpow[i]) % tableau.dimension
         hrow.zpow[i] = (hrow.zpow[i] + irow.zpow[i]) % tableau.dimension

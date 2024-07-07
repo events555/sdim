@@ -1,21 +1,75 @@
 from dataclasses import dataclass, field
-import re
 from typing import List, Tuple, Optional
+from functools import cached_property
+import re
+import numpy as np
+
 
 @dataclass
 class PauliString:
     num_qudits: int
     dimension: int = 2
-    xpow: List[int] = field(default_factory=list)
-    zpow: List[int] = field(default_factory=list)
+    xpow: np.ndarray = field(default_factory=lambda: np.array([]))
+    zpow: np.ndarray = field(default_factory=lambda: np.array([]))
     phase: int = 0
-
+    
     def __post_init__(self):
-        if not self.xpow:
-            self.xpow = [0 for _ in range(self.num_qudits)]
-        if not self.zpow:
-            self.zpow = [0 for _ in range(self.num_qudits)]
+        self.xpow = np.array(self.xpow, dtype=int)
+        self.zpow = np.array(self.zpow, dtype=int)
+        if self.xpow.size == 0:
+            self.xpow = np.zeros(self.num_qudits, dtype=int)
+        if self.zpow.size == 0:
+            self.zpow = np.zeros(self.num_qudits, dtype=int)
 
+    @cached_property
+    def order(self):
+        return 2 * self.dimension if self.dimension % 2 == 0 else self.dimension
+
+    @cached_property
+    def even(self):
+        return self.dimension % 2 == 0
+    
+    def __add__(self, other: 'PauliString') -> 'PauliString':
+        if self.num_qudits != other.num_qudits or self.dimension != other.dimension:
+            raise ValueError("Cannot add PauliStrings with different number of qudits or dimensions.")
+        
+        new_xpow = self.xpow + other.xpow
+        new_zpow = self.zpow + other.zpow
+        phase = (self.phase + other.phase) % self.order
+        
+        return PauliString(self.num_qudits, self.dimension, new_xpow, new_zpow, phase)
+    
+    def __sub__(self, other: 'PauliString') -> 'PauliString':
+        if self.num_qudits != other.num_qudits or self.dimension != other.dimension:
+            raise ValueError("Cannot subtract PauliStrings with different number of qudits or dimensions.")
+        
+        new_xpow = (self.xpow - other.xpow) % self.dimension
+        new_zpow = (self.zpow - other.zpow) % self.dimension
+        phase = (self.phase - other.phase) % self.order
+        
+        return PauliString(self.num_qudits, self.dimension, new_xpow, new_zpow, phase)
+
+    def __mul__(self, scalar: int):
+        new_xpow = self.xpow * scalar
+        new_zpow = self.zpow * scalar
+        phase = self.phase * scalar % self.order
+        return PauliString(self.num_qudits, self.dimension, new_xpow, new_zpow, phase)
+
+    def __rmul__(self, scalar: int):
+        return self.__mul__(scalar)
+
+    def __truediv__(self, scalar: int):
+        if scalar == 0:
+            raise ValueError("Division by zero is not allowed.")
+        
+        if np.any(self.xpow % scalar != 0) or np.any(self.zpow % scalar != 0):
+            raise ValueError(f"Division results in non-integer values")
+        
+        new_xpow = self.xpow // scalar
+        new_zpow = self.zpow // scalar
+        
+        return PauliString(self.num_qudits, self.dimension, new_xpow, new_zpow, self.phase)
+    
     def __setitem__(self, index: int, new_pauli: str) -> None:
         if index < 0 or index >= self.num_qudits:
             raise IndexError("Index out of range.")
@@ -77,7 +131,7 @@ class PauliString:
             string (str): The string representation of the Pauli string.
         """
         if pauli_string[0] == "w":
-            if self.dimension % 2 == 0:
+            if self.even:
                 self.phase = (int(pauli_string[1]) * 2) % self.dimension
             else:
                 self.phase = int(pauli_string[1])

@@ -1,7 +1,7 @@
 from typing import Tuple, Optional
 from .circuit import CircuitInstruction, Circuit
 from .tableau import Tableau
-from .tableau_simulator import apply_H, apply_P, apply_CNOT, measure, MeasurementResult
+from .tableau_composite import apply_H, apply_P, apply_CNOT, measure, MeasurementResult
 from .compound_gates import apply_PauliX, apply_PauliZ
 
 GATE_FUNCTIONS = {
@@ -58,7 +58,8 @@ class Program:
         return updated_tableau, measurement_result
 
     def print_tableau(self):
-        self.stabilizer_tableau.print_tableau_num()
+        self.stabilizer_tableau.print_matrix()
+        self.stabilizer_tableau.print_phase_correction()
 
     def print_measurements(self):
         for result in self.measurement_results:
