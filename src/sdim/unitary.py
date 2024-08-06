@@ -2,6 +2,9 @@ import numpy as np
 import cirq
 from itertools import product
 
+def generate_tau(d):
+    return np.exp(1j * np.pi * (d**2 + 1) / d)
+
 def generate_identity_matrix(d):
     return np.eye(d)
 
@@ -19,19 +22,25 @@ def generate_z_matrix(d):
 
 def generate_h_matrix(d):
     H = np.zeros((d, d), dtype=np.complex128)
+    tau = generate_tau(d)
     for m in range(d):
         for n in range(d):
-            H[m, n] = 1 / np.sqrt(d) * np.exp(2 * np.pi * 1j * m * n / d)
+            H[m, n] = 1 / np.sqrt(d) * tau**(2 * m * n)
     return H
+
+def generate_m_matrix(d, a):
+    M = np.zeros((d, d), dtype=np.complex128)
+    if np.gcd(a, d) != 1:
+        raise ValueError("a and d must be coprime")
+    for q in range(d):
+        M[a*q % d, q] = 1
+    return M
 
 def generate_p_matrix(d):
     P = np.eye(d, dtype=np.complex128)
-    omega = np.exp(2j * np.pi / d)
+    tau = generate_tau(d)
     for j in range(d):
-        if d % 2 == 1:  # For odd d
-            P[j, j] = omega ** (j * (j - 1) / 2)
-        else:  # For even d
-            P[j, j] = omega ** (j ** 2 / 2)
+        P[j, j] = tau ** (j ** 2)
     return P
 
 def generate_cnot_matrix(d):
@@ -130,4 +139,3 @@ class IdentityGate(cirq.Gate):
 
     def _circuit_diagram_info_(self, args):
         return f"I_{self.d}"
-

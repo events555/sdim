@@ -1,1 +1,6 @@
 src/sdim.egg-info/
+**/.pytest_cache/
+.pytest_cache/
+**/__pycache__/
+*.vscode/
+*.trunk/

@@ -1,21 +1,16 @@
 Randomly-generated Clifford group quantum circuit
 # 
-d 3
-p 1
-h 2
-p 1
-c 2 1
+d 2
+p 2
+h 1
 h 0
 p 0
-h 2
+h 0
 p 0
 p 0
-c 2 1
 h 2
-p 1
-c 0 2
-h 1
-h 1
+c 2 0
+c 2 0
 m 0
 m 1
 m 2
