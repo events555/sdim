@@ -1,14 +1,26 @@
 import cProfile
 import pstats
 from pstats import SortKey
+from sdim.circuit import Circuit
 from sdim.program import Program
 from sdim.chp_parser import read_circuit
 from sdim.random_circuit import generate_chp_file, cirq_statevector_from_circuit
+from sdim.diophantine import solve
 import numpy as np
+
+def create_key(measurements, dimension):
+    # Sort measurements by qudit_index in descending order (MSB first)
+    sorted_measurements = sorted(measurements, key=lambda m: m.qudit_index)
+    
+    key = 0
+    for m in sorted_measurements:
+        key = key * dimension + m.measurement_value
+    
+    return key
 
 def generate_and_test_circuit(depth, seed):
     # Generate the chp file
-    generate_chp_file(20, 40, 40, 0, 3, depth, 2, 1, seed=seed)
+    # generate_chp_file(20, 40, 40, 0, 7, depth, 2, 1, seed=seed)
     
     # Read the circuit
     circuit = read_circuit("circuits/random_circuit.chp")
@@ -25,8 +37,8 @@ def generate_and_test_circuit(depth, seed):
 
     for _ in range(num_samples):
         program = Program(circuit)
-        measurements = program.simulate()
-        key = sum(m.measurement_value * (dimension**i) for i, m in enumerate(measurements))
+        measurements = program.simulate(show_measurement=True)
+        key = create_key(measurements, dimension)
         measurement_counts[key] += 1
 
     probabilities = measurement_counts / num_samples
@@ -41,9 +53,27 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities
 
 def main():
-    depth = 10
-    seed = 42
-    generate_and_test_circuit(depth, seed)
+
+    # circuit = read_circuit("circuits/random_circuit.chp")
+    # program = Program(circuit)
+    # program.simulate(show_measurement=True, verbose=False, show_gate=False)
+    # print(cirq_statevector_from_circuit(circuit))
+    depth = 25
+    seed = 123
+    tvd, cleaned_amp, probabilities = generate_and_test_circuit(depth, seed)
+    print(f"Total Variation Distance: {tvd}")
+    print(f"Amplitudes: {cleaned_amp}")
+    print(f"Probabilities: {probabilities}")
+    # circuit = Circuit(2, 2)
+    # circuit.add_gate("H", 0)
+    # circuit.add_gate("P", 0)
+    # circuit.add_gate("P", 0)
+    # circuit.add_gate("H", 0)
+    # circuit.add_gate("CNOT", 0, 1)
+    # circuit.add_gate("M", 0)
+    # circuit.add_gate("M", 1)
+    # program = Program(circuit)
+    # program.simulate(show_measurement=True, verbose=False, show_gate=False)
 
 if __name__ == "__main__":
     cProfile.run('main()', 'output.prof')

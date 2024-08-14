@@ -1,60 +1,60 @@
-Mon Aug  5 22:40:36 2024    output.prof
+Wed Aug 14 02:50:45 2024    output.prof
 
-         175643827 function calls (172942472 primitive calls) in 41.228 seconds
+         229891 function calls (226036 primitive calls) in 0.117 seconds
 
    Ordered by: internal time
-   List reduced from 759 to 20 due to restriction <20>
+   List reduced from 580 to 20 due to restriction <20>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-  4377502    3.025    0.000   15.984    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:673(_getitem_RepMatrix)
-1458932/190952    2.271    0.000   16.996    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/matrices.py:1149(_setitem)
-38129857/38129789    1.889    0.000    1.954    0.000 {built-in method builtins.isinstance}
-   410806    1.719    0.000    3.098    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/matrices/sdm.py:126(extract)
-  3966696    1.686    0.000    1.686    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/matrices/sdm.py:78(getitem)
-  1458932    1.551    0.000    4.616    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/matrices.py:1838(key2ij)
-  1530826    1.320    0.000    4.690    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:62(_unify_element_sympy)
-  6370922    1.240    0.000    1.453    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/common.py:3246(a2idx)
-  6787958    1.166    0.000    1.453    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/domains/domain.py:821(__eq__)
-  3452196    1.158    0.000    4.282    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/matrices/domainmatrix.py:173(getitem_sympy)
-  3853258    1.087    0.000    1.714    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/domains/integerring.py:53(to_sympy)
-  3643995    1.050    0.000    1.978    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/core/sympify.py:102(sympify)
-  4377502    0.968    0.000   16.952    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:232(__getitem__)
-1458932/190952    0.940    0.000   17.355    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:360(__setitem__)
-5317410/5314516    0.889    0.000    0.924    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/core/cache.py:67(wrapper)
-  5190842    0.804    0.000    1.933    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/domains/domain.py:825(__ne__)
-  1423702    0.798    0.000    1.575    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/matrices.py:1853(<listcomp>)
-   771208    0.736    0.000    1.573    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/polys/matrices/sdm.py:68(__init__)
-   410806    0.731    0.000    7.100    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/common.py:312(extract)
-  2246814    0.730    0.000    1.158    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/utilities/iterables.py:2898(iterable)
+     4600    0.016    0.000    0.024    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:275(_add_column_matrix)
+      300    0.010    0.000    0.039    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:284(column_reduction)
+        1    0.010    0.010    0.010    0.010 {method 'readlines' of '_io._IOBase' objects}
+     6400    0.010    0.000    0.010    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:107(_symplectic_product)
+     2000    0.006    0.000    0.007    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:391(hadamard)
+     3200    0.004    0.000    0.008    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:219(vstack)
+    21000    0.004    0.000    0.005    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:51(order)
+     2000    0.004    0.000    0.004    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:397(phase)
+     1000    0.003    0.000    0.004    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:402(cnot)
+     3200    0.003    0.000    0.003    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:81(atleast_2d)
+      300    0.003    0.000    0.012    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:160(_generate_auxiliary_column)
+      400    0.003    0.000    0.003    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:152(swap_generators)
+      404    0.003    0.000    0.010    0.000 {built-in method builtins.print}
+    26100    0.002    0.000    0.002    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:47(even)
+     1100    0.002    0.000    0.003    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:292(hstack)
+     5300    0.001    0.000    0.087    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
+      100    0.001    0.000    0.091    0.001 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
+      200    0.001    0.000    0.002    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:136(add_generators)
+      900    0.001    0.000    0.001    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:314(<listcomp>)
+    13200    0.001    0.000    0.001    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/multiarray.py:741(dot)
 
 
-Mon Aug  5 22:40:36 2024    output.prof
+Wed Aug 14 02:50:45 2024    output.prof
 
-         175643827 function calls (172942472 primitive calls) in 41.228 seconds
+         229891 function calls (226036 primitive calls) in 0.117 seconds
 
    Ordered by: cumulative time
-   List reduced from 759 to 20 due to restriction <20>
+   List reduced from 580 to 20 due to restriction <20>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.000    0.000   41.228   41.228 {built-in method builtins.exec}
-        1    0.000    0.000   41.228   41.228 <string>:1(<module>)
-        1    0.000    0.000   41.228   41.228 /home/stevenn/projects/sdim/src/main.py:43(main)
-        1    0.002    0.002   41.228   41.228 /home/stevenn/projects/sdim/src/main.py:9(generate_and_test_circuit)
-      100    0.001    0.000   41.220    0.412 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
-     1300    0.001    0.000   41.219    0.032 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
-      300    0.001    0.000   41.077    0.137 /home/stevenn/projects/sdim/src/sdim/tableau_gates.py:58(apply_measure)
-      300    0.007    0.000   41.075    0.137 /home/stevenn/projects/sdim/src/sdim/tableau.py:243(measure_z)
-      300    0.006    0.000   39.803    0.133 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/diophantine.py:66(solve)
-      300    0.154    0.001   35.834    0.119 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/diophantine.py:116(lllhermite)
-    18030    0.224    0.000   20.580    0.001 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/diophantine.py:216(swap_rows)
-1458932/190952    0.940    0.000   17.355    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:360(__setitem__)
-1458932/190952    2.271    0.000   16.996    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/matrices.py:1149(_setitem)
-  4377502    0.968    0.000   16.952    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:232(__getitem__)
-  4377502    3.025    0.000   15.984    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:673(_getitem_RepMatrix)
-   113154    0.621    0.000   15.959    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:587(copyin_matrix)
-   104194    0.430    0.000   14.188    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/diophantine.py:179(reduce_matrix)
-   410806    0.731    0.000    7.100    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/common.py:312(extract)
-   210188    0.196    0.000    4.778    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/diophantine.py:61(nonzero)
-  1530826    1.320    0.000    4.690    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/sympy/matrices/repmatrix.py:62(_unify_element_sympy)
+        1    0.000    0.000    0.117    0.117 {built-in method builtins.exec}
+        1    0.000    0.000    0.117    0.117 <string>:1(<module>)
+        1    0.000    0.000    0.117    0.117 /home/stevenn/projects/sdim/src/main.py:55(main)
+        1    0.000    0.000    0.116    0.116 /home/stevenn/projects/sdim/src/main.py:21(generate_and_test_circuit)
+      100    0.001    0.000    0.091    0.001 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
+     5300    0.001    0.000    0.087    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
+      300    0.000    0.000    0.070    0.000 /home/stevenn/projects/sdim/src/sdim/tableau_gates.py:58(apply_measure)
+      300    0.000    0.000    0.070    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:370(measure_z)
+      300    0.000    0.000    0.039    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:339(_find_valid_t)
+      300    0.010    0.000    0.039    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:284(column_reduction)
+     4600    0.016    0.000    0.024    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:275(_add_column_matrix)
+      300    0.001    0.000    0.015    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:231(_prepare_tableau_matrix)
+        1    0.000    0.000    0.014    0.014 /home/stevenn/projects/sdim/src/sdim/random_circuit.py:89(cirq_statevector_from_circuit)
+      300    0.003    0.000    0.012    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:160(_generate_auxiliary_column)
+     6400    0.010    0.000    0.010    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:107(_symplectic_product)
+        1    0.000    0.000    0.010    0.010 /home/stevenn/projects/sdim/src/sdim/chp_parser.py:4(read_circuit)
+      404    0.003    0.000    0.010    0.000 {built-in method builtins.print}
+        1    0.010    0.010    0.010    0.010 {method 'readlines' of '_io._IOBase' objects}
+      300    0.001    0.000    0.008    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:173(_get_single_eta)
+     3200    0.004    0.000    0.008    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:219(vstack)
 
 
