@@ -20,7 +20,7 @@ def create_key(measurements, dimension):
 
 def generate_and_test_circuit(depth, seed):
     # Generate the chp file
-    # generate_chp_file(20, 40, 40, 0, 7, depth, 2, 1, seed=seed)
+    generate_chp_file(20, 40, 40, 0, 3, depth, 4, 1)
     
     # Read the circuit
     circuit = read_circuit("circuits/random_circuit.chp")
@@ -29,23 +29,25 @@ def generate_and_test_circuit(depth, seed):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 100
+    num_samples = 5000
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n
     measurement_counts = np.zeros(num_states, dtype=int)
 
-    for _ in range(num_samples):
+    for i in range(num_samples):
         program = Program(circuit)
-        measurements = program.simulate(show_measurement=True)
+        measurements = program.simulate(show_measurement=True, verbose=False, show_gate=False)
+        print("Simulation #", i)
         key = create_key(measurements, dimension)
         measurement_counts[key] += 1
 
     probabilities = measurement_counts / num_samples
     
     # Clean the amplitudes
-    threshold = 1e-14
+    threshold = 1e-13
     cleaned_amp = np.where(np.abs(amplitudes) < threshold, 0, amplitudes)
+
 
     # Calculate the Total Variation Distance
     tvd = np.sum(np.abs(probabilities - cleaned_amp)) / 2
@@ -53,12 +55,12 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities
 
 def main():
-
+    # generate_chp_file(20, 40, 40, 0, 5, 20, 3, 1)
     # circuit = read_circuit("circuits/random_circuit.chp")
     # program = Program(circuit)
-    # program.simulate(show_measurement=True, verbose=False, show_gate=False)
+    # program.simulate(show_measurement=True, verbose=True, show_gate=True)
     # print(cirq_statevector_from_circuit(circuit))
-    depth = 25
+    depth = 10
     seed = 123
     tvd, cleaned_amp, probabilities = generate_and_test_circuit(depth, seed)
     print(f"Total Variation Distance: {tvd}")

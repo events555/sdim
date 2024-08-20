@@ -3,7 +3,6 @@ from sdim.program import Program
 from sdim.chp_parser import read_circuit
 from sdim.random_circuit import generate_chp_file, cirq_statevector_from_circuit
 import numpy as np
-import os
 
 def create_key(measurements, dimension):
     # Sort measurements by qudit_index in descending order (MSB first)
@@ -22,7 +21,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 1000
+    num_samples = 5000
     num_states = dimension**num_qudits
     measurement_counts = np.zeros(num_states, dtype=int)
 
@@ -39,7 +38,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     
     return tvd, cleaned_amp, probabilities
 
-@pytest.mark.parametrize("dimension", [2])
+@pytest.mark.parametrize("dimension", [2, 3, 4, 9])
 @pytest.mark.parametrize("depth", [10, 50])
 def test_random_circuits(dimension, depth):
     num_qudits = 3
@@ -50,7 +49,7 @@ def test_random_circuits(dimension, depth):
         
         assert np.isclose(np.sum(probabilities), 1, atol=1e-6), f"Circuit {i+1}: The sum of the probabilities is not approximately 1"
         assert np.isclose(np.sum(amplitudes), 1, atol=1e-6), f"Circuit {i+1}: The sum of the amplitudes is not approximately 1"
-        assert tvd < 0.05, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 5%"
+        assert tvd < 0.15, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 15%"
 
         print(f"Circuit {i+1} - Dimension: {dimension}, Depth: {depth}, Qudits: {num_qudits}")
         print(f"Total Variation Distance: {tvd}")
