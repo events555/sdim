@@ -1,7 +1,7 @@
 import numpy as np
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Optional
+from typing import Optional, Tuple
 from math import gcd
 from .diophantine import solve
 import diophantine as dp
@@ -157,17 +157,11 @@ class Tableau:
         self.x_block[:, [index1, index2]] = self.x_block[:, [index2, index1]]
         self.phase_vector[[index1, index2]] = self.phase_vector[[index2, index1]]
         
-    def _generate_auxiliary_column(self, weyl_vector: np.ndarray) -> np.ndarray:
-        if weyl_vector.size != 2*self.num_qudits:
-            raise ValueError("Pauli vector dimensions do not match expected number from Tableau.")
+    def _generate_auxiliary_matrix(self) -> np.ndarray:
+        aux_matrix = np.zeros((self.pauli_size, self.pauli_size-1), dtype=np.int64)
         
-        aux_matrix = np.zeros((self.pauli_size, self.pauli_size - 1), dtype=np.int64)
-        
-        for i in range(1, self.pauli_size):
-            uj = np.zeros(self.pauli_size, dtype=np.int64)
-            uj[i] = self.dimension
-            # uj[0] = self._symplectic_product(uj[1:], weyl_vector, self.num_qudits) // 2
-            aux_matrix[:, i-1] = uj
+        for i in range(self.pauli_size-1):
+            aux_matrix[i+1, i] = self.dimension
         
         return aux_matrix
     
@@ -228,18 +222,7 @@ class Tableau:
         weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
         weyl_vector[qudit_index] = 1
         return weyl_vector
-    
-    def _prepare_tableau_matrix(self, weyl_vector: np.ndarray, s: int) -> np.ndarray:
-        ones_column = self.order * np.ones((self.tableau.shape[0], 1), dtype=np.int64)
-        if self.even:
-            auxiliary_column = self._generate_auxiliary_column(s * weyl_vector)
-            #if self.prime:
-            return np.hstack((auxiliary_column, self.tableau)) # prime and even
-            # return np.hstack((auxiliary_column, self.tableau, ones_column)) # composite and even
-        #if self.prime:
-        return self.tableau # prime and odd
-        # return np.hstack((self.tableau, ones_column)) # composite and odd
-    
+   
     def _prepare_excluding_commuting_matrix(self, new_stabilizer: np.ndarray) -> np.ndarray:
         excluding_commuting = self.tableau[:, :-1]
         excluding_commuting = np.hstack((excluding_commuting, np.c_[new_stabilizer]))
@@ -280,70 +263,116 @@ class Tableau:
         matrix[0, dest_col] += phase_correction
         matrix[:, dest_col] %= self.order
 
+
+    def _extended_euclidean(self, a: int, b: int) -> Tuple[int, int, int]:
+        """
+        Compute the extended Euclidean algorithm for a and b.
+        Returns x, y, and gcd(a, b) such that a*x + b*y = gcd(a, b), with x > 0, y > 0, and one of x or y is coprime to self.order.
+        """
+        x, y, u, v = 1, 0, 0, 1
+        while b != 0:
+            q, r = a // b, a % b
+            m, n = x - u * q, y - v * q
+            a, b, x, y, u, v = b, r, u, v, m, n
+
+        # Ensure x and y are positive
+        if a < 0:
+            x, y = -x, -y
+
+        # Check if one of x or y is coprime to self.order
+        if x in self.coprime or y in self.coprime:
+            return x, y, a
+        else:
+            # Swap x and y to ensure one is coprime to self.order
+            return y, x, a
+
+    def _swap_columns_matrix(self, matrix: np.ndarray, col1: int, col2: int):
+        matrix[:, [col1, col2]] = matrix[:, [col2, col1]]
+
     def column_reduction(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, s: int) -> Optional[int]:
         pauli_vector = np.hstack((0, weyl_vector)).reshape(-1, 1) 
         full_tableau = np.hstack((tableau_matrix, -s*pauli_vector)) % self.order
         rows = full_tableau.shape[0] 
         cols = full_tableau.shape[1]
-        start = cols - self.num_qudits - 1
+        #start = cols - self.z_block.shape[1] - 1
+        start = 0
         pivot_row = 1
         # if even then go through and reduce any columns >= self.dimension by subtracting self.dimension and adding appropriate phase
         # add d/2 depending on how many terms needed to be reduced
         for col in range(start, cols):
-            # # Find pivot in the current column that is coprime with self.order
+            if pivot_row >= rows:
+                break
+            # Find pivot in the current column that is coprime with self.order
             coprime = False
+            gcd_col = False
             pivot_col = col
             for row in range(pivot_row, rows):
+                row_gcd = np.gcd.reduce(full_tableau[row, col:])
+                if np.all(full_tableau[row, col:] == 0):
+                        continue
                 for i in range(col, cols):
                     if full_tableau[row, i] in self.coprime:
                         pivot_row = row
                         coprime = True
                         if pivot_col != i:
-                            full_tableau[:, [col, i]] = full_tableau[:, [i, col]]
+                            self._swap_columns_matrix(full_tableau, col, i)
                         break
-                if coprime:
+                    if full_tableau[row, i] == row_gcd:
+                            pivot_row = row
+                            gcd_col = True
+                            if pivot_col != i:
+                                self._swap_columns_matrix(full_tableau, col, i)
+                            break
+                if not coprime and not gcd_col:
+                    for i in range(col, cols):
+                        for j in range(i + 1, cols):
+                            if np.gcd(full_tableau[row, i], full_tableau[row, j]) == row_gcd:
+                                # Solve Bezout's identity to get the column with row_gcd
+                                x, y, _ = self._extended_euclidean(full_tableau[row, i], full_tableau[row, j])
+                                x, y = x % self.order, y % self.order
+                                if x in self.coprime:
+                                    full_tableau[:, i] *= x
+                                    full_tableau[:, i] %= self.order
+                                    self._add_column_matrix(full_tableau, j, i, y)
+                                    
+                                elif y in self.coprime:
+                                    full_tableau[:, j] *= y
+                                    full_tableau[:, j] %= self.order
+                                    self._add_column_matrix(full_tableau, i, j, x)
+                                    self._swap_columns_matrix(full_tableau, i, j)
+                                else:
+                                    raise ValueError("Could not find suitable column to swap.")
+                                pivot_col = i
+                                pivot_row = row
+                                gcd_col = True
+                                break
+                        if coprime or gcd_col:
+                            break
+                if coprime or gcd_col:
                     break
-
             if coprime:
                 # Calculate the multiplicative inverse of the pivot element modulo self.order
                 pivot = int(full_tableau[pivot_row, pivot_col])
                 inv_pivot = pow(pivot, -1, self.order)
-
                 # Eliminate other columns using the pivot column
-                for i in range(start, cols):
+                for i in range(pivot_col, cols):
                     if i != pivot_col and full_tableau[pivot_row, i] != 0:
                         factor = (-int(full_tableau[pivot_row, i]) * inv_pivot) % self.order
                         self._add_column_matrix(full_tableau, pivot_col, i, factor)
+            if gcd_col:
+                # eliminate other columns using the gcd_col
+                pivot = int(full_tableau[pivot_row, pivot_col])
+                for i in range(pivot_col, cols):
+                    target = int(full_tableau[pivot_row, i])
+                    if i != pivot_col and target != 0:
+                        g = gcd(pivot, self.order)
+                        if full_tableau[pivot_row, i] % g == 0:
+                            factor = ((-target // g) * pow(pivot // g, -1, self.order // g)) % (self.order // g)
+                            self._add_column_matrix(full_tableau, pivot_col, i, factor)
             pivot_row += 1
-        if self.even:
-            for row in range(1, rows):
-                dimension_cols = [j for j in range(start, cols) if full_tableau[row, j] == self.dimension]
-                if dimension_cols:
-                    for j in dimension_cols:
-                        self._add_column_matrix(full_tableau, row-1, j, 1)
         solution = full_tableau[:, -1]
         return solution[0]
             
-    def _find_valid_t(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, s: int) -> Optional[int]:
-        # if self.prime:
-            if s == self.dimension:
-                return 0
-            else:
-                return self.column_reduction(tableau_matrix, weyl_vector, s)
-        # else:
-        #     for t in range(self.dimension):
-        #         solution = np.hstack((t, s * weyl_vector))
-        #         try:
-        #             if dp.solve(Matrix(tableau_matrix), Matrix(solution)):
-        #                 return t
-        #         except Exception as e:
-        #             try:
-        #                 if dp.solve(Matrix(tableau_matrix), Matrix(solution)):
-        #                     return t
-        #             except Exception as e:
-        #                 return t
-        #     return None
-
     def _create_measurement_result(self, t: int, eta: int, s: int, qudit_index: int, weyl_vector: np.ndarray) -> MeasurementResult:
         kappa = (t * eta) // self.dimension
         measurement_value = self._generate_measurement_outcome(kappa, eta, self.dimension)
@@ -358,14 +387,13 @@ class Tableau:
         weyl_vector = self._create_weyl_vector(qudit_index)
         eta = self._get_single_eta(qudit_index)
         s = self.dimension // eta
-        tableau_matrix = self._prepare_tableau_matrix(weyl_vector, s)
-
-        t = self._find_valid_t(tableau_matrix, weyl_vector, s)
+        if self.even:
+            tableau_matrix = np.hstack((self._generate_auxiliary_matrix(), self.tableau))
+        else:
+            tableau_matrix = self.tableau
+        t = 0 if s == self.dimension else self.column_reduction(tableau_matrix, weyl_vector, s)
+        return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
         
-        if t is not None:
-            return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
-        
-        return None
     
     def multiply(self, qudit_index: int, scalar: int):
         """Apply multiplication gate to qudit at index 

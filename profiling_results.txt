@@ -1,60 +1,60 @@
-Tue Aug 20 01:32:33 2024    output.prof
+Tue Aug 20 17:58:37 2024    output.prof
 
-         3703387 function calls (3702263 primitive calls) in 1.774 seconds
+         2281372 function calls (2277790 primitive calls) in 1.545 seconds
 
    Ordered by: internal time
-   List reduced from 564 to 20 due to restriction <20>
+   List reduced from 597 to 20 due to restriction <20>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-    25004    0.156    0.000    0.167    0.000 {built-in method builtins.print}
-    20000    0.124    0.000    0.124    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:152(swap_generators)
-   100000    0.123    0.000    0.240    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:219(vstack)
-     5000    0.080    0.000    0.229    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:283(column_reduction)
-   100000    0.077    0.000    0.100    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:81(atleast_2d)
-    15000    0.064    0.000    0.092    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:160(_generate_auxiliary_column)
-    20000    0.064    0.000    0.074    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:378(hadamard)
-    15000    0.058    0.000    0.092    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:274(_add_column_matrix)
-    15000    0.050    0.000    0.421    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:232(_prepare_tableau_matrix)
-    35000    0.049    0.000    0.093    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:292(hstack)
-    10000    0.045    0.000    0.053    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:144(multiply_generator)
-   255000    0.043    0.000    0.064    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:51(order)
-    20000    0.043    0.000    0.049    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:384(phase)
-    10000    0.033    0.000    0.038    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:389(cnot)
-    50000    0.032    0.000    0.337    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:68(tableau)
-    15000    0.030    0.000    0.342    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:174(_get_single_eta)
-   145033    0.027    0.000    0.027    0.000 {built-in method numpy.zeros}
-    15000    0.026    0.000    0.029    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:107(_symplectic_product)
-     5000    0.026    0.000    1.700    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
-    10000    0.026    0.000    0.123    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:214(_get_eta_as_divisor)
+    13016    0.180    0.000    0.180    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:235(swap_rows)
+    41000    0.155    0.000    0.240    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:257(_add_column_matrix)
+     3000    0.140    0.000    0.527    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:292(column_reduction)
+    34540    0.138    0.000    0.193    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:198(reduce_matrix)
+    41000    0.066    0.000    0.071    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:107(_symplectic_product)
+    20000    0.062    0.000    0.072    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:406(hadamard)
+     1000    0.044    0.000    0.444    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:117(lllhermite)
+   241000    0.041    0.000    0.061    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:51(order)
+     5007    0.039    0.000    0.048    0.000 {built-in method builtins.print}
+    43029    0.039    0.000    0.039    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    20000    0.036    0.000    0.041    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:412(phase)
+     5000    0.036    0.000    0.036    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:152(swap_generators)
+    10000    0.034    0.000    0.038    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:417(cnot)
+    11000    0.030    0.000    0.030    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:289(_swap_columns_matrix)
+    16000    0.027    0.000    0.050    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:292(hstack)
+    16000    0.024    0.000    0.046    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:219(vstack)
+   287000    0.023    0.000    0.023    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:47(even)
+     3000    0.019    0.000    0.025    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/lib/index_tricks.py:326(__getitem__)
+    23029    0.018    0.000    0.047    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/fromnumeric.py:71(_wrapreduction)
+    53000    0.017    0.000    1.459    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
 
 
-Tue Aug 20 01:32:33 2024    output.prof
+Tue Aug 20 17:58:37 2024    output.prof
 
-         3703387 function calls (3702263 primitive calls) in 1.774 seconds
+         2281372 function calls (2277790 primitive calls) in 1.545 seconds
 
    Ordered by: cumulative time
-   List reduced from 564 to 20 due to restriction <20>
+   List reduced from 597 to 20 due to restriction <20>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        1    0.000    0.000    1.779    1.779 {built-in method builtins.exec}
-        1    0.000    0.000    1.779    1.779 <string>:1(<module>)
-        1    0.000    0.000    1.779    1.779 /home/stevenn/projects/sdim/src/main.py:57(main)
-        1    0.012    0.012    1.778    1.778 /home/stevenn/projects/sdim/src/main.py:21(generate_and_test_circuit)
-     5000    0.026    0.000    1.700    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
-    65000    0.022    0.000    1.526    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
-    15000    0.004    0.000    1.332    0.000 /home/stevenn/projects/sdim/src/sdim/tableau_gates.py:58(apply_measure)
-    15000    0.018    0.000    1.327    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:357(measure_z)
-    15000    0.050    0.000    0.421    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:232(_prepare_tableau_matrix)
-    15000    0.030    0.000    0.342    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:174(_get_single_eta)
-    50000    0.032    0.000    0.337    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:68(tableau)
-    15000    0.022    0.000    0.304    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:347(_create_measurement_result)
-   100000    0.123    0.000    0.240    0.000 /home/stevenn/anaconda3/envs/QuantumComputing/lib/python3.11/site-packages/numpy/core/shape_base.py:219(vstack)
-    15000    0.004    0.000    0.234    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:327(_find_valid_t)
-     5000    0.080    0.000    0.229    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:283(column_reduction)
-    10000    0.024    0.000    0.216    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:251(_handle_non_deterministic_case)
-    50000    0.023    0.000    0.167    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:63(weyl_block)
-    25004    0.156    0.000    0.167    0.000 {built-in method builtins.print}
-    10000    0.019    0.000    0.143    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:185(_eliminate_columns)
-    20000    0.124    0.000    0.124    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:152(swap_generators)
+        1    0.000    0.000    1.546    1.546 {built-in method builtins.exec}
+        1    0.000    0.000    1.546    1.546 <string>:1(<module>)
+        1    0.000    0.000    1.546    1.546 /home/stevenn/projects/sdim/src/main.py:57(main)
+        1    0.003    0.003    1.546    1.546 /home/stevenn/projects/sdim/src/main.py:21(generate_and_test_circuit)
+     1000    0.014    0.000    1.511    0.002 /home/stevenn/projects/sdim/src/sdim/program.py:27(simulate)
+    53000    0.017    0.000    1.459    0.000 /home/stevenn/projects/sdim/src/sdim/program.py:50(apply_gate)
+     3000    0.001    0.000    1.280    0.000 /home/stevenn/projects/sdim/src/sdim/tableau_gates.py:58(apply_measure)
+     3000    0.008    0.000    1.279    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:386(measure_z)
+     3000    0.006    0.000    0.595    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:376(_create_measurement_result)
+     2000    0.008    0.000    0.571    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:234(_handle_non_deterministic_case)
+     3000    0.140    0.000    0.527    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:292(column_reduction)
+     1000    0.004    0.000    0.449    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:54(solve)
+     1000    0.044    0.000    0.444    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:117(lllhermite)
+    41000    0.155    0.000    0.240    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:257(_add_column_matrix)
+    34540    0.138    0.000    0.193    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:198(reduce_matrix)
+    13016    0.180    0.000    0.180    0.000 /home/stevenn/projects/sdim/src/sdim/diophantine.py:235(swap_rows)
+     3000    0.008    0.000    0.102    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:168(_get_single_eta)
+    20000    0.004    0.000    0.076    0.000 /home/stevenn/projects/sdim/src/sdim/tableau_gates.py:43(apply_H)
+     3000    0.008    0.000    0.072    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:179(_eliminate_columns)
+    20000    0.062    0.000    0.072    0.000 /home/stevenn/projects/sdim/src/sdim/tableau.py:406(hadamard)
 
 

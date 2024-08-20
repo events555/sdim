@@ -1,4 +1,5 @@
 src/sdim.egg-info/
+src/circuits/random_circuit_*.chp
 **/.pytest_cache/
 .pytest_cache/
 **/__pycache__/

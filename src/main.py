@@ -20,7 +20,7 @@ def create_key(measurements, dimension):
 
 def generate_and_test_circuit(depth, seed):
     # Generate the chp file
-    generate_chp_file(20, 40, 40, 0, 3, depth, 4, 1)
+    # generate_chp_file(20, 40, 40, 0, 3, depth, 4, 1)
     
     # Read the circuit
     circuit = read_circuit("circuits/random_circuit.chp")
@@ -29,7 +29,7 @@ def generate_and_test_circuit(depth, seed):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 5000
+    num_samples = 1000
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n
@@ -58,7 +58,7 @@ def main():
     # generate_chp_file(20, 40, 40, 0, 5, 20, 3, 1)
     # circuit = read_circuit("circuits/random_circuit.chp")
     # program = Program(circuit)
-    # program.simulate(show_measurement=True, verbose=True, show_gate=True)
+    # program.simulate(show_measurement=True, verbose=False, show_gate=False)
     # print(cirq_statevector_from_circuit(circuit))
     depth = 10
     seed = 123
@@ -66,16 +66,7 @@ def main():
     print(f"Total Variation Distance: {tvd}")
     print(f"Amplitudes: {cleaned_amp}")
     print(f"Probabilities: {probabilities}")
-    # circuit = Circuit(2, 2)
-    # circuit.add_gate("H", 0)
-    # circuit.add_gate("P", 0)
-    # circuit.add_gate("P", 0)
-    # circuit.add_gate("H", 0)
-    # circuit.add_gate("CNOT", 0, 1)
-    # circuit.add_gate("M", 0)
-    # circuit.add_gate("M", 1)
-    # program = Program(circuit)
-    # program.simulate(show_measurement=True, verbose=False, show_gate=False)
+
 
 if __name__ == "__main__":
     cProfile.run('main()', 'output.prof')

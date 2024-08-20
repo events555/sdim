@@ -2,7 +2,7 @@ import os
 import random
 import cirq
 import numpy as np
-from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate
+from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate, IdentityGate
 def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds = 0, output_file="random_circuit.chp", seed=None):
     # Check that the percentages sum to 100
     if c_percentage + h_percentage + p_percentage + m_percentage != 100:
@@ -56,6 +56,7 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
 
     # Create the generalized gates.
     gate_map = {
+        "I": IdentityGate(circuit.dimension),
         "H": GeneralizedHadamardGate(circuit.dimension),
         "P": GeneralizedPhaseShiftGate(circuit.dimension),
         "CNOT": GeneralizedCNOTGate(circuit.dimension),
@@ -78,24 +79,25 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
                 # Two-qudit gate.
                 cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
         elif op.name == "M":
+            print("Measurement on qudit", op.qudit_index)
             if measurement:
                 cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
             continue
         else:
             raise ValueError(f"Gate {op.name} not found")
-
+    for qudit in qudits:
+        if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
+            # Append identity to qudits with no gates
+            cirq_circuit.append(IdentityGate(circuit.dimension).on(qudit))
     return cirq_circuit
 
 def cirq_statevector_from_circuit(circuit):
     # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
-    state = np.zeros((circuit.dimension**circuit.num_qudits,), dtype=np.complex128)
-    state[0] = 1
-
     cirq_circuit = circuit_to_cirq_circuit(circuit)
-
+    print(cirq_circuit)
     # Simulate the Cirq circuit.
     simulator = cirq.Simulator()
-    result = simulator.simulate(cirq_circuit, initial_state=state)
-    print(cirq_circuit)
+    result = simulator.simulate(cirq_circuit)
+    
     # Return the final state vector.
     return result.final_state_vector
