@@ -156,15 +156,7 @@ class Tableau:
         self.z_block[:, [index1, index2]] = self.z_block[:, [index2, index1]]
         self.x_block[:, [index1, index2]] = self.x_block[:, [index2, index1]]
         self.phase_vector[[index1, index2]] = self.phase_vector[[index2, index1]]
-        
-    def _generate_auxiliary_matrix(self) -> np.ndarray:
-        aux_matrix = np.zeros((self.pauli_size, self.pauli_size-1), dtype=np.int64)
-        
-        for i in range(self.pauli_size-1):
-            aux_matrix[i+1, i] = self.dimension
-        
-        return aux_matrix
-    
+           
     def _get_single_eta(self, qudit_index: int):
         """Get the eta value assuming a Z measurement at specified index"""
         row = self.x_block[qudit_index, :]
@@ -217,12 +209,7 @@ class Tableau:
                             self.multiply_generator(i, alpha)
                             return value
         return None
-    
-    def _create_weyl_vector(self, qudit_index: int) -> np.ndarray:
-        weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
-        weyl_vector[qudit_index] = 1
-        return weyl_vector
-   
+      
     def _prepare_excluding_commuting_matrix(self, new_stabilizer: np.ndarray) -> np.ndarray:
         excluding_commuting = self.tableau[:, :-1]
         excluding_commuting = np.hstack((excluding_commuting, np.c_[new_stabilizer]))
@@ -263,7 +250,6 @@ class Tableau:
         matrix[0, dest_col] += phase_correction
         matrix[:, dest_col] %= self.order
 
-
     def _extended_euclidean(self, a: int, b: int) -> Tuple[int, int, int]:
         """
         Compute the extended Euclidean algorithm for a and b.
@@ -294,12 +280,8 @@ class Tableau:
         full_tableau = np.hstack((tableau_matrix, -s*pauli_vector)) % self.order
         rows = full_tableau.shape[0] 
         cols = full_tableau.shape[1]
-        #start = cols - self.z_block.shape[1] - 1
-        start = 0
         pivot_row = 1
-        # if even then go through and reduce any columns >= self.dimension by subtracting self.dimension and adding appropriate phase
-        # add d/2 depending on how many terms needed to be reduced
-        for col in range(start, cols):
+        for col in range(cols):
             if pivot_row >= rows:
                 break
             # Find pivot in the current column that is coprime with self.order
@@ -308,7 +290,10 @@ class Tableau:
             pivot_col = col
             for row in range(pivot_row, rows):
                 row_gcd = np.gcd.reduce(full_tableau[row, col:])
-                if np.all(full_tableau[row, col:] == 0):
+                if np.all(full_tableau[row, col+1:] == 0):
+                    if np.all(full_tableau[row+1:, col] == 0):
+                        break
+                    else:
                         continue
                 for i in range(col, cols):
                     if full_tableau[row, i] in self.coprime:
@@ -384,17 +369,20 @@ class Tableau:
         return self._handle_non_deterministic_case(new_stabilizer, s, qudit_index, measurement_value)
 
     def measure_z(self, qudit_index: int) -> Optional[MeasurementResult]:
-        weyl_vector = self._create_weyl_vector(qudit_index)
+        weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
+        weyl_vector[qudit_index] = 1
         eta = self._get_single_eta(qudit_index)
         s = self.dimension // eta
         if self.even:
-            tableau_matrix = np.hstack((self._generate_auxiliary_matrix(), self.tableau))
+            aux_matrix = np.zeros((self.pauli_size, self.pauli_size-1), dtype=np.int64)
+            for i in range(self.pauli_size-1):
+                aux_matrix[i+1, i] = self.dimension
+            tableau_matrix = np.hstack((aux_matrix, self.tableau))
         else:
             tableau_matrix = self.tableau
         t = 0 if s == self.dimension else self.column_reduction(tableau_matrix, weyl_vector, s)
         return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
         
-    
     def multiply(self, qudit_index: int, scalar: int):
         """Apply multiplication gate to qudit at index 
         given a value in the multiplicative group of units modulo d"""
@@ -409,9 +397,24 @@ class Tableau:
         self.z_block[qudit_index, :] %= self.order
         self.x_block[qudit_index, :] %= self.order
 
+    def hadamard_inv(self, qudit_index: int):
+        """Apply inverse generalized Hadamard gate to qudit at index."""
+        # Swap and negate the values
+        new_z_block = -self.x_block[qudit_index, :].copy()
+        new_x_block = self.z_block[qudit_index, :].copy()
+
+        # Apply the modulus operation
+        self.z_block[qudit_index, :] = new_z_block % self.order
+        self.x_block[qudit_index, :] = new_x_block % self.order
+
     def phase(self, qudit_index: int):
         """Apply phase gate to qudit at index."""
         self.z_block[qudit_index, :] += self.x_block[qudit_index, :]
+        self.z_block[qudit_index, :] %= self.order
+
+    def phase_inv(self, qudit_index: int):
+        """Apply inverse phase gate to qudit at index."""
+        self.z_block[qudit_index, :] -= self.x_block[qudit_index, :]
         self.z_block[qudit_index, :] %= self.order
 
     def cnot(self, control_index: int, target_index: int):
@@ -421,7 +424,36 @@ class Tableau:
         self.z_block[control_index, :] %= self.order
         self.x_block[target_index, :] %= self.order
 
-        
+    def cnot_inv(self, control_index: int, target_index: int):
+        """Apply inverse CNOT gate to control and target qudits."""
+        self.z_block[control_index, :] += self.z_block[target_index, :]
+        self.x_block[target_index, :] -= self.x_block[control_index, :]
+        self.z_block[control_index, :] %= self.order
+        self.x_block[target_index, :] %= self.order
 
+    def x(self, qudit_index: int):
+        """Apply Pauli X gate to qudit at index."""
+        factor = self.z_block[qudit_index, :]
+        self.phase_vector += factor
+        self.phase_vector %= self.dimension
+
+    def x_inv(self, qudit_index: int):
+        """Apply Pauli X inverse gate to qudit at index."""
+        factor = self.z_block[qudit_index, :]
+        self.phase_vector -= factor
+        self.phase_vector %= self.dimension
+    
+    def z(self, qudit_index: int):
+        """Apply Pauli Z gate to qudit at index."""
+        factor = self.x_block[qudit_index, :]
+        self.phase_vector -= factor
+        self.phase_vector %= self.dimension
+    
+    def z_inv(self, qudit_index: int):
+        """Apply Pauli Z inverse gate to qudit at index."""
+        factor = self.x_block[qudit_index, :]
+        self.phase_vector += factor
+        self.phase_vector %= self.dimension
+    
 
 

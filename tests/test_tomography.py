@@ -22,7 +22,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 5000
+    num_samples = 6000
     num_states = dimension**num_qudits
     measurement_counts = np.zeros(num_states, dtype=int)
 
@@ -39,11 +39,11 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     
     return tvd, cleaned_amp, probabilities
 
-@pytest.mark.parametrize("dimension", [4, 9])
-@pytest.mark.parametrize("depth", [50])
+@pytest.mark.parametrize("dimension", [2, 3, 5, 7])
+@pytest.mark.parametrize("depth", [10, 50])
 def test_random_circuits(dimension, depth):
     num_qudits = 3
-    num_circuits = 50
+    num_circuits = 100
 
     for i in range(num_circuits):
         tvd, amplitudes, probabilities = generate_and_test_circuit(depth, dimension, num_qudits)

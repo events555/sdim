@@ -42,20 +42,26 @@ class GateData:
     def add_gate_data_pauli(self, d):
         self.add_gate("I", 1)
         self.add_gate("X", 1)
+        self.add_gate("X_inv", 1)
         self.add_gate("Z", 1)
+        self.add_gate("Z_inv", 1)
 
     def add_gate_hada(self, d):
         self.add_gate("H", 1)
         self.add_gate_alias("H", ["R", "DFT"])
+        self.add_gate("H_inv", 1)
+        self.add_gate_alias("H_inv", ["R_inv", "DFT_inv", "H_dag", "R_dag", "DFT_dag"])
         self.add_gate("P", 1)
         self.add_gate_alias("P", ["PHASE", "S"])
+        self.add_gate("P_inv", 1)
+        self.add_gate_alias("P_inv", ["PHASE_inv", "S_inv"])
 
     def add_gate_controlled(self, d):
-        self.add_gate(
-            "CNOT",
-            2
-        )
+        self.add_gate("CNOT", 2)
         self.add_gate_alias("CNOT", ["SUM", "CX", "C"])
+        self.add_gate("CNOT_inv", 2)
+        self.add_gate_alias("CNOT_inv", ["SUM_inv", "CX_inv", "C_inv"])
+        self.add_gate("SWAP", 2)
 
     def add_gate_collapsing(self, d):
         self.add_gate(

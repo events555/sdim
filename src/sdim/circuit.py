@@ -42,3 +42,6 @@ class Circuit:
 
     def __str__(self):
         return "\n".join(str(op) for op in self.operations)
+    
+    def print_gateData(self):
+        print(self.gate_data)

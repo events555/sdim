@@ -20,7 +20,7 @@ def create_key(measurements, dimension):
 
 def generate_and_test_circuit(depth, seed):
     # Generate the chp file
-    # generate_chp_file(20, 40, 40, 0, 3, depth, 4, 1)
+    # generate_chp_file(20, 40, 40, 0, 3, depth, 11, 1)
     
     # Read the circuit
     circuit = read_circuit("circuits/random_circuit.chp")
@@ -29,7 +29,7 @@ def generate_and_test_circuit(depth, seed):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 1000
+    num_samples = 6000
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n

@@ -7,11 +7,17 @@ from .tableau_gates import *
 GATE_FUNCTIONS: dict[int, Callable] = {
     0: apply_I,      # I gate
     1: apply_X,      # X gate
-    2: apply_Z,      # Z gate
-    3: apply_H,      # H gate
-    4: apply_P,      # P gate
-    5: apply_CNOT,   # CNOT gate
-    6: apply_measure # Measure gate
+    2: apply_X_inv,   # X inverse gate
+    3: apply_Z,      # Z gate
+    4: apply_Z_inv,  # Z inverse gate
+    5: apply_H,      # H gate
+    6: apply_H_inv,  # H inverse gate
+    7: apply_P,      # P gate
+    8: apply_P_inv,  # P inverse gate
+    9: apply_CNOT,   # CNOT gate
+    10: apply_CNOT_inv,  # CNOT inverse gate
+    11: apply_SWAP,  # SWAP gate
+    12: apply_measure # Measure gate
 }
 
 

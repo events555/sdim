@@ -5,3 +5,5 @@ src/circuits/random_circuit_*.chp
 **/__pycache__/
 *.vscode/
 *.trunk/
+output.prof
+profiling_results.txt
