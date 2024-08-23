@@ -53,22 +53,13 @@ class Tableau:
         return self.dimension * 2 if self.even else self.dimension
     
     @property
-    def weyl_size(self) -> int:
-        return 2 * self.num_qudits
-    
-    @property
     def pauli_size(self) -> int:
         return 2 * self.num_qudits + 1
     
     @property
-    def weyl_block(self) -> np.ndarray:
-        """Return the Z and X blocks as a vertically stacked matrix, known as the Weyl block."""
-        return np.vstack((self.z_block, self.x_block))
-    
-    @property
     def tableau(self) -> np.ndarray:
         """Return the phase vector and the Weyl blocks as a vertically stacked matrix."""
-        return np.vstack((self.phase_vector, self.weyl_block))
+        return np.vstack((self.phase_vector, self.z_block, self.x_block))
 
     def _print_labeled_matrix(self, label, matrix):
         print(f"{label}:")
@@ -87,9 +78,6 @@ class Tableau:
         self.print_phase_vector()
         self.print_z_block()
         self.print_x_block()
-
-    def print_weyl_block(self):
-        self._print_labeled_matrix("Weyl Block", self.weyl_block)
 
     @staticmethod
     def _generate_measurement_outcome(kappa: int, eta: int, dimension: int) -> int:
@@ -284,18 +272,22 @@ class Tableau:
         for col in range(cols):
             if pivot_row >= rows:
                 break
-            # Find pivot in the current column that is coprime with self.order
             coprime = False
             gcd_col = False
             pivot_col = col
             for row in range(pivot_row, rows):
-                row_gcd = np.gcd.reduce(full_tableau[row, col:])
-                if np.all(full_tableau[row, col+1:] == 0):
-                    if np.all(full_tableau[row+1:, col] == 0):
+                if np.all(full_tableau[row, col:] == 0): # if everything to the right including pivot is zero, check next row
+                    continue
+                elif np.all(full_tableau[row, col+1:] == 0): # if everything to the right of the pivot is zero, go to next column if everything below is zero
+                    if row < rows - 1 and np.all(full_tableau[row+1:, col] == 0):
                         break
-                    else:
-                        continue
-                for i in range(col, cols):
+                    continue
+                if full_tableau[row, -1] != 0: # if the last column is non-zero, check if the element above is non zero and that everything between pivot and last column is non zero 
+                    if self.num_qudits > 1 and row > 1:
+                        if np.any(full_tableau[row, col+1:-1]) and full_tableau[row-1, col] != 0:
+                            break
+                row_gcd = np.gcd.reduce(full_tableau[row, col:])
+                for i in range(col, cols-1):
                     if full_tableau[row, i] in self.coprime:
                         pivot_row = row
                         coprime = True
@@ -303,11 +295,11 @@ class Tableau:
                             self._swap_columns_matrix(full_tableau, col, i)
                         break
                     if full_tableau[row, i] == row_gcd:
-                            pivot_row = row
-                            gcd_col = True
-                            if pivot_col != i:
-                                self._swap_columns_matrix(full_tableau, col, i)
-                            break
+                        pivot_row = row
+                        gcd_col = True
+                        if pivot_col != i:
+                            self._swap_columns_matrix(full_tableau, col, i)
+                        break
                 if not coprime and not gcd_col:
                     for i in range(col, cols):
                         for j in range(i + 1, cols):
@@ -327,7 +319,8 @@ class Tableau:
                                     self._swap_columns_matrix(full_tableau, i, j)
                                 else:
                                     raise ValueError("Could not find suitable column to swap.")
-                                pivot_col = i
+                                if pivot_col != i:
+                                    self._swap_columns_matrix(full_tableau, col, i)
                                 pivot_row = row
                                 gcd_col = True
                                 break
@@ -355,8 +348,11 @@ class Tableau:
                             factor = ((-target // g) * pow(pivot // g, -1, self.order // g)) % (self.order // g)
                             self._add_column_matrix(full_tableau, pivot_col, i, factor)
             pivot_row += 1
-        solution = full_tableau[:, -1]
-        return solution[0]
+        if self.even:
+            solution = np.sum(full_tableau[0, 2*self.num_qudits:])
+        else:
+            solution = full_tableau[0, -1]
+        return solution % self.dimension
             
     def _create_measurement_result(self, t: int, eta: int, s: int, qudit_index: int, weyl_vector: np.ndarray) -> MeasurementResult:
         kappa = (t * eta) // self.dimension
@@ -368,11 +364,36 @@ class Tableau:
         new_stabilizer = np.hstack((measurement_value, weyl_vector))
         return self._handle_non_deterministic_case(new_stabilizer, s, qudit_index, measurement_value)
 
-    def measure_z(self, qudit_index: int) -> Optional[MeasurementResult]:
+    def t_diophantine(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, qudit_index: int, s: int) -> Optional[int]:
+        # modulo_constraint = np.ones((self.pauli_size, 1), dtype=np.int64) * self.order
+        # tableau_matrix = np.hstack((tableau_matrix, modulo_constraint))
+        if self.even:
+            tableau_matrix[0, qudit_index+self.num_qudits] = (-self.dimension * s // 2) % self.order
+            identity = np.zeros((self.pauli_size, 1), dtype=np.int64)
+            identity[0] = self.dimension
+            tableau_matrix = np.hstack((identity, tableau_matrix))
+        for t in range(self.dimension):
+            solution = np.hstack((s*t, s*weyl_vector)) % self.order
+            try:
+                if solve(tableau_matrix, solution):
+                    return t
+            except Exception:
+                sympy_tableau = Matrix(tableau_matrix)
+                sympy_solution = Matrix(solution)
+                try:
+                    if dp.solve(sympy_tableau, sympy_solution):
+                        return t
+                except NotImplementedError:
+                    return t
+
+    def measure_z(self, qudit_index: int, exact: bool = False) -> Optional[MeasurementResult]:
         weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
         weyl_vector[qudit_index] = 1
         eta = self._get_single_eta(qudit_index)
         s = self.dimension // eta
+        if s == self.dimension:
+            return self._create_measurement_result(0, eta, s, qudit_index, weyl_vector)
+
         if self.even:
             aux_matrix = np.zeros((self.pauli_size, self.pauli_size-1), dtype=np.int64)
             for i in range(self.pauli_size-1):
@@ -380,8 +401,13 @@ class Tableau:
             tableau_matrix = np.hstack((aux_matrix, self.tableau))
         else:
             tableau_matrix = self.tableau
-        t = 0 if s == self.dimension else self.column_reduction(tableau_matrix, weyl_vector, s)
-        return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
+
+        if not exact:
+            t = self.column_reduction(tableau_matrix, weyl_vector, s)
+            return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
+        else:
+            t = self.t_diophantine(tableau_matrix, weyl_vector, qudit_index, s)
+            return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
         
     def multiply(self, qudit_index: int, scalar: int):
         """Apply multiplication gate to qudit at index 

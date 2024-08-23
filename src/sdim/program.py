@@ -30,14 +30,14 @@ class Program:
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self, show_measurement: bool=False, verbose: bool=False, show_gate: bool=False) -> list[MeasurementResult]:
+    def simulate(self, show_measurement: bool=False, verbose: bool=False, show_gate: bool=False, exact: bool=False) -> list[MeasurementResult]:
         length = len(self.circuit.operations)
         for time, gate in enumerate(self.circuit.operations):
             if time == 0 and verbose:
                 print("Initial state")
                 self.stabilizer_tableau.print_tableau()
                 print("\n")
-            measurement_result = self.apply_gate(gate)
+            measurement_result = self.apply_gate(gate, exact)
             if measurement_result is not None:
                 self.measurement_results.append(measurement_result)
             if show_gate:
@@ -53,7 +53,7 @@ class Program:
             self.print_measurements()
         return self.measurement_results
 
-    def apply_gate(self, instruc: CircuitInstruction) -> Tuple[Tableau, Optional[MeasurementResult]]:
+    def apply_gate(self, instruc: CircuitInstruction, exact: bool) -> Tuple[Tableau, Optional[MeasurementResult]]:
         """
         Apply a gate to the stabilizer tableau
         Args:
@@ -64,7 +64,7 @@ class Program:
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
-        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
+        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, exact)
         return measurement_result
 
 

@@ -3,7 +3,12 @@ import random
 import cirq
 import numpy as np
 from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate, IdentityGate
-def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds = 0, output_file="random_circuit.chp", seed=None):
+from .chp_parser import write_circuit
+
+import random
+from sdim.circuit import Circuit, GateData
+
+def generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, seed=None):
     # Check that the percentages sum to 100
     if c_percentage + h_percentage + p_percentage + m_percentage != 100:
         raise ValueError("The percentages do not sum to 100")
@@ -22,33 +27,28 @@ def generate_chp_file(c_percentage, h_percentage, p_percentage, m_percentage, nu
     gates = ['c'] * num_c + ['h'] * num_h + ['p'] * num_p + ['m'] * num_m
     random.shuffle(gates)
 
-    # Generate the .chp file content
-    chp_content = "Randomly-generated Clifford group quantum circuit\n"
-    chp_content += f"# \nd {dimension}\n"
-    for gate in gates:
-        qudits = random.sample(range(num_qudits), 1 if gate != 'c' else 2)
-        # if gate == 'c':
-        #     start_qudit = random.randint(0, num_qudits - 2)  # -2 to ensure we have room for a consecutive qudit
-        #     qudits = [start_qudit, start_qudit + 1]
-        # else:
-        #     qudits = random.sample(range(num_qudits), 1)
-        chp_content += f"{gate} {' '.join(map(str, qudits))}\n"
+    # Create the Circuit object
+    circuit = Circuit(num_qudits, dimension)
 
-    # Append measurements across every qubit based on the number of measurement rounds
+    # Generate the circuit
+    for gate in gates:
+        if gate == 'c':
+            qudits = random.sample(range(num_qudits), 2)
+            circuit.add_gate(gate, qudits[0], qudits[1])
+        else:
+            qudit = random.randint(0, num_qudits - 1)
+            circuit.add_gate(gate, qudit)
+
+    # Add measurements
     for _ in range(measurement_rounds):
         for qubit in range(num_qudits):
-            chp_content += f"m {qubit}\n"
+            circuit.add_gate('m', qubit)
 
-    # Define the directory where the file will be saved
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    directory = os.path.join(script_dir, '../circuits/')
+    return circuit
 
-    # Join the directory with the output file name
-    output_path = os.path.join(directory, output_file)
-
-    # Write the content to the .chp file
-    with open(output_path, "w") as file:
-        file.write(chp_content)
+def generate_and_write_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, output_file="random_circuit.chp", seed=None):
+    circuit = generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds, seed)
+    write_circuit(circuit, output_file)
 
 def circuit_to_cirq_circuit(circuit, measurement=False):
     # Create a list of qudits.
@@ -79,7 +79,6 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
                 # Two-qudit gate.
                 cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
         elif op.name == "M":
-            print("Measurement on qudit", op.qudit_index)
             if measurement:
                 cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
             continue
@@ -94,7 +93,7 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
 def cirq_statevector_from_circuit(circuit):
     # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
     cirq_circuit = circuit_to_cirq_circuit(circuit)
-    print(cirq_circuit)
+    # print(cirq_circuit)
     # Simulate the Cirq circuit.
     simulator = cirq.Simulator()
     result = simulator.simulate(cirq_circuit)

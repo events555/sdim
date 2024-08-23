@@ -108,7 +108,7 @@ def solve(A, b):
                 print(basis)
             solutions = get_solutions(basis)
         else:
-            raise NotImplementedError("Ax=B has unique solution in integers")
+            return True
     else:
         return []
     return solutions

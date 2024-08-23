@@ -54,3 +54,36 @@ def read_circuit(filename):
             raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
 
     return circuit
+
+def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", comment: str = ""):
+    chp_content = ""
+    if comment:
+        chp_content += f"{comment}\n#\n"
+    else:
+        chp_content += "Randomly-generated Clifford group quantum circuit\n#\n"
+    chp_content += f"d {circuit.dimension}\n"
+
+    for gate in circuit.operations:
+        gate_str = gate.gate_name
+        if gate.target_index is not None:
+            gate_str += f" {gate.qudit_index} {gate.target_index}"
+        else:
+            gate_str += f" {gate.qudit_index}"
+        chp_content += f"{gate_str}\n"
+
+
+    # Define the directory where the file will be saved
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    directory = os.path.join(script_dir, '../circuits/')
+
+    # Create the directory if it doesn't exist
+    os.makedirs(directory, exist_ok=True)
+
+    # Join the directory with the output file name
+    output_path = os.path.join(directory, output_file)
+
+    # Write the content to the .chp file
+    with open(output_path, "w") as file:
+        file.write(chp_content)
+
+    return output_path

@@ -37,7 +37,7 @@ class Circuit:
         self.gate_data = self.gate_data or GateData(self.dimension)
     
     def add_gate(self, gate_name:str, qudit_index:int, target_index:int=None):
-        instruction = CircuitInstruction(self.gate_data, gate_name, qudit_index, target_index)
+        instruction = CircuitInstruction(self.gate_data, gate_name.upper(), qudit_index, target_index)
         self.operations.append(instruction)
 
     def __str__(self):
@@ -45,3 +45,22 @@ class Circuit:
     
     def print_gateData(self):
         print(self.gate_data)
+    
+    @classmethod
+    def from_operation_list(cls, operation_list, num_qudits, dimension):
+        circuit = cls(num_qudits, dimension)
+        for op in operation_list:
+            if isinstance(op, tuple):  # If the operation is a tuple (gate, qudits)
+                gate_name = op[0]
+                qudits = op[1]
+                if len(qudits) == 1:
+                    circuit.add_gate(gate_name, qudits[0])
+                elif len(qudits) == 2:
+                    circuit.add_gate(gate_name, qudits[0], qudits[1])
+                else:
+                    raise ValueError(f"Unsupported number of qudits for gate {gate_name}")
+            elif isinstance(op, CircuitInstruction):  # If the operation is a CircuitInstruction
+                circuit.add_gate(op.gate_name, op.qudit_index, op.target_index)
+            else:
+                raise ValueError(f"Unsupported operation type: {type(op)}")
+        return circuit

@@ -1,16 +1,36 @@
-Randomly-generated Clifford group quantum circuit
-# 
-d 3
-h 1
-p 0
-c 1 2
-h 1
-p 1
-h 2
-c 2 0
-p 2
-p 2
-h 2
-m 0
-m 1
-m 2
+Failed circuit - Dimension: 6, Depth: 30, Circuit: 9
+#
+d 6
+H 0
+P 1
+H 1
+P 0
+H 0
+H 0
+H 2
+P 2
+P 1
+P 0
+P 2
+P 0
+H 0
+P 1
+H 0
+C 0 2
+P 0
+P 2
+H 1
+P 2
+H 2
+H 0
+C 0 1
+C 0 2
+C 1 2
+C 1 2
+H 0
+H 1
+P 0
+C 2 0
+M 0
+M 1
+M 2
