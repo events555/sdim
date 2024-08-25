@@ -2,7 +2,7 @@ import pytest
 import cirq as cirq
 from sdim.circuit import Circuit
 from sdim.program import Program
-from sdim.tableau import MeasurementResult
+from sdim.tableau_composite import MeasurementResult
 from sdim.random_circuit import cirq_statevector_from_circuit
 
 def test_phase_kickback():

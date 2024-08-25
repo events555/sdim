@@ -1,8 +1,9 @@
 from typing import Tuple, Optional, Callable
 from .circuit import CircuitInstruction, Circuit
-from .tableau import Tableau
-from .tableau_gates import *
-
+from .tableau.tableau_composite import WeylTableau
+from .tableau.tableau_prime import ExtendedTableau
+from .tableau.tableau_gates import *
+from sympy import isprime
 # Gate function dictionary
 GATE_FUNCTIONS: dict[int, Callable] = {
     0: apply_I,      # I gate
@@ -22,15 +23,49 @@ GATE_FUNCTIONS: dict[int, Callable] = {
 
 
 class Program:
+    """
+    Represents a quantum program with a circuit and stabilizer tableau.
+
+    This class handles the initialization and simulation of a quantum program,
+    including applying gates and managing measurement results.
+
+    Attributes:
+        stabilizer_tableau: The current state of the quantum system.
+        circuit: A Circuit object representing the quantum circuit.
+        measurement_results: A list of MeasurementResult objects.
+
+    Args:
+        circuit (Circuit): A Circuit object representing the quantum circuit.
+        tableau (Optional[Tableau]): An optional stabilizer tableau. If not provided,
+            the default is the all zero computational basis.
+    """
     def __init__(self, circuit: Circuit, tableau=None):
         if tableau is None:
-            self.stabilizer_tableau = Tableau(circuit.num_qudits, circuit.dimension)
+            if isprime(circuit.dimension):
+                self.stabilizer_tableau = ExtendedTableau(circuit.num_qudits, circuit.dimension)
+            else:
+                self.stabilizer_tableau = WeylTableau(circuit.num_qudits, circuit.dimension)
         else:
             self.stabilizer_tableau = tableau
         self.circuit = circuit
         self.measurement_results = []
 
-    def simulate(self, show_measurement: bool=False, verbose: bool=False, show_gate: bool=False, exact: bool=False) -> list[MeasurementResult]:
+    def simulate(self, show_measurement: bool = False, verbose: bool = False,
+                 show_gate: bool = False, exact: bool = False) -> list[MeasurementResult]:
+        """
+        Runs the circuit and applies the gates to the stabilizer tableau.
+
+        Args:
+            show_measurement (bool): Whether to print the measurement results.
+            verbose (bool): Whether to print the stabilizer tableau at each time step.
+            show_gate (bool): Whether to print the gate name at each time step.
+            exact (bool): Whether to use the Diophantine solver instead of column reduction.
+                Much slower but fails less often.
+
+        Returns:
+            list[MeasurementResult]: A list of MeasurementResult objects representing
+            the measurement results. Returns an empty list if no measurements are present.
+        """
         length = len(self.circuit.operations)
         for time, gate in enumerate(self.circuit.operations):
             if time == 0 and verbose:
@@ -53,13 +88,19 @@ class Program:
             self.print_measurements()
         return self.measurement_results
 
-    def apply_gate(self, instruc: CircuitInstruction, exact: bool) -> Tuple[Tableau, Optional[MeasurementResult]]:
+    def apply_gate(self, instruc: CircuitInstruction, exact: bool) -> MeasurementResult:
         """
-        Apply a gate to the stabilizer tableau
+        Applies a gate to the stabilizer tableau.
+
         Args:
-            instruc: A CircuitInstruction object from a Circuit's operation list
+            instruc (CircuitInstruction): A CircuitInstruction object from a Circuit's operation list.
+            exact (bool): Whether to use exact computation methods.
+
         Returns:
-            The updated stabilizer tableau and a MeasurementResult
+            MeasurementResult: A MeasurementResult object if the gate is a measurement gate, otherwise None.
+
+        Raises:
+            ValueError: If an invalid gate value is provided.
         """
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
@@ -69,5 +110,10 @@ class Program:
 
 
     def print_measurements(self):
+        """
+        Prints the measurement results.
+
+        This method iterates through the stored measurement results and prints each one.
+        """
         for result in self.measurement_results:
             print(result)

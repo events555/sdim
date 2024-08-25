@@ -3,21 +3,10 @@ import math
 import copy
 from dataclasses import dataclass
 from typing import Tuple, Optional, List
-from .tableau import Tableau
+from .tableau_composite import WeylTableau
+from .tableau_prime import ExtendedTableau
+from .dataclasses import MeasurementResult, Tableau
 import numpy as np
-
-@dataclass
-class MeasurementResult:
-    qudit_index: int
-    deterministic: bool
-    measurement_value: int
-
-    def __str__(self):
-        measurement_type_str = "deterministic" if self.deterministic else "random"
-        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}"
-
-    def __repr__(self):
-        return str(self)
     
 # Gate application functions
 def apply_I(tableau: Tableau, qudit_index: int, _, exact: bool = False) -> None:
@@ -76,7 +65,10 @@ def apply_CNOT_inv(tableau: Tableau, control: int, target: int, exact: bool = Fa
 
 def apply_measure(tableau: Tableau, qudit_index: int, _, exact: bool = False) -> Optional[MeasurementResult]:
     """Apply measurement"""
-    return tableau.measure_z(qudit_index, exact)
+    if isinstance(tableau, WeylTableau):
+        return tableau.measure_z(qudit_index, exact)
+    else:
+        return tableau.measure(qudit_index)
 
 def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int, exact: bool = False) -> None:
     """Apply SWAP gate

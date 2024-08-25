@@ -1,14 +1,38 @@
 import os
 import random
-import cirq
 import numpy as np
-from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate, IdentityGate
-from .chp_parser import write_circuit
+from .circuit_io import write_circuit
 
 import random
 from sdim.circuit import Circuit, GateData
 
 def generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, seed=None):
+    """
+    Generates a random quantum circuit with specified gate type percentages.
+
+    This function creates a circuit with a given distribution of gate types. 
+    By default, it generates no measurement gates unless specified.
+
+    Args:
+        c_percentage: Percentage of CNOT gates.
+        h_percentage: Percentage of Hadamard gates.
+        p_percentage: Percentage of Phase gates.
+        m_percentage: Percentage of Measurement gates.
+        num_qudits: Number of qudits in the circuit.
+        num_gates: Total number of gates in the circuit.
+        dimension: Dimension of the qudits.
+        measurement_rounds: Number of measurement rounds. Defaults to 0.
+        seed: Random seed for reproducibility. Defaults to None.
+
+    Returns:
+        Circuit: A randomly generated Circuit object.
+
+    Raises:
+        ValueError: If the sum of all percentages is not equal to 100.
+
+    Note:
+        The percentages should sum to 100 (not 1).
+    """
     # Check that the percentages sum to 100
     if c_percentage + h_percentage + p_percentage + m_percentage != 100:
         raise ValueError("The percentages do not sum to 100")
@@ -47,56 +71,31 @@ def generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percenta
     return circuit
 
 def generate_and_write_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, output_file="random_circuit.chp", seed=None):
+    """
+    Generates a random quantum circuit and writes it to a file.
+
+    This function creates a random circuit with specified gate type percentages
+    and writes the resulting circuit to a file.
+
+    Args:
+        c_percentage: Percentage of CNOT gates.
+        h_percentage: Percentage of Hadamard gates.
+        p_percentage: Percentage of Phase gates.
+        m_percentage: Percentage of Measurement gates.
+        num_qudits: Number of qudits in the circuit.
+        num_gates: Total number of gates in the circuit.
+        dimension: Dimension of the qudits.
+        measurement_rounds: Number of measurement rounds. Defaults to 0.
+        output_file: Name of the output file. Defaults to "random_circuit.chp".
+        seed: Random seed for reproducibility. Defaults to None.
+
+    Returns:
+        Circuit: The randomly generated Circuit object.
+
+    Note:
+        The percentages should sum to 100 (not 1).
+        The circuit is written to the specified output file.
+    """
     circuit = generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds, seed)
     write_circuit(circuit, output_file)
 
-def circuit_to_cirq_circuit(circuit, measurement=False):
-    # Create a list of qudits.
-    qudits = [cirq.LineQid(i, dimension=circuit.dimension) for i in range(circuit.num_qudits)]
-
-    # Create the generalized gates.
-    gate_map = {
-        "I": IdentityGate(circuit.dimension),
-        "H": GeneralizedHadamardGate(circuit.dimension),
-        "P": GeneralizedPhaseShiftGate(circuit.dimension),
-        "CNOT": GeneralizedCNOTGate(circuit.dimension),
-        "X": GeneralizedXPauliGate(circuit.dimension),
-    }
-
-    # Create a Cirq circuit.
-    cirq_circuit = cirq.Circuit()
-
-    # Apply each gate in the circuit.
-    for op in circuit.operations:
-        # Choose the appropriate gate.
-        if op.name in gate_map:
-            gate = gate_map[op.name]
-            # Add the gate to the Cirq circuit.
-            if op.target_index is None:
-                # Single-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index]))
-            else:
-                # Two-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
-        elif op.name == "M":
-            if measurement:
-                cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
-            continue
-        else:
-            raise ValueError(f"Gate {op.name} not found")
-    for qudit in qudits:
-        if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
-            # Append identity to qudits with no gates
-            cirq_circuit.append(IdentityGate(circuit.dimension).on(qudit))
-    return cirq_circuit
-
-def cirq_statevector_from_circuit(circuit):
-    # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
-    cirq_circuit = circuit_to_cirq_circuit(circuit)
-    # print(cirq_circuit)
-    # Simulate the Cirq circuit.
-    simulator = cirq.Simulator()
-    result = simulator.simulate(cirq_circuit)
-    
-    # Return the final state vector.
-    return result.final_state_vector

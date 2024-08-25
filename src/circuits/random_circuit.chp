@@ -1,36 +1,37 @@
-Failed circuit - Dimension: 6, Depth: 30, Circuit: 9
+Failed circuit - Dimension: 2, Depth: 30, Circuit: 1
 #
-d 6
-H 0
-P 1
-H 1
-P 0
-H 0
-H 0
-H 2
-P 2
-P 1
-P 0
-P 2
-P 0
-H 0
-P 1
-H 0
-C 0 2
-P 0
+d 2
 P 2
 H 1
 P 2
-H 2
-H 0
+H 3
+P 3
+H 1
 C 0 1
-C 0 2
-C 1 2
-C 1 2
-H 0
-H 1
 P 0
+C 3 2
+H 2
+P 2
+H 3
+P 0
+P 1
+H 3
+H 0
+H 0
+P 0
+H 3
 C 2 0
+P 0
+P 3
+C 3 0
+C 0 1
+H 1
+C 1 3
+P 2
+H 1
+H 3
+P 1
 M 0
 M 1
 M 2
+M 3

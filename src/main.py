@@ -3,8 +3,8 @@ import pstats
 from pstats import SortKey
 from sdim.circuit import Circuit
 from sdim.program import Program
-from sdim.chp_parser import read_circuit
-from sdim.random_circuit import generate_random_circuit, cirq_statevector_from_circuit
+from sdim.circuit_io import read_circuit, write_circuit, cirq_statevector_from_circuit
+from sdim.random_circuit import generate_random_circuit
 from sdim.diophantine import solve
 import numpy as np
 
@@ -19,14 +19,14 @@ def create_key(measurements, dimension):
     return key
 
 def generate_and_test_circuit(depth, seed):
-    # circuit = generate_random_circuit(20, 40, 40, 0, 3, depth, 9, 1)
-    circuit = read_circuit("circuits/random_circuit.chp")
+    circuit = generate_random_circuit(20, 40, 40, 0, 3, depth, 15, 1)
+    # circuit = read_circuit("circuits/random_circuit.chp")
     
     # Run the simulation
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 2000
+    num_samples = 50000
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n
@@ -34,7 +34,7 @@ def generate_and_test_circuit(depth, seed):
 
     for i in range(num_samples):
         program = Program(circuit)
-        measurements = program.simulate(show_measurement=False, verbose=False, show_gate=False, exact=False)
+        measurements = program.simulate(show_measurement=True, verbose=False, show_gate=False, exact=False)
         # print("Simulation #", i)
         key = create_key(measurements, dimension)
         measurement_counts[key] += 1
@@ -49,25 +49,14 @@ def generate_and_test_circuit(depth, seed):
     # Calculate the Total Variation Distance
     tvd = np.sum(np.abs(probabilities - cleaned_amp)) / 2
     
-    return tvd, cleaned_amp, probabilities
+    return tvd, cleaned_amp, probabilities, circuit
 
 def main():
-    # circuit = Circuit(2, 4)
-    # circuit.add_gate("X", 0)
-    # circuit.add_gate("X", 1)
-    # circuit.add_gate("CNOT", 0, 1)
-    # circuit.add_gate("M", 0)
-    # circuit.add_gate("M", 1)
-    # program = Program(circuit)
-    # program.simulate(show_measurement=True, exact=True)
-    # generate_chp_file(20, 40, 40, 0, 5, 20, 3, 1)
-    # circuit = read_circuit("circuits/random_circuit.chp")
-    # program = Program(circuit)
     num_circuits = 1
     depth = 18
     seed = 123
     for i in range(num_circuits):
-        tvd, cleaned_amp, probabilities = generate_and_test_circuit(depth, seed)
+        tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
         print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
         print(f"Amplitudes: {cleaned_amp}")
         print(f"Probabilities: {probabilities}")

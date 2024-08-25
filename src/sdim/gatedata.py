@@ -1,9 +1,17 @@
 from dataclasses import dataclass
 import numpy as np
-from .tableau import Tableau
+from .tableau.dataclasses import Tableau
 
 @dataclass
 class Gate:
+    """
+    Represents a quantum gate.
+
+    Attributes:
+        name (str): The name of the gate.
+        arg_count (int): The number of arguments (qubits) the gate operates on.
+        gate_id (int): A unique identifier for the gate.
+    """
     name: str
     arg_count: int
     gate_id: int
@@ -12,6 +20,18 @@ class Gate:
 
 @dataclass
 class GateData:
+    """
+    Manages a collection of quantum gates and their aliases.
+
+    This class handles the creation, storage, and retrieval of quantum gates
+    and their associated data for a provided dimension.
+
+    Attributes:
+        gateMap (dict): A dictionary mapping gate names to Gate objects.
+        aliasMap (dict): A dictionary mapping gate aliases to their primary names.
+        num_gates (int): The total number of gates added.
+        dimension (int): The dimension of the quantum system (default is 2 for qubits).
+    """
     gateMap: dict 
     aliasMap: dict
     num_gates: int = 0

@@ -1,7 +1,7 @@
 import pytest
 from sdim.program import Program
-from sdim.chp_parser import write_circuit
-from sdim.random_circuit import generate_random_circuit, cirq_statevector_from_circuit
+from sdim.circuit_io import write_circuit, cirq_statevector_from_circuit
+from sdim.random_circuit import generate_random_circuit
 import numpy as np
 
 def create_key(measurements, dimension):
@@ -17,7 +17,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 500
+    num_samples = 1000
     num_states = dimension**num_qudits
     measurement_counts = np.zeros(num_states, dtype=int)
 
@@ -34,11 +34,12 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     
     return tvd, cleaned_amp, probabilities, circuit
 
-@pytest.mark.parametrize("dimension", [2])
+
+@pytest.mark.parametrize("dimension", [2, 3])
 @pytest.mark.parametrize("depth", [15, 30])
 def test_random_circuits(dimension, depth):
-    num_qudits = 3
-    num_circuits = 500
+    num_qudits = 4
+    num_circuits = 1000
 
     for i in range(num_circuits):
         try:

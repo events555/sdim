@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from sdim.tableau import Tableau
+from sdim.tableau_composite import Tableau
 from sympy import *
 
 class TestTableau:
