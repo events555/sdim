@@ -1,5 +1,5 @@
 from .circuit import Circuit
-from .unitary import GeneralizedHadamardGate, GeneralizedPhaseShiftGate, GeneralizedCNOTGate, GeneralizedXPauliGate, IdentityGate
+from .unitary import *
 import cirq
 import os
 
@@ -136,6 +136,12 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         "P": GeneralizedPhaseShiftGate(circuit.dimension),
         "CNOT": GeneralizedCNOTGate(circuit.dimension),
         "X": GeneralizedXPauliGate(circuit.dimension),
+        "Z": GeneralizedZPauliGate(circuit.dimension),
+        "H_INV": cirq.inverse(GeneralizedHadamardGate(circuit.dimension)),
+        "P_INV": cirq.inverse(GeneralizedPhaseShiftGate(circuit.dimension)),
+        "CNOT_INV": cirq.inverse(GeneralizedCNOTGate(circuit.dimension)),
+        "X_INV": cirq.inverse(GeneralizedXPauliGate(circuit.dimension)),
+        "Z_INV": cirq.inverse(GeneralizedZPauliGate(circuit.dimension)),
     }
 
     # Create a Cirq circuit.

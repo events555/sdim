@@ -135,10 +135,44 @@ class GeneralizedHadamardGate(cirq.Gate):
 
     def _unitary_(self):
         return generate_h_matrix(self.d)
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            inv_gate = GeneralizedHadamardGate(self.d)
+            inv_gate._unitary = lambda: np.conj(self._unitary()).T
+            return inv_gate
+        return NotImplemented
 
     def _circuit_diagram_info_(self, args):
         return f"H_{self.d}"
+    
+class GeneralizedHadamardGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedHadamardGateInverse, self).__init__()
+        self.d = d
 
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return np.conj(generate_h_matrix(self.d)).T
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedHadamardGate(self.d)
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"H_{self.d}†"
+    
 
 class GeneralizedPhaseShiftGate(cirq.Gate):
     def __init__(self, d):
@@ -151,8 +185,40 @@ class GeneralizedPhaseShiftGate(cirq.Gate):
     def _unitary_(self):
         return generate_p_matrix(self.d)
 
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedPhaseShiftGateInverse(self.d)
+        return NotImplemented
+
     def _circuit_diagram_info_(self, args):
         return f"P_{self.d}"
+    
+class GeneralizedPhaseShiftGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedPhaseShiftGateInverse, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return np.conj(generate_p_matrix(self.d)).T
+
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedPhaseShiftGate(self.d)
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"P_{self.d}†"
 
 class GeneralizedXPauliGate(cirq.Gate):
     def __init__(self, d):
@@ -164,9 +230,41 @@ class GeneralizedXPauliGate(cirq.Gate):
 
     def _unitary_(self):
         return generate_x_matrix(self.d)
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedXPauliGateInverse(self.d)
+        return NotImplemented
 
     def _circuit_diagram_info_(self, args):
         return f"X_{self.d}"
+    
+class GeneralizedXPauliGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedXPauliGateInverse, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return np.conj(generate_x_matrix(self.d)).T
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedXPauliGate(self.d)
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"X_{self.d}†"
     
 class GeneralizedZPauliGate(cirq.Gate):
     def __init__(self, d):
@@ -178,9 +276,43 @@ class GeneralizedZPauliGate(cirq.Gate):
 
     def _unitary_(self):
         return generate_z_matrix(self.d)
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            inv_gate = GeneralizedZPauliGate(self.d)
+            inv_gate._unitary = lambda: np.conj(self._unitary()).T
+            return inv_gate
+        return NotImplemented
 
     def _circuit_diagram_info_(self, args):
         return f"Z_{self.d}"
+    
+class GeneralizedZPauliGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedZPauliGateInverse, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return np.conj(generate_z_matrix(self.d)).T
+    
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedZPauliGate(self.d)
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"Z_{self.d}†"
     
 class GeneralizedCNOTGate(cirq.Gate):
     def __init__(self, d):
@@ -192,9 +324,35 @@ class GeneralizedCNOTGate(cirq.Gate):
 
     def _unitary_(self):
         return generate_cnot_matrix(self.d)
+    
+    def __pow__(self, exponent):
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedCNOTGateInverse(self.d)
 
     def _circuit_diagram_info_(self, args):
         return (f"CNOT_{self.d}_control", f"CNOT_{self.d}_target")
+    
+class GeneralizedCNOTGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedCNOTGateInverse, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d, self.d)
+
+    def _unitary_(self):
+        return np.conj(generate_cnot_matrix(self.d)).T
+    
+    def __pow__(self, exponent):
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedCNOTGate(self.d)
+
+    def _circuit_diagram_info_(self, args):
+        return (f"CNOT_{self.d}_control†", f"CNOT_{self.d}_target†")
     
 class IdentityGate(cirq.Gate):
     def __init__(self, d):
@@ -206,6 +364,9 @@ class IdentityGate(cirq.Gate):
 
     def _unitary_(self):
         return generate_identity_matrix(self.d)
+    
+    def __pow__(self, _):
+        return IdentityGate(self.d)
 
     def _circuit_diagram_info_(self, args):
         return f"I_{self.d}"

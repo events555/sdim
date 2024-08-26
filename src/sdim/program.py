@@ -47,7 +47,7 @@ class Program:
                 self.stabilizer_tableau = WeylTableau(circuit.num_qudits, circuit.dimension)
         else:
             self.stabilizer_tableau = tableau
-        self.circuit = circuit
+        self.circuit = [circuit]
         self.measurement_results = []
 
     def simulate(self, show_measurement: bool = False, verbose: bool = False,
@@ -66,30 +66,39 @@ class Program:
             list[MeasurementResult]: A list of MeasurementResult objects representing
             the measurement results. Returns an empty list if no measurements are present.
         """
-        length = len(self.circuit.operations)
+        length = sum(len(circuit.operations) for circuit in self.circuit)
         if isinstance(self.stabilizer_tableau, WeylTableau) and exact:
             self.stabilizer_tableau.exact = True
-
-        for time, gate in enumerate(self.circuit.operations):
-            if time == 0 and verbose:
-                print("Initial state")
-                self.stabilizer_tableau.print_tableau()
-                print("\n")
-            measurement_result = self.apply_gate(gate)
-            if measurement_result is not None:
-                self.measurement_results.append(measurement_result)
-            if show_gate:
-                if time < length - 1:
-                    print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
-                else:
-                    print("Final step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
-            if verbose:
-                self.stabilizer_tableau.print_tableau()
-                print("\n")
-        if show_measurement:
-            print("Measurement results:")
-            self.print_measurements()
+        for circuit in self.circuit:
+            for time, gate in enumerate(circuit.operations):
+                if time == 0 and verbose:
+                    print("Initial state")
+                    self.stabilizer_tableau.print_tableau()
+                    print("\n")
+                measurement_result = self.apply_gate(gate)
+                if measurement_result is not None:
+                    self.measurement_results.append(measurement_result)
+                if show_gate:
+                    if time < length - 1:
+                        print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
+                    else:
+                        print("Final step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
+                if verbose:
+                    self.stabilizer_tableau.print_tableau()
+                    print("\n")
+            if show_measurement:
+                print("Measurement results:")
+                self.print_measurements()
         return self.measurement_results
+
+    def append_circuit(self, circuit: Circuit):
+        """
+        Appends a circuit to the existing circuit.
+
+        Args:
+            circuit (Circuit): The Circuit object to append.
+        """
+        
 
     def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
         """

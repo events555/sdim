@@ -52,23 +52,27 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities, circuit
 
 def main():
-    # circuit = read_circuit("circuits/random_circuit.chp")
-    # program = Program(circuit)
-    # program.simulate(verbose=True, show_gate=True, show_measurement=True)
-    # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=False)
+    circuit = Circuit(2,12)
+    circuit.add_gate("H", 0)
+    circuit.add_gate("CNOT", 0, 1)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    program = Program(circuit)
+    program.simulate(verbose=True, show_gate=True, show_measurement=True)
+    # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=True)
     # cirq_output = np.abs(cirq_output)**2
     # threshold = 1e-5
     # cleaned_amp = np.where(np.abs(cirq_output) < threshold, 0, cirq_output)
     # print(cleaned_amp)
-    num_circuits = 1
-    depth = 18
-    seed = 123
-    for i in range(num_circuits):
-        tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
-        print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
-        print(f"Amplitudes: {cleaned_amp}")
-        print(f"Probabilities: {probabilities}")
-        assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
+    # num_circuits = 1
+    # depth = 18
+    # seed = 123
+    # for i in range(num_circuits):
+    #     tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
+    #     print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
+    #     print(f"Amplitudes: {cleaned_amp}")
+    #     print(f"Probabilities: {probabilities}")
+    #     assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
 
 
 if __name__ == "__main__":

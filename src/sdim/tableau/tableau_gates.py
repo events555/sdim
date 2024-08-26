@@ -64,7 +64,21 @@ def apply_X_inv(tableau: Tableau, qudit_index: int, _) -> None:
     Returns:
         None
     """
-    tableau.x_inv(qudit_index)  
+    if isinstance(tableau, WeylTableau):
+        tableau.x_inv(qudit_index)
+    else:
+        if tableau.even:
+            tableau.hadamard(qudit_index)
+            tableau.phase(qudit_index)
+            tableau.phase(qudit_index)
+            tableau.hadamard(qudit_index)
+        else:
+            tableau.hadamard(qudit_index)
+            tableau.phase(qudit_index)
+            tableau.hadamard(qudit_index)
+            tableau.hadamard(qudit_index)
+            tableau.phase_inv(qudit_index)
+            tableau.hadamard(qudit_index)
     return None
 
 def apply_Z(tableau: Tableau, qudit_index: int, _) -> None:
