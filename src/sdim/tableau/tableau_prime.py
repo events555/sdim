@@ -258,8 +258,6 @@ class ExtendedTableau(Tableau):
         | ZI    | ZI     |
         | IZ    | Z^-1Z  |
 
-        For even dimensions, an additional $\omega^{1/2}$ phase is included for all conjugations,
-        where $\omega = e^{2\pi i / d}$ and $d$ is the qudit dimension.
 
         Args:
             control (int): The index of the control qudit.
@@ -270,6 +268,40 @@ class ExtendedTableau(Tableau):
             self.z_block[control, i] = (self.z_block[control, i] + (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
             self.destab_x_block[target, i] = (self.destab_x_block[target, i] + self.destab_x_block[control, i]) % self.dimension
             self.destab_z_block[control, i] = (self.destab_z_block[control, i] + (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
+    
+    def cnot_inv(self, control: int, target: int):
+        """
+        Applies the inverse CNOT gate with the specified control and target qudits.
+
+        The inverse CNOT gate transformations depend on whether the qudit dimension is odd or even:
+
+        For odd dimensions:
+
+        | Input | Output |
+        |-------|--------|
+        | XX    | XI     |
+        | IX    | IX     |
+        | ZI    | ZI     |
+        | Z^-1Z | IZ     |
+
+        For even dimensions:
+
+        | Input | Output |
+        |-------|--------|
+        | XX    | XI     |
+        | IX    | IX     |
+        | ZI    | ZI     |
+        | Z^-1Z | IZ     |
+
+        Args:
+            control (int): The index of the control qudit.
+            target (int): The index of the target qudit.
+        """
+        for i in range(self.num_qudits):
+            self.x_block[target, i] = (self.x_block[target, i] - self.x_block[control, i]) % self.dimension
+            self.z_block[control, i] = (self.z_block[control, i] - (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
+            self.destab_x_block[target, i] = (self.destab_x_block[target, i] - self.destab_x_block[control, i]) % self.dimension
+            self.destab_z_block[control, i] = (self.destab_z_block[control, i] - (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
             
     def measure(self, qudit_index: int) -> MeasurementResult:
         """

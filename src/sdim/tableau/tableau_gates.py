@@ -10,11 +10,31 @@ import numpy as np
     
 # Gate application functions
 def apply_I(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply identity gate (do nothing)"""
+    """
+    Apply identity gate (do nothing).
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     return None
 
 def apply_X(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Pauli X gate"""
+    """
+    Apply Pauli X gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     if isinstance(tableau, WeylTableau):
         tableau.x(qudit_index)
     else:
@@ -33,60 +53,170 @@ def apply_X(tableau: Tableau, qudit_index: int, _) -> None:
     return None
 
 def apply_X_inv(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Pauli X inverse gate"""
+    """
+    Apply Pauli X inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.x_inv(qudit_index)  
     return None
 
 def apply_Z(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Pauli Z gate"""
+    """
+    Apply Pauli Z gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.z(qudit_index)
     return None
 
 def apply_Z_inv(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Pauli Z inverse gate"""
+    """
+    Apply Pauli Z inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.z_inv(qudit_index)
     return None
 
 def apply_H(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Hadamard gate"""
+    """
+    Apply Hadamard gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.hadamard(qudit_index)
     return None
 
 def apply_H_inv(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Hadamard inverse gate"""
+    """
+    Apply Hadamard inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.hadamard_inv(qudit_index)
     return None
 
 def apply_P(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Phase gate"""
+    """
+    Apply Phase gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.phase(qudit_index)
     return None
 
 def apply_P_inv(tableau: Tableau, qudit_index: int, _) -> None:
-    """Apply Phase inverse gate"""
+    """
+    Apply Phase inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to apply the gate to.
+        _ : Unused target index.
+
+    Returns:
+        None
+    """
     tableau.phase_inv(qudit_index)
     return None
 
 def apply_CNOT(tableau: Tableau, control: int, target: int) -> None:
-    """Apply CNOT gate"""
+    """
+    Apply CNOT gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        control (int): The index of the control qudit.
+        target (int): The index of the target qudit.
+
+    Returns:
+        None
+    """
     tableau.cnot(control, target)
     return None
 
 def apply_CNOT_inv(tableau: Tableau, control: int, target: int) -> None:
-    """Apply CNOT inverse gate"""
+    """
+    Apply CNOT inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        control (int): The index of the control qudit.
+        target (int): The index of the target qudit.
+
+    Returns:
+        None
+    """
     tableau.cnot_inv(control, target)
     return None
 
 def apply_measure(tableau: Tableau, qudit_index: int, _) -> Optional[MeasurementResult]:
-    """Apply measurement"""
+    """
+    Apply measurement.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to measure.
+        _ : Unused target index.
+
+    Returns:
+        Optional[MeasurementResult]: The result of the measurement, if applicable.
+    """
     if isinstance(tableau, WeylTableau):
         return tableau.measure_z(qudit_index)
     else:
         return tableau.measure(qudit_index)
 
 def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int) -> None:
-    """Apply SWAP gate
+    """
+    Apply SWAP gate.
+
     Taken from Beaudrap Lemma 6 (eq 19)
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the first qudit to swap.
+        target_index (int): The index of the second qudit to swap.
+
+    Returns:
+        None
     """
     tableau.cnot(qudit_index, target_index)
     tableau.cnot_inv(target_index, qudit_index)
