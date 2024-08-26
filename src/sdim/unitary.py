@@ -58,10 +58,15 @@ def generate_h_matrix(d):
         The Hadamard matrix of dimension d
     """
     H = np.zeros((d, d), dtype=np.complex128)
-    tau = generate_tau(d)
-    for m in range(d):
-        for n in range(d):
-            H[m, n] = 1 / np.sqrt(d) * tau**(2 * m * n)
+    if isprime(d):
+        for m in range(d):
+            for n in range(d):
+                H[m, n] = 1 / np.sqrt(d) * np.exp(2 * np.pi * 1j * m * n / d)
+    else:
+        tau = generate_tau(d)
+        for m in range(d):
+            for n in range(d):
+                H[m, n] = 1 / np.sqrt(d) * tau**(2 * m * n)
     return H
 
 def generate_m_matrix(d, a):
@@ -114,8 +119,7 @@ def generate_cnot_matrix(d):
     """
     CNOT = np.zeros((d**2, d**2),dtype=np.complex128)
     for i, j in product(range(d), repeat=2):
-        phase = 1
-        CNOT[d * i + j, d * i + (i + j) % d] = phase
+        CNOT[d * i + j, d * i + (i + j) % d] = 1
     CNOT = CNOT.reshape(d**2, d**2)
     CNOT = CNOT.transpose()
     return CNOT

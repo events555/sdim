@@ -67,12 +67,15 @@ class Program:
             the measurement results. Returns an empty list if no measurements are present.
         """
         length = len(self.circuit.operations)
+        if isinstance(self.stabilizer_tableau, WeylTableau) and exact:
+            self.stabilizer_tableau.exact = True
+
         for time, gate in enumerate(self.circuit.operations):
             if time == 0 and verbose:
                 print("Initial state")
                 self.stabilizer_tableau.print_tableau()
                 print("\n")
-            measurement_result = self.apply_gate(gate, exact)
+            measurement_result = self.apply_gate(gate)
             if measurement_result is not None:
                 self.measurement_results.append(measurement_result)
             if show_gate:
@@ -88,7 +91,7 @@ class Program:
             self.print_measurements()
         return self.measurement_results
 
-    def apply_gate(self, instruc: CircuitInstruction, exact: bool) -> MeasurementResult:
+    def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
         """
         Applies a gate to the stabilizer tableau.
 
@@ -105,7 +108,7 @@ class Program:
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
-        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, exact)
+        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
         return measurement_result
 
 

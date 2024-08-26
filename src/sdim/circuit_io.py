@@ -114,13 +114,14 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
     return output_path
 
 
-def circuit_to_cirq_circuit(circuit, measurement=False):
+def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
     """
     Converts a Circuit object to a Cirq Circuit object.
 
     Args:
         circuit (Circuit): The Circuit object to convert.
         measurement (bool): Whether to include measurement gates. Defaults to False.
+        print_circuit (bool): Whether to print the Cirq circuit. Defaults to False.
 
     Returns:
         cirq.Circuit: The equivalent Cirq Circuit object.
@@ -162,21 +163,23 @@ def circuit_to_cirq_circuit(circuit, measurement=False):
         if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
             # Append identity to qudits with no gates
             cirq_circuit.append(IdentityGate(circuit.dimension).on(qudit))
+    if print_circuit:
+        print(cirq_circuit)
     return cirq_circuit
 
-def cirq_statevector_from_circuit(circuit):
+def cirq_statevector_from_circuit(circuit, print_circuit=False):
     """
     Simulates a Circuit object using Cirq and returns the final state vector.
 
     Args:
         circuit (Circuit): The Circuit object to simulate.
+        print_circuit (bool): Whether to print the Cirq circuit. Defaults to False.
 
     Returns:
         np.ndarray: The final state vector given by the Cirq simulator.
     """
     # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
-    cirq_circuit = circuit_to_cirq_circuit(circuit)
-    # print(cirq_circuit)
+    cirq_circuit = circuit_to_cirq_circuit(circuit, print_circuit=print_circuit)
     # Simulate the Cirq circuit.
     simulator = cirq.Simulator()
     result = simulator.simulate(cirq_circuit)

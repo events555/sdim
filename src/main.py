@@ -4,7 +4,7 @@ from pstats import SortKey
 from sdim.circuit import Circuit
 from sdim.program import Program
 from sdim.circuit_io import read_circuit, write_circuit, cirq_statevector_from_circuit
-from sdim.random_circuit import generate_random_circuit
+from sdim.random_circuit import generate_random_circuit, generate_and_write_random_circuit
 from sdim.diophantine import solve
 import numpy as np
 
@@ -19,14 +19,14 @@ def create_key(measurements, dimension):
     return key
 
 def generate_and_test_circuit(depth, seed):
-    circuit = generate_random_circuit(20, 40, 40, 0, 3, depth, 15, 1)
-    # circuit = read_circuit("circuits/random_circuit.chp")
+    # circuit = generate_and_write_random_circuit(20, 40, 40, 0, 3, depth, 3, 1)
+    circuit = read_circuit("circuits/random_circuit.chp")
     
     # Run the simulation
-    statevector = cirq_statevector_from_circuit(circuit)
+    statevector = cirq_statevector_from_circuit(circuit, print_circuit=False)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 50000
+    num_samples = 500
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n
@@ -34,7 +34,7 @@ def generate_and_test_circuit(depth, seed):
 
     for i in range(num_samples):
         program = Program(circuit)
-        measurements = program.simulate(show_measurement=True, verbose=False, show_gate=False, exact=False)
+        measurements = program.simulate(show_measurement=False, verbose=True, show_gate=True, exact=False)
         # print("Simulation #", i)
         key = create_key(measurements, dimension)
         measurement_counts[key] += 1
@@ -52,6 +52,14 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities, circuit
 
 def main():
+    # circuit = read_circuit("circuits/random_circuit.chp")
+    # program = Program(circuit)
+    # program.simulate(verbose=True, show_gate=True, show_measurement=True)
+    # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=False)
+    # cirq_output = np.abs(cirq_output)**2
+    # threshold = 1e-5
+    # cleaned_amp = np.where(np.abs(cirq_output) < threshold, 0, cirq_output)
+    # print(cleaned_amp)
     num_circuits = 1
     depth = 18
     seed = 123

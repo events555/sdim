@@ -10,29 +10,74 @@ from sdim.diophantine import solve
 
 @dataclass
 class WeylTableau(Tableau):
+    exact: bool = False
+
     @staticmethod
     def _generate_measurement_outcome(kappa: int, eta: int, dimension: int) -> int:
-        """Given distribution parameters generate a random measurement result.
-        .. math::
-            \kappa + \eta \mathbb{Z}_d 
+        """
+        Given distribution parameters generate a random measurement result.
+        
+        Args:
+            kappa (int): The kappa distribution parameter.
+            eta (int): The eta distribution parameter.
+            dimension (int): The dimension of the distribution.
+
+        Returns:
+            int: A random measurement result.
+
+        Examples:
+            >>> _generate_measurement_outcome(2, 3, 5)
+            {2, 0, 3, 1, 4}
+            >>> _generate_measurement_outcome(0, 2, 4)
+            {0, 2, 0, 2}
+            >>> _generate_measurement_outcome(1, 2, 4)
+            {1, 3, 1, 3}
         """
         import random
         if eta == 0 or eta == dimension:
             return kappa % dimension
         else:
-            distribution = (eta * random.randint(0, dimension - 1)) % dimension
+            distribution = (eta * random.randint(0, dimension - 1))
             return (kappa + distribution) % dimension
         
     @staticmethod
     def _symplectic_product(row1: np.ndarray, row2: np.ndarray, num_qudits: int) -> int:
-        """Compute the symplectic product of two rows."""
+        """
+        Compute the symplectic product of two rows.
+
+        Args:
+            row1 (np.ndarray): First row.
+            row2 (np.ndarray): Second row.
+            num_qudits (int): Number of qudits.
+
+        Returns:
+            int: The symplectic product.
+        """
         return np.dot(row1[:num_qudits], row2[num_qudits:]) - np.dot(row1[num_qudits:], row2[:num_qudits])
 
     def symplectic_product(self, index1: int, index2: int) -> int:
-        """Compute the symplectic product of two generators."""
+        """
+        Compute the symplectic product of two generators.
+
+        Args:
+            index1 (int): Index of the first generator.
+            index2 (int): Index of the second generator.
+
+        Returns:
+            int: The symplectic product.
+        """
         return np.dot(self.z_block[:, index1], self.x_block[:, index2]) - np.dot(self.z_block[:, index2], self.x_block[:, index1])
 
     def append(self, pauli_vector: np.ndarray) -> None:
+        """
+        Append a Pauli vector to the tableau.
+
+        Args:
+            pauli_vector (np.ndarray): The Pauli vector to append.
+
+        Raises:
+            ValueError: If the Pauli vector dimensions do not match.
+        """
         if pauli_vector.size != self.pauli_size:
             raise ValueError(f"Pauli vector dimensions do not match. Expected {2*self.num_qudits + 1} rows, got {pauli_vector.shape[0]}")
         new_phase = pauli_vector[0]
@@ -43,6 +88,16 @@ class WeylTableau(Tableau):
         self.x_block = np.hstack((self.x_block, new_x))
 
     def update(self, pauli_vector: np.ndarray, index: int) -> None:
+        """
+        Update a generator in the tableau.
+
+        Args:
+            pauli_vector (np.ndarray): The new Pauli vector.
+            index (int): The index of the generator to update.
+
+        Raises:
+            ValueError: If the Pauli vector dimensions do not match or if the index is invalid.
+        """
         if pauli_vector.size != self.pauli_size:
             raise ValueError(f"Pauli vector dimensions do not match. Expected {2*self.num_qudits + 1} rows, got {pauli_vector.shape[0]}")
         
@@ -53,7 +108,14 @@ class WeylTableau(Tableau):
         self.x_block[:, index] = pauli_vector[self.num_qudits+1:]
 
     def add_generators(self, index1: int, index2: int, scalar: int = 1):
-        """Add the generators at column index2 to the generators at column index1."""
+        """
+        Add the generators at column index2 to the generators at column index1.
+
+        Args:
+            index1 (int): Index of the first generator.
+            index2 (int): Index of the second generator.
+            scalar (int, optional): Scalar multiplier. Defaults to 1.
+        """
         self.z_block[:, index1] += self.z_block[:, index2] * scalar
         self.x_block[:, index1] += self.x_block[:, index2] * scalar
         self.phase_vector[index1] += (scalar*(self.phase_vector[index2] + (self.symplectic_product(index1, index2)//2 if self.even else 0))) % self.order
@@ -61,7 +123,17 @@ class WeylTableau(Tableau):
         self.x_block[:, index1] %= self.order
 
     def multiply_generator(self, index: int, scalar: int, allow_non_coprime: bool = False):
-        """Multiply the generators at column index by a scalar."""
+        """
+        Multiply the generators at column index by a scalar.
+
+        Args:
+            index (int): Index of the generator to multiply.
+            scalar (int): Scalar to multiply by.
+            allow_non_coprime (bool, optional): Allow non-coprime scalars. Defaults to False.
+
+        Raises:
+            ValueError: If the scalar is not coprime with the order and allow_non_coprime is False.
+        """
         if scalar not in self.coprime_order and not allow_non_coprime:
             raise ValueError(f"Scalar {scalar} is not coprime with the order {self.order}.")
         self.z_block[:, index] = (self.z_block[:, index] * scalar) % self.order
@@ -69,7 +141,16 @@ class WeylTableau(Tableau):
         self.phase_vector[index] = (self.phase_vector[index] * scalar) % self.order
 
     def swap_generators(self, index1: int, index2: int):
-        """Swap generators at index1 to index2."""
+        """
+        Swap generators at index1 to index2.
+
+        Args:
+            index1 (int): Index of the first generator.
+            index2 (int): Index of the second generator.
+
+        Raises:
+            ValueError: If the indices are invalid.
+        """
         if index1 < 0 or index2 < 0 or index1 >= self.z_block.shape[1] or index2 >= self.z_block.shape[1]:
             raise ValueError(f"Invalid indices. Must be between 0 and {self.z_block.shape[1] - 1}")
         self.z_block[:, [index1, index2]] = self.z_block[:, [index2, index1]]
@@ -77,7 +158,15 @@ class WeylTableau(Tableau):
         self.phase_vector[[index1, index2]] = self.phase_vector[[index2, index1]]
            
     def _get_single_eta(self, qudit_index: int):
-        """Get the eta value assuming a Z measurement at specified index"""
+        """
+        Get the eta value assuming a Z measurement at specified index.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+
+        Returns:
+            int: The eta value.
+        """
         row = self.x_block[qudit_index, :]
         
         if np.all(row == 0):
@@ -88,6 +177,19 @@ class WeylTableau(Tableau):
         return self._get_eta_as_divisor(qudit_index, row)
 
     def _eliminate_columns(self, qudit_index: int, row: np.ndarray) -> np.ndarray:
+        """
+        Eliminate columns in the row.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+            row (np.ndarray): Row to process.
+
+        Returns:
+            np.ndarray: Processed row.
+
+        Raises:
+            ValueError: If a suitable column to swap cannot be found.
+        """
         row_gcd = np.gcd.reduce(row)
         cols = row.shape[0]
         gcd_col = False
@@ -148,6 +250,17 @@ class WeylTableau(Tableau):
         return row
         
     def _get_eta_as_divisor(self, qudit_index: int, row: np.ndarray):
+        """
+        Find suitable alpha such that eta as a divisor of the dimension.
+        Will attempt to find add a multiple of the dimension (multiply by identity) if no suitable alpha is found.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+            row (np.ndarray): Row to process.
+
+        Returns:
+            int or None: The eta value or None if not found.
+        """
         last_col = row.shape[0] - 1
         if row[-1] != 0:
             if self.dimension % row[-1]== 0:
@@ -173,14 +286,44 @@ class WeylTableau(Tableau):
         return None
       
     def _prepare_excluding_commuting_matrix(self, new_stabilizer: np.ndarray) -> np.ndarray:
+        """
+        Prepare the excluding commuting matrix.
+
+        Args:
+            new_stabilizer (np.ndarray): New stabilizer to add.
+
+        Returns:
+            np.ndarray: The prepared matrix.
+        """
         excluding_commuting = self.stab_tableau[:, :-1]
         excluding_commuting = np.hstack((excluding_commuting, np.c_[new_stabilizer]))
         return np.hstack((excluding_commuting, self.dimension * np.ones((self.pauli_size, 1), dtype=np.int64)))
 
     def _is_last_column_identity(self, last_column: np.ndarray) -> bool:
+        """
+        Check if the last column is reducible modulo d, representing a Pauli string equal to the identity matrices.
+
+        Args:
+            last_column (np.ndarray): The last column to check.
+
+        Returns:
+            bool: True if the last column is an identity, False otherwise.
+        """
         return np.array_equal(last_column[1:] % self.dimension, np.zeros(2*self.num_qudits, dtype=np.int64))
     
     def _handle_non_deterministic_case(self, new_stabilizer: np.ndarray, s: int, qudit_index: int, measurement_value: int) -> MeasurementResult:
+        """
+        Handle the non-deterministic case of measurement.
+
+        Args:
+            new_stabilizer (np.ndarray): New stabilizer to add.
+            s (int): The s value.
+            qudit_index (int): Index of the qudit.
+            measurement_value (int): The measurement value.
+
+        Returns:
+            MeasurementResult: The result of the measurement.
+        """
         last_column = self.stab_tableau[:, -1] * s
         last_column_index = self.stab_tableau.shape[1] - 1
 
@@ -204,6 +347,15 @@ class WeylTableau(Tableau):
         return MeasurementResult(qudit_index=qudit_index, deterministic=False, measurement_value=measurement_value)
 
     def _add_column_matrix(self, matrix: np.ndarray, src_col: int, dest_col: int, factor: int):
+        """
+        Add a column to another column in the matrix.
+
+        Args:
+            matrix (np.ndarray): The matrix to modify.
+            src_col (int): Source column index.
+            dest_col (int): Destination column index.
+            factor (int): Factor to multiply the source column by.
+        """
         if self.even:
             phase_correction = self._symplectic_product(factor * matrix[1:, src_col], matrix[1:, dest_col], self.num_qudits) // 2
         else:
@@ -215,7 +367,16 @@ class WeylTableau(Tableau):
     def _extended_euclidean(self, a: int, b: int) -> Tuple[int, int, int]:
         """
         Compute the extended Euclidean algorithm for a and b.
-        Returns x, y, and gcd(a, b) such that a*x + b*y = gcd(a, b), with x > 0, y > 0, and one of x or y is coprime to self.order.
+
+        Args:
+            a (int): First number.
+            b (int): Second number.
+
+        Returns:
+            Tuple[int, int, int]: x, y, and gcd(a, b) such that a*x + b*y = gcd(a, b).
+
+        Raises:
+            ValueError: If suitable x and y cannot be found.
         """
         x, y, u, v = 1, 0, 0, 1
         while b != 0:
@@ -233,9 +394,28 @@ class WeylTableau(Tableau):
         raise ValueError("Could not find suitable x and y.")
 
     def _swap_columns_matrix(self, matrix: np.ndarray, col1: int, col2: int):
+        """
+        Swap two columns in a matrix.
+
+        Args:
+            matrix (np.ndarray): The matrix to modify.
+            col1 (int): Index of the first column.
+            col2 (int): Index of the second column.
+        """
         matrix[:, [col1, col2]] = matrix[:, [col2, col1]]
 
     def column_reduction(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, s: int) -> Optional[int]:
+        """
+        Perform column reduction on the tableau matrix.
+
+        Args:
+            tableau_matrix (np.ndarray): The tableau matrix.
+            weyl_vector (np.ndarray): The Weyl vector.
+            s (int): The s value.
+
+        Returns:
+            Optional[int]: The result of the column reduction, or None if not found.
+        """
         pauli_vector = np.hstack((0, weyl_vector)).reshape(-1, 1) 
         full_tableau = np.hstack((tableau_matrix, -s*pauli_vector)) % self.order
         rows = full_tableau.shape[0] 
@@ -323,6 +503,19 @@ class WeylTableau(Tableau):
         return full_tableau[0, -1]
             
     def _create_measurement_result(self, t: int, eta: int, s: int, qudit_index: int, weyl_vector: np.ndarray) -> MeasurementResult:
+        """
+        Create a measurement result based on the coset of possible distributions provided by factors kappa and eta.
+
+        Args:
+            t (int): The t value.
+            eta (int): The eta value.
+            s (int): The s value.
+            qudit_index (int): Index of the qudit.
+            weyl_vector (np.ndarray): The Weyl vector.
+
+        Returns:
+            MeasurementResult: The created measurement result.
+        """
         kappa = (t * eta) // self.dimension
         measurement_value = self._generate_measurement_outcome(kappa, eta, self.dimension)
         
@@ -333,6 +526,19 @@ class WeylTableau(Tableau):
         return self._handle_non_deterministic_case(new_stabilizer, s, qudit_index, measurement_value)
 
     def t_diophantine(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, qudit_index: int, s: int) -> Optional[int]:
+        """
+        Solve whether a tableau contains the weyl vector with a given phase value t is in the column span by solving Ax=b.
+        The modulo constraints can be represented as a linear system of Diophantine equations.
+
+        Args:
+            tableau_matrix (np.ndarray): The tableau matrix.
+            weyl_vector (np.ndarray): The Weyl vector.
+            qudit_index (int): Index of the qudit.
+            s (int): The s value.
+
+        Returns:
+            Optional[int]: The solution t, or None if not found.
+        """
         modulo_constraint = np.ones((self.pauli_size, 1), dtype=np.int64) * self.order
         tableau_matrix = np.hstack((tableau_matrix, modulo_constraint))
         if self.even:
@@ -354,7 +560,16 @@ class WeylTableau(Tableau):
                 except NotImplementedError:
                     return t
 
-    def measure_z(self, qudit_index: int, exact: bool = False) -> Optional[MeasurementResult]:
+    def measure_z(self, qudit_index: int) -> Optional[MeasurementResult]:
+        """
+        Perform a Z measurement on a qudit.
+
+        Args:
+            qudit_index (int): Index of the qudit to measure.
+
+        Returns:
+            Optional[MeasurementResult]: The result of the measurement, or None if not applicable.
+        """
         weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
         weyl_vector[qudit_index] = 1
         eta = self._get_single_eta(qudit_index)
@@ -370,7 +585,7 @@ class WeylTableau(Tableau):
         else:
             tableau_matrix = self.stab_tableau
 
-        if not exact:
+        if not self.exact:
             t = self.column_reduction(tableau_matrix, weyl_vector, s)
             # print("eta, t, s", eta, t, s)
             return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
@@ -380,21 +595,39 @@ class WeylTableau(Tableau):
             return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
         
     def multiply(self, qudit_index: int, scalar: int):
-        """Apply multiplication gate to qudit at index 
-        given a value in the multiplicative group of units modulo d"""
+        """
+        Apply multiplication gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+            scalar (int): Scalar value to multiply by.
+
+        Raises:
+            ValueError: If the scalar is not coprime with the order.
+        """
         if scalar not in self.coprime_order:
             raise ValueError(f"Scalar {scalar} is not coprime with the order {self.order}.")
         self.z_block[qudit_index, :] = (self.z_block[qudit_index, :] * pow(scalar, -1, self.order)) % self.order
         self.x_block[qudit_index, :] = (self.x_block[qudit_index, :] * scalar) % self.order
 
     def hadamard(self, qudit_index: int):
-        """Apply generalized Hadamard gate to qudit at index."""
+        """
+        Apply generalized Hadamard gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+        """
         self.z_block[qudit_index, :], self.x_block[qudit_index, :] = self.x_block[qudit_index, :], -self.z_block[qudit_index, :]
         self.z_block[qudit_index, :] %= self.order
         self.x_block[qudit_index, :] %= self.order
 
     def hadamard_inv(self, qudit_index: int):
-        """Apply inverse generalized Hadamard gate to qudit at index."""
+        """
+        Apply inverse generalized Hadamard gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+        """
         # Swap and negate the values
         new_z_block = -self.x_block[qudit_index, :].copy()
         new_x_block = self.z_block[qudit_index, :].copy()
@@ -404,49 +637,91 @@ class WeylTableau(Tableau):
         self.x_block[qudit_index, :] = new_x_block % self.order
 
     def phase(self, qudit_index: int):
-        """Apply phase gate to qudit at index."""
+        """
+        Apply phase gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the phase gate.
+        """
         self.z_block[qudit_index, :] += self.x_block[qudit_index, :]
         self.z_block[qudit_index, :] %= self.order
 
     def phase_inv(self, qudit_index: int):
-        """Apply inverse phase gate to qudit at index."""
+        """
+        Apply inverse phase gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the inverse phase gate.
+        """
         self.z_block[qudit_index, :] -= self.x_block[qudit_index, :]
         self.z_block[qudit_index, :] %= self.order
 
     def cnot(self, control_index: int, target_index: int):
-        """Apply CNOT gate to control and target qudits."""
+        """
+        Apply CNOT gate to control and target qudits.
+
+        Args:
+            control_index (int): Index of the control qudit.
+            target_index (int): Index of the target qudit.
+        """
         self.z_block[control_index, :] -= self.z_block[target_index, :]
         self.x_block[target_index, :] += self.x_block[control_index, :]
         self.z_block[control_index, :] %= self.order
         self.x_block[target_index, :] %= self.order
 
     def cnot_inv(self, control_index: int, target_index: int):
-        """Apply inverse CNOT gate to control and target qudits."""
+        """
+        Apply inverse CNOT gate to control and target qudits.
+
+        Args:
+            control_index (int): Index of the control qudit.
+            target_index (int): Index of the target qudit.
+        """
         self.z_block[control_index, :] += self.z_block[target_index, :]
         self.x_block[target_index, :] -= self.x_block[control_index, :]
         self.z_block[control_index, :] %= self.order
         self.x_block[target_index, :] %= self.order
 
     def x(self, qudit_index: int):
-        """Apply Pauli X gate to qudit at index."""
+        """
+        Apply Pauli X gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the Pauli X gate.
+        """
         factor = self.z_block[qudit_index, :]
         self.phase_vector += factor
         self.phase_vector %= self.dimension
 
     def x_inv(self, qudit_index: int):
-        """Apply Pauli X inverse gate to qudit at index."""
+        """
+        Apply Pauli X inverse gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the inverse Pauli X gate.
+        """
         factor = self.z_block[qudit_index, :]
         self.phase_vector -= factor
         self.phase_vector %= self.dimension
     
     def z(self, qudit_index: int):
-        """Apply Pauli Z gate to qudit at index."""
+        """
+        Apply Pauli Z gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the Pauli Z gate.
+        """
         factor = self.x_block[qudit_index, :]
         self.phase_vector -= factor
         self.phase_vector %= self.dimension
     
     def z_inv(self, qudit_index: int):
-        """Apply Pauli Z inverse gate to qudit at index."""
+        """
+        Apply Pauli Z inverse gate to qudit at index.
+
+        Args:
+            qudit_index (int): Index of the qudit to apply the inverse Pauli Z gate.
+        """
         factor = self.x_block[qudit_index, :]
         self.phase_vector += factor
         self.phase_vector %= self.dimension

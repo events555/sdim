@@ -98,4 +98,5 @@ def generate_and_write_random_circuit(c_percentage, h_percentage, p_percentage, 
     """
     circuit = generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds, seed)
     write_circuit(circuit, output_file)
+    return circuit
 
