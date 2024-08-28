@@ -94,7 +94,7 @@ class Circuit:
         if target is None:
             for c in control:
                 self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None))
-            return self
+            return
 
         # Generate all combinations of control and target qubits
         qubit_pairs = []
@@ -110,10 +110,8 @@ class Circuit:
         # Add instructions for all qubit pairs
         for c, t in qubit_pairs:
             self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, t))
+        return
 
-        return self
-
-        return self
     def __mul__(self, repetitions:int):
         """
         Replicates the circuit by the specified number of times.

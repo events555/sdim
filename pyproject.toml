@@ -4,11 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sdim"
-version = "0.1.0"
+version = "0.2.0"
 description = "A tableau Clifford simulator for qudits"
 authors = [
   { name = "Steven Nguyen", email = "03stevennguyen@gmail.com" },
 ]
+
+[project.dependencies]
+Diophantine = "*"
 
 [project.optional-dependencies]
 test = ["cirq"]
