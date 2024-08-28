@@ -100,7 +100,16 @@ class Program:
 
         Args:
             circuit (Circuit): The Circuit object to append.
+
+        Raises:
+            ValueError: If the circuits have different dimensions.
         """
+        if self.circuits[-1].num_qudits < circuit.num_qudits:
+            self.circuits[-1].num_qudits = circuit.num_qudits
+        else:
+            circuit.num_qudits = self.circuits[-1].num_qudits
+        if self.circuits[-1].dimension != circuit.dimension:
+            raise ValueError("Circuits must have the same dimension")
         self.circuits.append(circuit)
         
 
@@ -133,3 +142,6 @@ class Program:
         """
         for result in self.measurement_results:
             print(result)
+
+    def __str__(self) -> str:
+        return str(self.stabilizer_tableau)

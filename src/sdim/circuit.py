@@ -71,36 +71,48 @@ class Circuit:
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
-    def add_gate(self, gate_name: str, qudit_index: Union[int, List[int]], target_index: Union[int, List[int], None] = None):
+    def add_gate(self, gate_name: str, control: Union[int, List[int]], target: Union[int, List[int], None] = None):
         """
         Adds gate operation(s) to the circuit.
 
         Args:
             gate_name (str): The name of the gate to add.
-            qudit_index (int or List[int]): The index or indices of the primary qudit(s) the gate acts on.
-            target_index (int, List[int], or None, optional): The index or indices of the target qudit(s) for two-qudit gates.
+            control (int or List[int]): The index or indices of the control qudit(s).
+            target (int, List[int], or None, optional): The index or indices of the target qudit(s).
 
         Returns:
             Circuit: The current Circuit object with the added operation(s).
 
         Raises:
-            ValueError: If the lengths of qudit_index and target_index lists don't match when both are provided as lists.
+            ValueError: If the input combination is invalid.
         """
-        if isinstance(qudit_index, int):
-            qudit_index = [qudit_index]
-        
-        if target_index is not None:
-            if isinstance(target_index, int):
-                target_index = [target_index]
-            
-            if len(qudit_index) != len(target_index):
-                raise ValueError("qudit_index and target_index must have the same length when both are provided as lists")
-        
-        for i, q_index in enumerate(qudit_index):
-            t_index = target_index[i] if target_index else None
-            instruction = CircuitInstruction(self.gate_data, gate_name.upper(), q_index, t_index)
-            self.operations.append(instruction)
-        
+        # Convert single integers to lists for uniform processing
+        control = [control] if isinstance(control, int) else control
+        target = [target] if isinstance(target, int) else target
+
+        # Handle single-qubit gates
+        if target is None:
+            for c in control:
+                self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None))
+            return self
+
+        # Generate all combinations of control and target qubits
+        qubit_pairs = []
+        if len(control) == 1:
+            qubit_pairs = [(control[0], t) for t in target]
+        elif len(target) == 1:
+            qubit_pairs = [(c, target[0]) for c in control]
+        elif len(control) == len(target):
+            qubit_pairs = list(zip(control, target))
+        else:
+            raise ValueError("Invalid combination of control and target qubits")
+
+        # Add instructions for all qubit pairs
+        for c, t in qubit_pairs:
+            self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, t))
+
+        return self
+
         return self
     def __mul__(self, repetitions:int):
         """
@@ -119,6 +131,56 @@ class Circuit:
     
     def __imul__(self, repetitions:int):
         return self.__mul__(repetitions)
+    
+    def __add__(self, other):
+        """
+        Adds two Circuit objects together.
+
+        Args:
+            other (Circuit): The Circuit object to add to this one.
+
+        Returns:
+            Circuit: A new Circuit object with combined operations.
+
+        Raises:
+            ValueError: If the dimensions of the two circuits don't match.
+        """
+        if self.dimension != other.dimension:
+            raise ValueError("Cannot add circuits with different dimensions")
+
+        new_num_qudits = max(self.num_qudits, other.num_qudits)
+        new_circuit = Circuit(new_num_qudits, self.dimension)
+        
+        # Copy operations from self
+        new_circuit.operations = list(self.operations)
+        
+        # Append operations from other
+        new_circuit.operations.extend(other.operations)
+
+        return new_circuit
+
+    def __iadd__(self, other):
+        """
+        In-place addition of another Circuit object.
+
+        Args:
+            other (Circuit): The Circuit object to add to this one.
+
+        Returns:
+            Circuit: The modified Circuit object with combined operations.
+
+        Raises:
+            ValueError: If the dimensions of the two circuits don't match.
+        """
+        if self.dimension != other.dimension:
+            raise ValueError("Cannot add circuits with different dimensions")
+
+        self.num_qudits = max(self.num_qudits, other.num_qudits)
+        
+        # Append operations from other
+        self.operations.extend(other.operations)
+
+        return self
     
     def __str__(self):
         """

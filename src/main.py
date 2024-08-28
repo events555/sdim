@@ -20,13 +20,13 @@ def create_key(measurements, dimension):
 
 def generate_and_test_circuit(depth, seed):
     # circuit = generate_and_write_random_circuit(20, 40, 40, 0, 3, depth, 3, 1)
-    circuit = read_circuit("circuits/random_circuit.chp")
+    circuit = read_circuit("circuits/css_steane_final.chp")
     
     # Run the simulation
     statevector = cirq_statevector_from_circuit(circuit, print_circuit=False)
     amplitudes = np.abs(statevector)**2
     
-    num_samples = 500
+    num_samples = 1000
     n = circuit.num_qudits
     dimension = circuit.dimension
     num_states = dimension**n
@@ -34,7 +34,7 @@ def generate_and_test_circuit(depth, seed):
 
     for i in range(num_samples):
         program = Program(circuit)
-        measurements = program.simulate(show_measurement=False, verbose=True, show_gate=True, exact=False)
+        measurements = program.simulate(show_measurement=False, verbose=False, show_gate=False, exact=False)
         # print("Simulation #", i)
         key = create_key(measurements, dimension)
         measurement_counts[key] += 1
@@ -53,30 +53,36 @@ def generate_and_test_circuit(depth, seed):
 
 def main():
     #circuit = read_circuit("circuits/css_steane.chp")
-    circuit = Circuit(2, 2)
-    circuit.add_gate("h", 1)
-    circuit.add_gate("z", 1)
-    circuit.add_gate("h", 0)
-    circuit.add_gate("cx", 0, 1)
-    circuit.add_gate("h", 0)
-    circuit.add_gate("m", 0)
-    program = Program(circuit)
-    program.simulate(verbose=True, show_gate=True, show_measurement=True)
+    # circuit = Circuit(2, 2)
+    # circuit.add_gate("h", 1)
+    # circuit.add_gate("z", 1)
+    # circuit.add_gate("h", 0)
+    # circuit.add_gate("cx", 0, 1)
+    # circuit.add_gate("h", 0)
+    # circuit.add_gate("m", 0)
+    # program = Program(circuit)
+    # program.simulate(verbose=True, show_gate=True, show_measurement=True)
     # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=True)
     # print(cirq_output)
     # cirq_output = np.abs(cirq_output)**2
     # threshold = 1e-5
     # cleaned_amp = np.where(np.abs(cirq_output) < threshold, 0, cirq_output)
     # print(cleaned_amp)
-    # num_circuits = 1
-    # depth = 18
-    # seed = 123
-    # for i in range(num_circuits):
-    #     tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
-    #     print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
-    #     print(f"Amplitudes: {cleaned_amp}")
-    #     print(f"Probabilities: {probabilities}")
-    #     assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
+    num_circuits = 1
+    depth = 18
+    seed = 123
+    for i in range(num_circuits):
+        tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
+        for i in range(len(cleaned_amp)):
+            if cleaned_amp[i] > 0:
+                print(i, cleaned_amp[i])
+        for i in range(len(probabilities)):
+            if probabilities[i] > 0:
+                print(i, probabilities[i])
+        print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
+        print(f"Amplitudes: {cleaned_amp}")
+        print(f"Probabilities: {probabilities}")
+        assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
 
 
 if __name__ == "__main__":
