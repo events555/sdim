@@ -1,4 +1,4 @@
-Error type Z on qubit 1
+Error type X on qubit 2
 #
 d 2
 H 4
@@ -15,7 +15,7 @@ CNOT 5 3
 CNOT 4 1
 CNOT 4 2
 CNOT 4 3
-Z 1
+X 2
 CNOT 0 7
 CNOT 2 7
 CNOT 4 7
