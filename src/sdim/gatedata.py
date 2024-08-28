@@ -81,14 +81,15 @@ class GateData:
         self.add_gate_alias("CNOT", ["SUM", "CX", "C"])
         self.add_gate("CNOT_INV", 2)
         self.add_gate_alias("CNOT_INV", ["SUM_INV", "CX_INV", "C_INV"])
+        self.add_gate("CZ", 2)
+        self.add_gate("CZ_INV", 2)
         self.add_gate("SWAP", 2)
 
     def add_gate_collapsing(self, d):
-        self.add_gate(
-            "M",
-            1
-        )
+        self.add_gate("M", 1)
         self.add_gate_alias("M", ["MEASURE", "COLLAPSE", "MZ"])
+        self.add_gate("M_X", 1)
+        self.add_gate_alias("M_X", ["MEASURE_X", "MX"])
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:

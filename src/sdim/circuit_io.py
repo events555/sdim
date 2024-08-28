@@ -164,7 +164,7 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
                 cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
             continue
         else:
-            raise ValueError(f"Gate {op.name} not found")
+            raise NotImplementedError(f"Gate {op.name} not implemented")
     for qudit in qudits:
         if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
             # Append identity to qudits with no gates

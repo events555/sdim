@@ -3,7 +3,7 @@ import pstats
 from pstats import SortKey
 from sdim.circuit import Circuit
 from sdim.program import Program
-from sdim.circuit_io import read_circuit, write_circuit, cirq_statevector_from_circuit
+from sdim.circuit_io import read_circuit, write_circuit, cirq_statevector_from_circuit, circuit_to_cirq_circuit
 from sdim.random_circuit import generate_random_circuit, generate_and_write_random_circuit
 from sdim.diophantine import solve
 import numpy as np
@@ -52,14 +52,18 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities, circuit
 
 def main():
-    circuit = Circuit(2,12)
-    circuit.add_gate("H", 0)
-    circuit.add_gate("CNOT", 0, 1)
-    circuit.add_gate("M", 0)
-    circuit.add_gate("M", 1)
+    #circuit = read_circuit("circuits/css_steane.chp")
+    circuit = Circuit(2, 2)
+    circuit.add_gate("h", 1)
+    circuit.add_gate("z", 1)
+    circuit.add_gate("h", 0)
+    circuit.add_gate("cx", 0, 1)
+    circuit.add_gate("h", 0)
+    circuit.add_gate("m", 0)
     program = Program(circuit)
     program.simulate(verbose=True, show_gate=True, show_measurement=True)
     # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=True)
+    # print(cirq_output)
     # cirq_output = np.abs(cirq_output)**2
     # threshold = 1e-5
     # cleaned_amp = np.where(np.abs(cirq_output) < threshold, 0, cirq_output)

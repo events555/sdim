@@ -1,0 +1,15 @@
+Implement logical |0> state for the Steane code.
+#
+d 2
+h 0
+h 1
+h 3
+c 0 2
+c 3 5
+c 1 6
+c 0 4
+c 3 6 
+c 1 5
+c 0 6
+c 1 2 
+c 3 4

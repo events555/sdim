@@ -1,6 +1,6 @@
 from .gatedata import GateData
 from dataclasses import dataclass
-
+from typing import Union, List
 
 @dataclass
 class CircuitInstruction:
@@ -71,18 +71,55 @@ class Circuit:
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
-    def add_gate(self, gate_name:str, qudit_index:int, target_index:int=None):
+    def add_gate(self, gate_name: str, qudit_index: Union[int, List[int]], target_index: Union[int, List[int], None] = None):
         """
-        Adds a gate operation to the circuit.
+        Adds gate operation(s) to the circuit.
 
         Args:
             gate_name (str): The name of the gate to add.
-            qudit_index (int): The index of the primary qudit the gate acts on.
-            target_index (int, optional): The index of the target qudit for two-qudit gates.
-        """
-        instruction = CircuitInstruction(self.gate_data, gate_name.upper(), qudit_index, target_index)
-        self.operations.append(instruction)
+            qudit_index (int or List[int]): The index or indices of the primary qudit(s) the gate acts on.
+            target_index (int, List[int], or None, optional): The index or indices of the target qudit(s) for two-qudit gates.
 
+        Returns:
+            Circuit: The current Circuit object with the added operation(s).
+
+        Raises:
+            ValueError: If the lengths of qudit_index and target_index lists don't match when both are provided as lists.
+        """
+        if isinstance(qudit_index, int):
+            qudit_index = [qudit_index]
+        
+        if target_index is not None:
+            if isinstance(target_index, int):
+                target_index = [target_index]
+            
+            if len(qudit_index) != len(target_index):
+                raise ValueError("qudit_index and target_index must have the same length when both are provided as lists")
+        
+        for i, q_index in enumerate(qudit_index):
+            t_index = target_index[i] if target_index else None
+            instruction = CircuitInstruction(self.gate_data, gate_name.upper(), q_index, t_index)
+            self.operations.append(instruction)
+        
+        return self
+    def __mul__(self, repetitions:int):
+        """
+        Replicates the circuit by the specified number of times.
+
+        Args:
+            repititions (int): The number of times to replicate the circuit.
+
+        Returns:
+            Circuit: A new Circuit object with the replicated operations.
+        """
+        original_operations = list(self.operations)
+        for _ in range(repetitions - 1):
+            self.operations.extend(original_operations)
+        return self
+    
+    def __imul__(self, repetitions:int):
+        return self.__mul__(repetitions)
+    
     def __str__(self):
         """
         Returns a string representation of the circuit.

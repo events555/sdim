@@ -17,8 +17,11 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     8: apply_P_inv,  # P inverse gate
     9: apply_CNOT,   # CNOT gate
     10: apply_CNOT_inv,  # CNOT inverse gate
-    11: apply_SWAP,  # SWAP gate
-    12: apply_measure # Measure gate
+    11: apply_CZ,  # CZ gate
+    12: apply_CZ_inv,  # CZ inverse gate
+    13: apply_SWAP,  # SWAP gate
+    14: apply_measure, # Measure gate in computational basis
+    15: apply_measure_x # Measure gate in X basis
 }
 
 
@@ -47,7 +50,7 @@ class Program:
                 self.stabilizer_tableau = WeylTableau(circuit.num_qudits, circuit.dimension)
         else:
             self.stabilizer_tableau = tableau
-        self.circuit = [circuit]
+        self.circuits = [circuit]
         self.measurement_results = []
 
     def simulate(self, show_measurement: bool = False, verbose: bool = False,
@@ -66,10 +69,10 @@ class Program:
             list[MeasurementResult]: A list of MeasurementResult objects representing
             the measurement results. Returns an empty list if no measurements are present.
         """
-        length = sum(len(circuit.operations) for circuit in self.circuit)
+        length = sum(len(circuit.operations) for circuit in self.circuits)
         if isinstance(self.stabilizer_tableau, WeylTableau) and exact:
             self.stabilizer_tableau.exact = True
-        for circuit in self.circuit:
+        for circuit in self.circuits:
             for time, gate in enumerate(circuit.operations):
                 if time == 0 and verbose:
                     print("Initial state")
@@ -93,11 +96,12 @@ class Program:
 
     def append_circuit(self, circuit: Circuit):
         """
-        Appends a circuit to the existing circuit.
+        Appends a circuit to the existing Program.
 
         Args:
             circuit (Circuit): The Circuit object to append.
         """
+        self.circuits.append(circuit)
         
 
     def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:

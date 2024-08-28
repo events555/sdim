@@ -93,7 +93,19 @@ def apply_Z(tableau: Tableau, qudit_index: int, _) -> None:
     Returns:
         None
     """
-    tableau.z(qudit_index)
+    if isinstance(tableau, WeylTableau):
+        tableau.z(qudit_index)
+    else:
+        if tableau.even:
+            tableau.phase(qudit_index)
+            tableau.phase(qudit_index)
+        else:
+            tableau.phase_inv(qudit_index)
+            tableau.hadamard(qudit_index)
+            tableau.hadamard(qudit_index)
+            tableau.phase(qudit_index)
+            tableau.hadamard(qudit_index)
+            tableau.hadamard(qudit_index)
     return None
 
 def apply_Z_inv(tableau: Tableau, qudit_index: int, _) -> None:
@@ -108,7 +120,19 @@ def apply_Z_inv(tableau: Tableau, qudit_index: int, _) -> None:
     Returns:
         None
     """
-    tableau.z_inv(qudit_index)
+    if isinstance(tableau, WeylTableau):
+        tableau.z_inv(qudit_index)
+    else:
+        if tableau.even:
+            tableau.phase_inv(qudit_index)
+            tableau.phase_inv(qudit_index)
+        else:
+            tableau.phase(qudit_index)
+            tableau.hadamard_inv(qudit_index)
+            tableau.hadamard_inv(qudit_index)
+            tableau.phase_inv(qudit_index)
+            tableau.hadamard_inv(qudit_index)
+            tableau.hadamard_inv(qudit_index)
     return None
 
 def apply_H(tableau: Tableau, qudit_index: int, _) -> None:
@@ -201,6 +225,40 @@ def apply_CNOT_inv(tableau: Tableau, control: int, target: int) -> None:
     tableau.cnot_inv(control, target)
     return None
 
+def apply_CZ(tableau: Tableau, control: int, target: int) -> None:
+    """
+    Apply CZ gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        control (int): The index of the control qudit.
+        target (int): The index of the target qudit.
+
+    Returns:
+        None
+    """
+    tableau.hadamard(target)
+    tableau.cnot(control, target)
+    tableau.hadamard_inv(target)
+    return None
+
+def apply_CZ_inv(tableau: Tableau, control: int, target: int) -> None:
+    """
+    Apply CZ inverse gate.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        control (int): The index of the control qudit.
+        target (int): The index of the target qudit.
+
+    Returns:
+        None
+    """
+    tableau.hadamard(target)
+    tableau.cnot_inv(control, target)
+    tableau.hadamard_inv(target)
+    return None
+
 def apply_measure(tableau: Tableau, qudit_index: int, _) -> Optional[MeasurementResult]:
     """
     Apply measurement.
@@ -213,6 +271,24 @@ def apply_measure(tableau: Tableau, qudit_index: int, _) -> Optional[Measurement
     Returns:
         Optional[MeasurementResult]: The result of the measurement, if applicable.
     """
+    if isinstance(tableau, WeylTableau):
+        return tableau.measure_z(qudit_index)
+    else:
+        return tableau.measure(qudit_index)
+
+def apply_measure_x(tableau: Tableau, qudit_index: int, _) -> Optional[MeasurementResult]:
+    """
+    Apply X-basis measurement.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to measure.
+        _ : Unused target index.
+
+    Returns:
+        Optional[MeasurementResult]: The result of the measurement, if applicable.
+    """
+    tableau.hadamard(qudit_index)
     if isinstance(tableau, WeylTableau):
         return tableau.measure_z(qudit_index)
     else:
