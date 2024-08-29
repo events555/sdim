@@ -8,3 +8,4 @@ src/circuits/failed_circuit_*.chp
 *.trunk/
 output.prof
 profiling_results.txt
+/docs/
