@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e .
-      - run: pdoc --docformat google --output-dir docs/ src/sdim
+      - run: pdoc --config latex_math=True --docformat google --output-dir docs/ src/sdim
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/
