@@ -9,20 +9,30 @@ Example usage:
 from sdim import Circuit, Program
 
 # Create a new quantum circuit
-circuit = Circuit(2, 2) # Create a circuit with 2 qubits and dimension 2
+circuit = Circuit(4, 2) # Create a circuit with 4 qubits and dimension 2
 
 # Add gates to the circuit
 circuit.add_gate('H', 0)  # Hadamard gate on qubit 0
-circuit.add_gate('CNOT', 0, 1)  # CNOT gate between qubit 0 and qubit 1
-circuit.add_gate('M', 0)  # Measure qubit 0
-circuit.add_gate('M', 1)  # Measure qubit 1
+circuit.add_gate('CNOT', 0, 1)  # CNOT gate with control on qubit 0 and target on qubit 1
+circuit.add_gate('CNOT', 0, [2, 3]) # Short-hand for multiple target qubits, applies CNOT between 0 -> 2 and 0 -> 3
+circuit.add_gate('MEASURE', [0, 1, 2, 3]) # Short-hand for multiple single-qubit gates
 
 # Create a program and add the circuit
 program = Program(circuit) # Must be given an initial circuit as a constructor argument
 
 # Execute the program
-result = program.simulate(measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
+result = program.simulate(show_measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
 ```
+
+Output:
+```plaintext
+Measurement results:
+Measured qudit (0) as (1) and was random
+Measured qudit (1) as (1) and was deterministic
+Measured qudit (2) as (1) and was deterministic
+Measured qudit (3) as (1) and was deterministic
+```
+
 
 ## Modules
 

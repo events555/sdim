@@ -52,37 +52,35 @@ def generate_and_test_circuit(depth, seed):
     return tvd, cleaned_amp, probabilities, circuit
 
 def main():
-    #circuit = read_circuit("circuits/css_steane.chp")
-    # circuit = Circuit(2, 2)
-    # circuit.add_gate("h", 1)
-    # circuit.add_gate("z", 1)
-    # circuit.add_gate("h", 0)
-    # circuit.add_gate("cx", 0, 1)
-    # circuit.add_gate("h", 0)
-    # circuit.add_gate("m", 0)
-    # program = Program(circuit)
-    # program.simulate(verbose=True, show_gate=True, show_measurement=True)
-    # cirq_output = cirq_statevector_from_circuit(circuit, print_circuit=True)
-    # print(cirq_output)
-    # cirq_output = np.abs(cirq_output)**2
-    # threshold = 1e-5
-    # cleaned_amp = np.where(np.abs(cirq_output) < threshold, 0, cirq_output)
-    # print(cleaned_amp)
-    num_circuits = 1
-    depth = 18
-    seed = 123
-    for i in range(num_circuits):
-        tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
-        for i in range(len(cleaned_amp)):
-            if cleaned_amp[i] > 0:
-                print(i, cleaned_amp[i])
-        for i in range(len(probabilities)):
-            if probabilities[i] > 0:
-                print(i, probabilities[i])
-        print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
-        print(f"Amplitudes: {cleaned_amp}")
-        print(f"Probabilities: {probabilities}")
-        assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
+    # Create a new quantum circuit
+    circuit = Circuit(4, 2) # Create a circuit with 4 qubits and dimension 2
+
+    # Add gates to the circuit
+    circuit.add_gate('H', 0)  # Hadamard gate on qubit 0
+    circuit.add_gate('CNOT', 0, 1)  # CNOT gate with control on qubit 0 and target on qubit 1
+    circuit.add_gate('CNOT', 0, [2, 3]) # Short-hand for multiple target qubits, applies CNOT between 0 -> 2 and 0 -> 3
+    circuit.add_gate('MEASURE', [0, 1, 2, 3]) # Short-hand for multiple single-qubit gates
+
+    # Create a program and add the circuit
+    program = Program(circuit) # Must be given an initial circuit as a constructor argument
+
+    # Execute the program
+    result = program.simulate(show_measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
+    # num_circuits = 1
+    # depth = 18
+    # seed = 123
+    # for i in range(num_circuits):
+    #     tvd, cleaned_amp, probabilities, circuit = generate_and_test_circuit(depth, seed)
+    #     for i in range(len(cleaned_amp)):
+    #         if cleaned_amp[i] > 0:
+    #             print(i, cleaned_amp[i])
+    #     for i in range(len(probabilities)):
+    #         if probabilities[i] > 0:
+    #             print(i, probabilities[i])
+    #     print(f"Total Variation Distance: {tvd}", " for circuit", i+1)
+    #     print(f"Amplitudes: {cleaned_amp}")
+    #     print(f"Probabilities: {probabilities}")
+    #     assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
 
 
 if __name__ == "__main__":
