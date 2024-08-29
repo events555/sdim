@@ -94,14 +94,14 @@ class ExtendedTableau(Tableau):
 
         The Hadamard gate performs the following transformations:
 
-        | Input | Output |
-        |-------|--------|
-        | X     | Z      |
-        | Z     | X^-1   |
+        | Input | Output   |
+        |-------|----------|
+        | $X$   | $Z$      |
+        | $Z$   | $X^{-1}$ |
 
         The phase transformation is given by:
         
-        $$ HXZ\Psi = ZX^{-1}\Psi = \omega^{d-1} XZ\Psi $$
+        $$ H\cdot X\cdot Z\ket{\psi} = Z\cdot X^{-1}\ket{\psi} = \omega^{d-1} XZ\ket{\psi} $$
 
         where $\omega = e^{2\pi i / d}$ and $d$ is the qudit dimension.
 
@@ -127,17 +127,17 @@ class ExtendedTableau(Tableau):
 
         For odd dimensions:
 
-        | Input | Output |
-        |-------|--------|
-        | X     | Z^-1   |
-        | Z     | X      |
+        | Input | Output   |
+        |-------|----------|
+        | $X$   | $Z^{-1}$ |
+        | $Z$   | $X$      |
 
         For even dimensions:
 
-        | Input | Output |
-        |-------|--------|
-        | X     | Z^-1   |
-        | Z     | X      |
+        | Input | Output   |
+        |-------|----------|
+        | $X$   | $Z^{-1}$ |
+        | $Z$   | $X$      |
 
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
@@ -167,21 +167,21 @@ class ExtendedTableau(Tableau):
 
         | Input | Output |
         |-------|--------|
-        | X     | XZ     |
-        | Z     | Z      |
+        | $X$   | $XZ$   |
+        | $Z$   | $Z$    |
 
         For even dimensions:
 
-        | Input | Output      |
-        |-------|-------------|
-        | XZ    | $\omega^{1/2}$ XZ |
-        | Z     | Z           |
+        | Input           | Output               |
+        |-----------------|----------------------|
+        | $XZ$            | $\omega^{1/2} XZ$    |
+        | $Z$             | $Z$                  |
 
         Where $\omega = e^{2\pi i / d}$ and $d$ is the qudit dimension.
 
         The phase accumulation for even dimensions is given by:
 
-        $$ \text{phase} += x^2 $$
+        $$\\text{phase} += x^2 $$
 
         where $x$ is the X-power in the Pauli string.
 
@@ -216,17 +216,17 @@ class ExtendedTableau(Tableau):
 
         For odd dimensions:
 
-        | Input | Output |
-        |-------|--------|
-        | X     | XZ^-1  |
-        | Z     | Z      |
+        | Input | Output    |
+        |-------|-----------|
+        | $X$   | $XZ^{-1}$ |
+        | $Z$   | $Z$       |
 
         For even dimensions:
 
-        | Input      | Output |
-        |------------|--------|
-        | $\omega^{1/2}$ XZ | XZ |
-        | Z          | Z     |
+        | Input               | Output |
+        |---------------------|--------|
+        | $\omega^{1/2} XZ$   | $XZ$   |
+        | $Z$                 | $Z$    |
 
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Phase gate to.
@@ -251,12 +251,12 @@ class ExtendedTableau(Tableau):
 
         The CNOT gate performs the following transformations:
 
-        | Input | Output |
-        |-------|--------|
-        | XI    | XX     |
-        | IX    | IX     |
-        | ZI    | ZI     |
-        | IZ    | Z^-1Z  |
+        | Input         | Output        |
+        |---------------|---------------|
+        | $X \otimes I$ | $X \otimes X$ |
+        | $I \otimes X$ | $I \otimes X$ |
+        | $Z \otimes I$ | $Z \otimes I$ |
+        | $I \otimes Z$ | $Z^{-1}Z$     |
 
 
         Args:
@@ -275,24 +275,21 @@ class ExtendedTableau(Tableau):
 
         The inverse CNOT gate transformations depend on whether the qudit dimension is odd or even:
 
-        For odd dimensions:
-
-        | Input | Output |
-        |-------|--------|
-        | XX    | XI     |
-        | IX    | IX     |
-        | ZI    | ZI     |
-        | Z^-1Z | IZ     |
+        | Input         | Output        |
+        |---------------|---------------|
+        | $X \otimes X$ | $X \otimes I$ |
+        | $I \otimes X$ | $I \otimes X$ |
+        | $Z \otimes I$ | $Z \otimes I$ |
+        | $Z^{-1}Z$     | $I \otimes Z$ |
 
         For even dimensions:
 
-        | Input | Output |
-        |-------|--------|
-        | XX    | XI     |
-        | IX    | IX     |
-        | ZI    | ZI     |
-        | Z^-1Z | IZ     |
-
+        | Input         | Output        |
+        |---------------|---------------|
+        | $X \otimes X$ | $X \otimes I$ |
+        | $I \otimes X$ | $I \otimes X$ |
+        | $Z \otimes I$ | $Z \otimes I$ |
+        | $Z^{-1}Z$     | $I \otimes Z$ |
         Args:
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
@@ -411,7 +408,7 @@ class ExtendedTableau(Tableau):
         Exponentiates a Pauli string by the given exponent.
 
         This operation performs the following transformation:
-        (X^a Z^b)^n = w^(ab*n(n-1)/2) X^(na) Z^(nb)
+        $$(X^a Z^b)^n = \omega^{(ab\cdot n(n-1)/2)} X^{(na)} Z^{(nb)}$$
 
         Args:
             col (int): The column index of the Pauli string to exponentiate.
