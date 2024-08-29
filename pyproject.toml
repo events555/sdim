@@ -10,11 +10,11 @@ authors = [
   { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
 ]
 dependencies = [
-  "Diophantine",
   "numpy",
   "sympy",
   "cirq",
   "pdoc",
+  "Diophantine",
 ]
 
 
