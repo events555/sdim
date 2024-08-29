@@ -7,11 +7,15 @@ name = "sdim"
 version = "0.2.0"
 description = "A tableau Clifford simulator for qudits"
 authors = [
-  { name = "Steven Nguyen", email = "03stevennguyen@gmail.com" },
+  { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
 ]
 
 [project.dependencies]
 Diophantine = "*"
+numpy = "*"
+sympy = "*"
+cirq = "*"
+pdoc = "*"
 
 [project.optional-dependencies]
 test = ["cirq"]

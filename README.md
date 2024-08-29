@@ -2,12 +2,10 @@
 
 ## Project Overview
 
-There are no readily available stabilizer circuit simulators for **qudits** (multi-level quantum systems). The two most prominent ones are [Cirq](https://quantumai.google/cirq/build/qudits) qudit statevector simulation and [True-Q™](https://trueq.quantumbenchmark.com/index.html) closed source program.
-
-Qudits are a growing research interest as an alternative way to scale certain quantum architectures. 
+Despite the growing research interest in qudits as an alternative way to scale certain quantum architectures, no publicly available stabilizer circuit simulators for **qudits** (multi-level quantum systems) are available. The two most prominent ones are [Cirq](https://quantumai.google/cirq/build/qudits) which is a statevector simulation and [True-Q™](https://trueq.quantumbenchmark.com/index.html) which is a licensed program.
 
 The following are relevant details for the project:
-- Has support for **only Clifford** operations. 
+- Supports **only Clifford** operations. 
 - **Prime** dimensions are strongly tested while the "fast" solver for composite dimensions is known to have possible errors
     - The issue lies in math implementation details that can be found inside the markdown located in `sdim/tableau`
 - Does not currently `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`

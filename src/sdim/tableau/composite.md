@@ -10,7 +10,7 @@ One can then turn towards algorithms to compute the Smith-Normal form or Hermite
 
 This solver suffers from a common issue with simple to implement solvers—intermediate values may grow exponentially. This leads to integer overflow issues when working with fixed-point representations like NumPy. Therefore the solver relies strongly on [SymPy](https://www.sympy.org/en/index.html) for infinite-precision arithmetic, which is *very, very* slow.
 
-In it's present form, there is a hand written elimination algorithm that fails under certain edge cases. One can exactly solve for which eigenvalue of the measurement operator is represented by the tableau using [Diophantine](https://pypi.org/project/Diophantine/) by providing the `program.simulate(exact=true)` for *composite* dimensions.
+In it's present form, there is a hand written elimination algorithm that fails under certain edge cases. It emulates Gaussian elimination and solves Bezout's identity when a coprime element does not exist to pivot to. One can exactly solve for which eigenvalue of the measurement operator is represented by the tableau using [Diophantine](https://pypi.org/project/Diophantine/) by providing the `program.simulate(exact=true)` for *composite* dimensions.
 
 
 ### References
