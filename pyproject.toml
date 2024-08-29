@@ -9,13 +9,14 @@ description = "A tableau Clifford simulator for qudits"
 authors = [
   { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
 ]
+dependencies = [
+  "Diophantine",
+  "numpy",
+  "sympy",
+  "cirq",
+  "pdoc",
+]
 
-[project.dependencies]
-Diophantine = "*"
-numpy = "*"
-sympy = "*"
-cirq = "*"
-pdoc = "*"
 
 [project.optional-dependencies]
 test = ["cirq"]
