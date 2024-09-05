@@ -315,3 +315,20 @@ def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int) -> None:
     tableau.hadamard(qudit_index)
     return None
 
+def apply_reset(tableau: Tableau, qudit_index: int, _) -> Optional[MeasurementResult]:
+    """
+    Apply reset gate. IF the qudit is measured to be in the $\ket{1}$ state, reset it to the $\ket{0}$ state.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The index of the qudit to reset.
+        _ : Unused target index.
+
+    Returns:
+        Optional[MeasurementResult]: The result of the measurement, if applicable.
+    """
+    if isinstance(tableau, WeylTableau):
+        return tableau.measure_z(qudit_index)
+    else:
+        return tableau.measure(qudit_index)
+

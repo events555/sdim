@@ -21,7 +21,8 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     12: apply_CZ_inv,  # CZ inverse gate
     13: apply_SWAP,  # SWAP gate
     14: apply_measure, # Measure gate in computational basis
-    15: apply_measure_x # Measure gate in X basis
+    15: apply_measure_x, # Measure gate in X basis
+    16: apply_reset # Reset gate
 }
 
 
@@ -53,13 +54,14 @@ class Program:
         self.circuits = [circuit]
         self.measurement_results = []
 
-    def simulate(self, show_measurement: bool = False, verbose: bool = False,
-                 show_gate: bool = False, exact: bool = False) -> list[MeasurementResult]:
+    def simulate(self, show_measurement: bool = False, show_reset: bool = False,
+                 verbose: bool = False, show_gate: bool = False, exact: bool = False) -> list[MeasurementResult]:
         """
         Runs the circuit and applies the gates to the stabilizer tableau.
 
         Args:
             show_measurement (bool): Whether to print the measurement results.
+            show_reset (bool): Whether to print the reset operations applied.
             verbose (bool): Whether to print the stabilizer tableau at each time step.
             show_gate (bool): Whether to print the gate name at each time step.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
@@ -80,6 +82,11 @@ class Program:
                     print("\n")
                 measurement_result = self.apply_gate(gate)
                 if measurement_result is not None:
+                    if gate.gate_id == 16:
+                        if measurement_result.measurement_value == 1:
+                            apply_X(self.stabilizer_tableau, gate.qudit_index, None)
+                        if show_reset:
+                            print(measurement_result, "and reset to (0)")
                     self.measurement_results.append(measurement_result)
                 if show_gate:
                     if time < length - 1:

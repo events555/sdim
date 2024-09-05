@@ -90,6 +90,8 @@ class GateData:
         self.add_gate_alias("M", ["MEASURE", "COLLAPSE", "MZ"])
         self.add_gate("M_X", 1)
         self.add_gate_alias("M_X", ["MEASURE_X", "MX"])
+        self.add_gate("RESET", 1)
+        self.add_gate_alias("RESET", ["MR", "MEASURE_RESET", "MEASURE_R"])
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:
