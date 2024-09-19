@@ -10,3 +10,4 @@ output.prof
 profiling_results.txt
 /docs/
 main.py
+/dist/

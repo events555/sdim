@@ -7,14 +7,32 @@ Despite the growing research interest in qudits as an alternative way to scale c
 The following are relevant details for the project:
 - Supports **only Clifford** operations. 
 - **Prime** dimensions are strongly tested while the "fast" solver for composite dimensions is known to have possible errors
-    - The issue lies in math implementation details that can be found inside the markdown located in `sdim/tableau`
+    - The issue lies in math implementation details that can be found inside the [markdown](sdim/tableau/COMPOSITE.md) located in `sdim/tableau`
 - Does not currently `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`
 
 ## Project Installation
-Simply `git clone` the project and run `pip install -e .` to install the `sdim` python module.
+You can install the `sdim` Python module directly from PyPI using `pip install sdim`
 
 ## How to use sdim?
-Take a look at the Python notebooks inside examples.
+Take a look at the Python notebooks for an in-depth examples.
+```python
+from sdim import Circuit, Program
+
+# Create a new quantum circuit
+circuit = Circuit(4, 2) # Create a circuit with 4 qubits and dimension 2
+
+# Add gates to the circuit
+circuit.add_gate('H', 0)  # Hadamard gate on qubit 0
+circuit.add_gate('CNOT', 0, 1)  # CNOT gate with control on qubit 0 and target on qubit 1
+circuit.add_gate('CNOT', 0, [2, 3]) # Short-hand for multiple target qubits, applies CNOT between 0 -> 2 and 0 -> 3
+circuit.add_gate('MEASURE', [0, 1, 2, 3]) # Short-hand for multiple single-qubit gates
+
+# Create a program and add the circuit
+program = Program(circuit) # Must be given an initial circuit as a constructor argument
+
+# Execute the program
+result = program.simulate(show_measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
+```
 
 ## Primary References
 <a id="1">[1]

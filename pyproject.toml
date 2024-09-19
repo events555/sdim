@@ -1,35 +1,31 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
+[tool.poetry]
 name = "sdim"
-version = "0.2.0"
+version = "1.0.0"
 description = "A tableau Clifford simulator for qudits"
-authors = [
-  { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
-]
-urls = { 
-  "Homepage" = "https://events555.github.io/sdim/sdim.html",
-  "Repository" = "https://github.com/events555/sdim",
-  "Documentation" = "https://events555.github.io/sdim/sdim.html"
-}
-license = { file = "LICENSE" }
+authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>"]
+license = "GPL-3.0-or-later"
 readme = "README.md"
 keywords = ["quantum computing", "Clifford simulator", "qudits"]
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-  "Operating System :: OS Independent",
-]
-dependencies = [
-  "numpy",
-  "sympy",
-  "cirq",
-  "pdoc",
-  "Diophantine",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
 ]
 
+[tool.poetry.urls]
+Homepage = "https://events555.github.io/sdim/sdim.html"
+Repository = "https://github.com/events555/sdim"
+Documentation = "https://events555.github.io/sdim/sdim.html"
 
-[project.optional-dependencies]
-test = ["cirq"]
+[tool.poetry.dependencies]
+python = "^3.7"
+numpy = "*"
+sympy = "*"
+cirq = "*"
+pdoc = "*"
+Diophantine = "*"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
