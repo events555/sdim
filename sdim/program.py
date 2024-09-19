@@ -4,6 +4,7 @@ from .tableau.tableau_composite import WeylTableau
 from .tableau.tableau_prime import ExtendedTableau
 from .tableau.tableau_gates import *
 from sympy import isprime
+import copy
 # Gate function dictionary
 GATE_FUNCTIONS: dict[int, Callable] = {
     0: apply_I,      # I gate
@@ -53,53 +54,92 @@ class Program:
             self.stabilizer_tableau = tableau
         self.circuits = [circuit]
         self.measurement_results = []
+        self.initial_tableau = copy.copy(self.stabilizer_tableau)
 
-    def simulate(self, show_measurement: bool = False, show_reset: bool = False,
-                 verbose: bool = False, show_gate: bool = False, exact: bool = False) -> list[MeasurementResult]:
+    def simulate(self, shots: int = 1, show_measurement: bool = False,
+                 verbose: bool = False, show_gate: bool = False, exact: bool = False) -> list[list[list[MeasurementResult]]]:
         """
         Runs the circuit and applies the gates to the stabilizer tableau.
 
         Args:
+            shots (int): The number of times to run the simulation.
             show_measurement (bool): Whether to print the measurement results.
-            show_reset (bool): Whether to print the reset operations applied.
             verbose (bool): Whether to print the stabilizer tableau at each time step.
             show_gate (bool): Whether to print the gate name at each time step.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
                 Much slower but fails less often.
 
         Returns:
-            list[MeasurementResult]: A list of MeasurementResult objects representing
-            the measurement results. Returns an empty list if no measurements are present.
+            list or 3D list: Depending on the value of `shots`:
+                - If `shots == 1`, returns a list of `MeasurementResult` instances.
+                - If `shots > 1`, returns a 3D list of `MeasurementResult` objects.
+                The first axis is the qudit position,
+                the second axis is the measurement index (number of times a qudit was measured in a Circuit),
+                and the third axis is the shot number.
         """
+        num_qudits = self.stabilizer_tableau.num_qudits
+        self.measurement_results = [[] for _ in range(num_qudits)]  # First axis is qudit_index
+
         length = sum(len(circuit.operations) for circuit in self.circuits)
+
         if isinstance(self.stabilizer_tableau, WeylTableau) and exact:
             self.stabilizer_tableau.exact = True
-        for circuit in self.circuits:
-            for time, gate in enumerate(circuit.operations):
-                if time == 0 and verbose:
-                    print("Initial state")
-                    self.stabilizer_tableau.print_tableau()
-                    print("\n")
-                measurement_result = self.apply_gate(gate)
-                if measurement_result is not None:
-                    if gate.gate_id == 16:
-                        if measurement_result.measurement_value == 1:
-                            apply_X(self.stabilizer_tableau, gate.qudit_index, None)
-                        if show_reset:
-                            print(measurement_result, "and reset to (0)")
-                    self.measurement_results.append(measurement_result)
-                if show_gate:
-                    if time < length - 1:
-                        print("Time step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
-                    else:
-                        print("Final step", time, "\t", gate.name, gate.qudit_index, gate.target_index if gate.target_index is not None else "")
-                if verbose:
-                    self.stabilizer_tableau.print_tableau()
-                    print("\n")
+
+        for shot in range(shots):
+            # Reset the tableau to the initial state before each shot
+            self.stabilizer_tableau = copy.deepcopy(self.initial_tableau)
+            measurement_counts = [0] * num_qudits  
+
+            for circuit in self.circuits:
+                for time, gate in enumerate(circuit.operations):
+                    if time == 0 and verbose:
+                        print("Initial state")
+                        self.stabilizer_tableau.print_tableau()
+                        print("\n")
+
+                    measurement_result = self.apply_gate(gate)
+                    if measurement_result is not None:
+                        qudit_index = measurement_result.qudit_index
+                        measurement_number = measurement_counts[qudit_index]
+                        measurement_counts[qudit_index] += 1
+
+                        if len(self.measurement_results[qudit_index]) <= measurement_number:
+                            self.measurement_results[qudit_index].append([])
+
+                        self.measurement_results[qudit_index][measurement_number].append(measurement_result)
+
+                        # Meeasure_reset gate
+                        if gate.gate_id == 16:
+                            if measurement_result.measurement_value == 1:
+                                apply_X(self.stabilizer_tableau, gate.qudit_index, None)
+
+                    if show_gate:
+                        if time < length - 1:
+                            print("Time step", time, "\t", gate.name, gate.qudit_index,
+                                  gate.target_index if gate.target_index is not None else "")
+                        else:
+                            print("Final step", time, "\t", gate.name, gate.qudit_index,
+                                  gate.target_index if gate.target_index is not None else "")
+
+                    if verbose:
+                        self.stabilizer_tableau.print_tableau()
+                        print("\n")
+
             if show_measurement:
-                print("Measurement results:")
+                print(f"Measurement results for shot {shot + 1}:")
                 self.print_measurements()
-        return self.measurement_results
+
+        if shots == 1:
+            # Flatten the measurement results to a list of MeasurementResult instances
+            flattened_results = []
+            for qudit_index, measurements_per_qudit in enumerate(self.measurement_results):
+                for measurement_number, shots_list in enumerate(measurements_per_qudit):
+                    measurement_result = shots_list[0]
+                    flattened_results.append(measurement_result)
+            return flattened_results
+        else:
+            # Return the 3D list as per the new structure
+            return self.measurement_results
 
     def append_circuit(self, circuit: Circuit):
         """
@@ -147,8 +187,22 @@ class Program:
 
         This method iterates through the stored measurement results and prints each one.
         """
-        for result in self.measurement_results:
-            print(result)
+        if len(self.measurement_results) == 0:
+            print("No measurements recorded.")
+            return
+        
+        shots = len(self.measurement_results[0][0]) if self.measurement_results[0] else 0
+        if shots == 1:
+            for result in self.simulate():
+                print(result)
+        else:
+            for shot_index in range(shots):
+                print(f"Shot {shot_index + 1}:")
+                for qudit_index, measurements_per_qudit in enumerate(self.measurement_results):
+                    for measurement_number, shots_list in enumerate(measurements_per_qudit):
+                        measurement_result = shots_list[shot_index]
+                        print(f"{measurement_result} during measurement {measurement_number}")
+                print()
 
     def __str__(self) -> str:
         return str(self.stabilizer_tableau)

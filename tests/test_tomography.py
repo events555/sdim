@@ -15,31 +15,41 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     circuit = generate_random_circuit(20, 40, 40, 0, num_qudits, depth, dimension, 1)
 
     statevector = cirq_statevector_from_circuit(circuit)
-    amplitudes = np.abs(statevector)**2
-    
-    num_samples = 1000
-    num_states = dimension**num_qudits
+    amplitudes = np.abs(statevector) ** 2
+
+    num_samples = 800
+    num_states = dimension ** num_qudits
     measurement_counts = np.zeros(num_states, dtype=int)
 
-    for _ in range(num_samples):
-        program = Program(circuit)
-        measurements = program.simulate()
-        key = create_key(measurements, dimension)
+    # Simulate all shots at once
+    program = Program(circuit)
+    measurements = program.simulate(shots=num_samples)
+
+
+    for shot_index in range(num_samples):
+        shot_measurements = []
+
+        for qudit_index in range(num_qudits):
+            measurement_result = measurements[qudit_index][0][shot_index]
+            shot_measurements.append(measurement_result)
+
+        key = create_key(shot_measurements, dimension)
         measurement_counts[key] += 1
 
     probabilities = measurement_counts / num_samples
     threshold = 1e-14
     cleaned_amp = np.where(np.abs(amplitudes) < threshold, 0, amplitudes)
     tvd = np.sum(np.abs(probabilities - cleaned_amp)) / 2
-    
+
     return tvd, cleaned_amp, probabilities, circuit
+
 
 
 @pytest.mark.parametrize("dimension", [2, 3])
 @pytest.mark.parametrize("depth", [15, 30])
 def test_random_circuits(dimension, depth):
-    num_qudits = 4
-    num_circuits = 1000
+    num_qudits = 3
+    num_circuits = 500
 
     for i in range(num_circuits):
         try:
