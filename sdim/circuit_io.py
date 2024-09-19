@@ -69,7 +69,7 @@ def read_circuit(filename):
 
     return circuit
 
-def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", comment: str = ""):
+def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", comment: str = "", directory: str = None):
     """
     Writes a Circuit object to a file in the .chp format.
 
@@ -77,6 +77,7 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
         circuit (Circuit): The Circuit object to write.
         output_file (str): The name of the output file. Defaults to "random_circuit.chp".
         comment (str): An optional comment to include at the beginning of the file.
+        directory (str): Optional directory to save the file. If None, uses the default '../circuits/' relative to the script.
 
     Returns:
         str: The path to the written file.
@@ -96,10 +97,9 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
             gate_str += f" {gate.qudit_index}"
         chp_content += f"{gate_str}\n"
 
-
-    # Define the directory where the file will be saved
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    directory = os.path.join(script_dir, '../circuits/')
+    if directory is None:
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        directory = os.path.join(script_dir, '../circuits/')
 
     # Create the directory if it doesn't exist
     os.makedirs(directory, exist_ok=True)

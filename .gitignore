@@ -9,3 +9,4 @@ src/circuits/failed_circuit_*.chp
 output.prof
 profiling_results.txt
 /docs/
+main.py
