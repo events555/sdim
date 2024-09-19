@@ -9,6 +9,19 @@ description = "A tableau Clifford simulator for qudits"
 authors = [
   { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
 ]
+urls = { 
+  "Homepage" = "https://events555.github.io/sdim/sdim.html",
+  "Repository" = "https://github.com/events555/sdim",
+  "Documentation" = "https://events555.github.io/sdim/sdim.html"
+}
+license = { file = "LICENSE" }
+readme = "README.md"
+keywords = ["quantum computing", "Clifford simulator", "qudits"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+]
 dependencies = [
   "numpy",
   "sympy",

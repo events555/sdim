@@ -35,7 +35,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     return tvd, cleaned_amp, probabilities, circuit
 
 
-@pytest.mark.parametrize("dimension", [2])
+@pytest.mark.parametrize("dimension", [2, 3])
 @pytest.mark.parametrize("depth", [15, 30])
 def test_random_circuits(dimension, depth):
     num_qudits = 4
