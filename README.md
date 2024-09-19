@@ -11,7 +11,7 @@ The following are relevant details for the project:
 - Does not currently `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`
 
 ## Project Installation
-You can install the `sdim` Python module directly from PyPI using `pip install sdim`
+You can install the `sdim` Python module directly from [PyPI](https://pypi.org/project/sdim/) using `pip install sdim`
 
 ## How to use sdim?
 Take a look at the Python notebooks for an in-depth examples.
