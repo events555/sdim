@@ -110,7 +110,7 @@ class ExtendedTableau(Tableau):
         """
         for i in range(self.num_qudits):
             # We gain a phase from commuting XZ that depends on the product of xpow and zpow but multiply by 2 because we are tracking omega 1/2
-            # ie. HXZP' = ZX! = w^d-1 XZ
+            # ie. HXZH' = ZX! = w^d-1 XZ
             self.x_block[qudit_index, i], self.z_block[qudit_index, i] = -self.z_block[qudit_index, i], self.x_block[qudit_index, i]
             self.phase_vector[i] += self.phase_order * self.x_block[qudit_index, i] * self.z_block[qudit_index, i]
             self.phase_vector[i] %= self.order
@@ -123,16 +123,7 @@ class ExtendedTableau(Tableau):
         """
         Applies the inverse Hadamard gate to the qudit at the specified index.
 
-        The inverse Hadamard gate transformations depend on whether the qudit dimension is odd or even:
-
-        For odd dimensions:
-
-        | Input | Output   |
-        |-------|----------|
-        | $X$   | $Z^{-1}$ |
-        | $Z$   | $X$      |
-
-        For even dimensions:
+        The inverse Hadamard gate performs the following transformations:
 
         | Input | Output   |
         |-------|----------|
@@ -143,18 +134,12 @@ class ExtendedTableau(Tableau):
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
         """
         for i in range(self.num_qudits):
-            new_z_block = -self.x_block[qudit_index, i].copy()
-            new_x_block = self.z_block[qudit_index, i].copy()
-            self.z_block[qudit_index, i] = new_z_block % self.order
-            self.x_block[qudit_index, i] = new_x_block % self.order
-            self.phase_vector[i] -= self.phase_order * self.x_block[qudit_index, i] * self.z_block[qudit_index, i]
+            self.x_block[qudit_index, i], self.z_block[qudit_index, i] = self.z_block[qudit_index, i], -self.x_block[qudit_index, i]
+            self.phase_vector[i] += self.phase_order * self.x_block[qudit_index, i] * self.z_block[qudit_index, i]
             self.phase_vector[i] %= self.order
 
-            new_destab_z_block = -self.destab_x_block[qudit_index, i].copy()
-            new_destab_x_block = self.destab_z_block[qudit_index, i].copy()
-            self.destab_z_block[qudit_index, i] = new_destab_z_block % self.order
-            self.destab_x_block[qudit_index, i] = new_destab_x_block % self.order
-            self.destab_phase_vector[i] -= self.phase_order * self.destab_x_block[qudit_index, i] * self.destab_z_block[qudit_index, i]
+            self.destab_x_block[qudit_index, i], self.destab_z_block[qudit_index, i] = self.destab_z_block[qudit_index, i], -self.destab_x_block[qudit_index, i]
+            self.destab_phase_vector[i] += self.phase_order * self.destab_x_block[qudit_index, i] * self.destab_z_block[qudit_index, i]
             self.destab_phase_vector[i] %= self.order
 
     def phase(self, qudit_index: int):
@@ -174,7 +159,7 @@ class ExtendedTableau(Tableau):
 
         | Input           | Output               |
         |-----------------|----------------------|
-        | $XZ$            | $\omega^{1/2} XZ$    |
+        | $X$             | $\omega^{1/2} XZ$    |
         | $Z$             | $Z$                  |
 
         Where $\omega = e^{2\pi i / d}$ and $d$ is the qudit dimension.
@@ -223,10 +208,10 @@ class ExtendedTableau(Tableau):
 
         For even dimensions:
 
-        | Input               | Output |
-        |---------------------|--------|
-        | $\omega^{1/2} XZ$   | $XZ$   |
-        | $Z$                 | $Z$    |
+        | Input        | Output                  |
+        |--------------|-------------------------|
+        | $X$          | $\omega^{-1/2} XZ^{-1}$ |
+        | $Z$          | $Z$                     |
 
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Phase gate to.

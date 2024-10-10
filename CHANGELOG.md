@@ -36,3 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rename `composite.md` to `COMPOSITE.md`
 
 [1.1.0]: https://github.com/events555/sdim/releases/tag/v1.1.0
+
+## [1.2.0] - 2024-09-19
+
+### Fixed
+
+- Fix incorrect phase calculation on H_INV implementation in `tableau_prime.py`
+- Fix incorrect tableau conjugations for P_INV and H_INV for documentation
+
+### Added
+- Add empty `surface_code.ipynb` to examples
