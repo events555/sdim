@@ -56,7 +56,7 @@ class Program:
         self.measurement_results = []
         self.initial_tableau = copy.copy(self.stabilizer_tableau)
 
-    def simulate(self, shots: int = 1, show_measurement: bool = False,
+    def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False,
                  verbose: bool = False, show_gate: bool = False, exact: bool = False) -> list[list[list[MeasurementResult]]]:
         """
         Runs the circuit and applies the gates to the stabilizer tableau.
@@ -66,6 +66,7 @@ class Program:
             show_measurement (bool): Whether to print the measurement results.
             verbose (bool): Whether to print the stabilizer tableau at each time step.
             show_gate (bool): Whether to print the gate name at each time step.
+            record_tableau (bool): Whether to record the tableau after each measurement.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
                 Much slower but fails less often.
 
@@ -100,6 +101,9 @@ class Program:
                     measurement_result = self.apply_gate(gate)
                     if measurement_result is not None:
                         qudit_index = measurement_result.qudit_index
+                        if record_tableau:
+                            measurement_result.stabilizer_tableau = copy.deepcopy(self.stabilizer_tableau)
+
                         measurement_number = measurement_counts[qudit_index]
                         measurement_counts[qudit_index] += 1
 

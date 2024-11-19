@@ -5,40 +5,6 @@ import numpy as np
 from math import gcd
 
 @dataclass
-class MeasurementResult:
-    """
-    Represents the result of a qudit measurement in a quantum circuit.
-
-    Attributes:
-        qudit_index (int): The index of the measured qudit.
-        deterministic (bool): Whether the measurement result was deterministic.
-        measurement_value (int): The measured value of the qudit.
-    """
-
-    qudit_index: int
-    deterministic: bool
-    measurement_value: int
-
-    def __str__(self) -> str:
-        """
-        Returns a string representation of the measurement result.
-
-        Returns:
-            str: A human-readable description of the measurement result.
-        """
-        measurement_type_str = "deterministic" if self.deterministic else "random"
-        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}"
-
-    def __repr__(self) -> str:
-        """
-        Returns a string representation of the measurement result.
-
-        Returns:
-            str: Same as __str__ method.
-        """
-        return str(self)
-
-@dataclass
 class Tableau:
     """
     Represents a stabilizer tableau for a quantum circuit simulation.
@@ -187,3 +153,50 @@ class Tableau:
         self.print_phase_vector()
         self.print_z_block()
         self.print_x_block()
+
+
+@dataclass
+class MeasurementResult:
+    """
+    Represents the result of a qudit measurement in a quantum circuit.
+
+    Attributes:
+        qudit_index (int): The index of the measured qudit.
+        deterministic (bool): Whether the measurement result was deterministic.
+        measurement_value (int): The measured value of the qudit.
+    """
+
+    qudit_index: int
+    deterministic: bool
+    measurement_value: int
+    stabilizer_tableau: Optional[Tableau] = None
+    
+    def __str__(self) -> str:
+        """
+        Returns a string representation of the measurement result.
+
+        Returns:
+            str: A human-readable description of the measurement result.
+        """
+        measurement_type_str = "deterministic" if self.deterministic else "random"
+        return f"Measured qudit ({self.qudit_index}) as ({self.measurement_value}) and was {measurement_type_str}"
+
+    def __repr__(self) -> str:
+        """
+        Returns a string representation of the measurement result.
+
+        Returns:
+            str: Same as __str__ method.
+        """
+        return str(self)
+    
+    def get_tableau(self):
+        """
+        Returns the stabilizer tableau.
+
+        Returns:
+            Tableau: The stabilizer tableau.
+        """
+        if self.stabilizer_tableau is None:
+            raise ValueError("Stabilizer tableau not recorded during measurement")
+        return self.stabilizer_tableau

@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fix incorrect phase calculation on H_INV implementation in `tableau_prime.py`
 - Fix incorrect tableau conjugations for P_INV and H_INV for documentation
+- Fix implementation in prime dimensions for SWAP gate 
 
 ### Added
 - Add empty `surface_code.ipynb` to examples
+- Add Optional `stabilizer_tableau` to `MeasurementResult` dataclass 
+- Add `record_tableau` argument to `simulate()` to record final stabilizer tableau before measurement
