@@ -49,3 +49,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add empty `surface_code.ipynb` to examples
 - Add Optional `stabilizer_tableau` to `MeasurementResult` dataclass 
 - Add `record_tableau` argument to `simulate()` to record final stabilizer tableau before measurement
+- Add unit test for SWAP gate
