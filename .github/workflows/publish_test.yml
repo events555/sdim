@@ -22,16 +22,15 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install Poetry
-        run: pip install poetry
-
       - name: Install Dependencies
-        run: poetry install
+        run: pip install build twine
 
       - name: Build Package
-        run: poetry build
+        run: python -m build
 
       - name: Publish to TestPyPI
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: poetry publish --repository testpypi --username __token__ --password $PYPI_TOKEN
+          TWINE_PASSWORD: ${{ secrets.OIDC_TOKEN }}
+        run: |
+          python -m twine upload --repository testpypi dist/* --non-interactive \
+          --username __token__ --password $TWINE_PASSWORD
