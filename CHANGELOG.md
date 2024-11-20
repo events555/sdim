@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [1.1.0]: https://github.com/events555/sdim/releases/tag/v1.1.0
 
-## [1.2.0] - 2024-09-19
+## [1.2.0] - 2024-11-19
 
 ### Fixed
 
@@ -50,3 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add Optional `stabilizer_tableau` to `MeasurementResult` dataclass 
 - Add `record_tableau` argument to `simulate()` to record final stabilizer tableau before measurement
 - Add unit test for SWAP gate
+- Add automated GitHub action workflow for PyPi deployment from `main` and `dev` branch to PyPi and TestPyPi respectively
+
+[1.2.0]: https://github.com/events555/sdim/releases/tag/v1.2.0
