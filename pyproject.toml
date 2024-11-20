@@ -19,7 +19,7 @@ Documentation = "https://events555.github.io/sdim/sdim.html"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-numpy = ">=2.0.0"
+numpy = ">=1.25.0"
 sympy = ">=1.12.1"
 cirq = ">=1.0.0"
 Diophantine = "*"
