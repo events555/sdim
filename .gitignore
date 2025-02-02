@@ -7,7 +7,8 @@ src/circuits/failed_circuit_*.chp
 *.vscode/
 *.trunk/
 output.prof
-profiling_results.txt
 /docs/
 main.py
 /dist/
+profiling_results*.txt
+qutrit_cliff_gate_defs.py

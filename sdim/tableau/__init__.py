@@ -43,3 +43,4 @@ This submodule is essential for working with quantum states in a structured and 
 from .tableau_composite import WeylTableau
 from .dataclasses import MeasurementResult, Tableau
 from .tableau_prime import ExtendedTableau
+from .tableau_optimized import hadamard_optimized, phase_optimized, phase_inv_optimized, hadamard_inv_optimized

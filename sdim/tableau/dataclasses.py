@@ -11,6 +11,7 @@ class Tableau:
 
     This class encapsulates the phase vector, Z block, and X block that 
     describe the state of a quantum system in the stabilizer formalism.
+    The stabilizers are stored as columns in the Z and X blocks.
 
     Attributes:
         num_qudits (int): The number of qudits in the system.
@@ -36,6 +37,14 @@ class Tableau:
             self.z_block = np.eye(self.num_qudits, dtype=np.int64)
         if self.x_block is None:
             self.x_block = np.zeros((self.num_qudits, self.num_qudits), dtype=np.int64)
+
+    def modulo(self):
+        """
+        Applies the modulo operators to the phase vector and stabilizers according to the order and dimension
+        """
+        self.phase_vector %= self.phase_order
+        self.z_block %= self.dimension
+        self.x_block %= self.dimension
 
     @cached_property
     def coprime_order(self) -> set:

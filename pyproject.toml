@@ -23,6 +23,7 @@ numpy = ">=1.25.0"
 sympy = ">=1.12.1"
 cirq = ">=1.0.0"
 Diophantine = "*"
+numba = "*"
 
 [tool.poetry.dev-dependencies]
 pdoc = "*"

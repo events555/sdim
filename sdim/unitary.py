@@ -352,7 +352,6 @@ class GeneralizedCNOTGateInverse(cirq.Gate):
     def _circuit_diagram_info_(self, args):
         return (f"CNOT_{self.d}_control†", f"CNOT_{self.d}_target†")
     
-
 class GeneralizedCZGate(cirq.Gate):
     def __init__(self, d):
         super(GeneralizedCZGate, self).__init__()
@@ -393,7 +392,7 @@ class GeneralizedCZGateInverse(cirq.Gate):
         
     def _circuit_diagram_info_(self, args):
         return (f"CZ_{self.d}_control†", f"CZ_{self.d}_target†")
-    
+
 class IdentityGate(cirq.Gate):
     def __init__(self, d):
         super(IdentityGate, self).__init__()

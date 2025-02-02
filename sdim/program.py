@@ -102,7 +102,8 @@ class Program:
                         print("Initial state")
                         self.stabilizer_tableau.print_tableau()
                         print("\n")
-
+                    if time % 100 == 0:
+                        self.stabilizer_tableau.modulo()
                     measurement_result = self.apply_gate(gate)
                     if measurement_result is not None:
                         qudit_index = measurement_result.qudit_index
@@ -133,7 +134,7 @@ class Program:
                     if verbose:
                         self.stabilizer_tableau.print_tableau()
                         print("\n")
-
+            self.stabilizer_tableau.modulo()
             if show_measurement:
                 print(f"Measurement results for shot {shot + 1}:")
                 self.print_measurements()
