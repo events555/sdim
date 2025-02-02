@@ -53,8 +53,6 @@ def read_circuit(filename):
             continue
         parts = line.split()
         gate_name = parts[0].upper()
-        
-        #gate_qubits = [int(qubit) for qubit in parts[1:]]
 
         # Extract all purely numerical arguments as qubit indices
         gate_qubits = [int(qubit) for qubit in parts[1:] if qubit.isdigit()]
@@ -71,8 +69,6 @@ def read_circuit(filename):
                 raise ValueError("Extra parameter doesn't have the correct format.")
             params_dict[param_parts[0]] = param_parts[1]
 
-        # The number of arguments is the number of parts minus 1 (for the gate name)
-        #num_args = len(parts) - 1
         num_indices = len(gate_qubits)
 
         if num_indices == 1:
