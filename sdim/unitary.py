@@ -362,7 +362,7 @@ class GeneralizedCZGate(cirq.Gate):
         return (self.d, self.d)
 
     def _unitary_(self):
-        return (np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) * generate_cnot_matrix(self.d) * (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))
+        return (np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))
     
     def __pow__(self, exponent):
         if exponent == 1:
@@ -383,7 +383,7 @@ class GeneralizedCZGateInverse(cirq.Gate):
         return (self.d, self.d)
 
     def _unitary_(self):
-        return np.conj((np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) * generate_cnot_matrix(self.d) * (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))).T
+        return np.conj((np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))).T
     
     def __pow__(self, exponent):
         if exponent == 1:
