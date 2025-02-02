@@ -45,6 +45,7 @@ class GateData:
         self.add_gate_hada(dimension)
         self.add_gate_controlled(dimension)
         self.add_gate_collapsing(dimension)
+        self.add_gate_noise(dimension)
 
     def __str__(self):
         return "\n".join(str(gate) for gate in self.gateMap.values())
@@ -92,6 +93,10 @@ class GateData:
         self.add_gate_alias("M_X", ["MEASURE_X", "MX"])
         self.add_gate("RESET", 1)
         self.add_gate_alias("RESET", ["MR", "MEASURE_RESET", "MEASURE_R"])
+
+    def add_gate_noise(self, d):
+        self.add_gate("N1", 1)
+        self.add_gate_alias("N1", ["NOISE1"])
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:

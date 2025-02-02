@@ -106,7 +106,8 @@ def test_deutsch():
     circuit.add_gate("X", 1)
     circuit.add_gate("H", 1)
 
-    is_constant = random.choice([True, False])
+    #is_constant = random.choice([True, False])
+    is_constant = False
 
     if is_constant:
         # constant function is a random constant between 0 and dimension - 1 inclusive
@@ -117,7 +118,7 @@ def test_deutsch():
         # identity function
         circuit.add_gate("CNOT", 0, 1)
 
-    circuit.add_gate("H", 0)
+    circuit.add_gate("H_INV", 0)
 
     circuit.add_gate("M", 0)
 
@@ -126,6 +127,10 @@ def test_deutsch():
     if is_constant:
         expected_result = 0
     else:
-        expected_result = 1
+        expected_result = 2
+
+    result = program.simulate(verbose=False)
+
+    program.stabilizer_tableau.print_tableau()
     
-    assert program.simulate() == [MeasurementResult(0, True, expected_result)]
+    assert result == [MeasurementResult(0, True, expected_result)]

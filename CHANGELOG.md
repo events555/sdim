@@ -53,3 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add automated GitHub action workflow for PyPi deployment from `main` and `dev` branch to PyPi and TestPyPi respectively
 
 [1.2.0]: https://github.com/events555/sdim/releases/tag/v1.2.0
+
+## [1.3.0] - 2025-02-02
+
+### Added
+- Add noise validation with `test_noise_and_io.py` using PyTest framework.
+- Add Cirq definitions for CZ and its inverse gates.
+
+### Changed
+- Update `circuit_io.py`  to support named parameters single-qudit gates.
+- Included support for inverse symbol of Hadamard in the Cirq circuit diagram.
+
+[1.3.0]: https://github.com/events555/sdim/releases/tag/v1.3.0
