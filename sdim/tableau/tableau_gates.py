@@ -299,7 +299,8 @@ def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int, *_) -> Non
     """
     Apply SWAP gate.
 
-    Taken from Beaudrap Lemma 6 (eq 19)
+    Taken from Beaudrap Lemma 6 (eq 19) for composite case
+    Taken from Farinholt Figure 1 for prime case.
 
     Args:
         tableau (Tableau): The quantum tableau.
@@ -309,11 +310,22 @@ def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int, *_) -> Non
     Returns:
         None
     """
-    tableau.cnot(qudit_index, target_index)
-    tableau.cnot_inv(target_index, qudit_index)
-    tableau.cnot(qudit_index, target_index)
-    tableau.hadamard(qudit_index)
-    tableau.hadamard(qudit_index)
+    if isinstance(tableau, WeylTableau):
+        tableau.cnot(qudit_index, target_index)
+        tableau.cnot_inv(target_index, qudit_index)
+        tableau.cnot(qudit_index, target_index)
+        tableau.hadamard(qudit_index)
+        tableau.hadamard(qudit_index)
+    else:
+        tableau.cnot(qudit_index, target_index)
+        tableau.hadamard(qudit_index)
+        tableau.hadamard(target_index)
+        tableau.cnot(qudit_index, target_index)
+        tableau.hadamard(qudit_index)
+        tableau.hadamard(target_index)
+        tableau.cnot(qudit_index, target_index)
+        tableau.hadamard(target_index)
+        tableau.hadamard(target_index)
     return None
 
 def apply_reset(tableau: Tableau, qudit_index: int, *_) -> Optional[MeasurementResult]:

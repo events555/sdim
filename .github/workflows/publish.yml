@@ -1,0 +1,36 @@
+name: Publish Python Package
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set Up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install Dependencies
+        run: pip install build twine
+
+      - name: Build Package
+        run: python -m build
+
+      - name: Publish to PyPI via OIDC
+        env:
+          TWINE_PASSWORD: ${{ secrets.OIDC_TOKEN }}
+        run: |
+          python -m twine upload dist/* --non-interactive \
+          --username __token__ --password $TWINE_PASSWORD

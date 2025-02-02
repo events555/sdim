@@ -45,6 +45,24 @@ def test_qutrit_flip():
     program = Program(circuit)
     assert program.simulate() == [MeasurementResult(0, True, 1)]
 
+@pytest.mark.parametrize("dimension", [2, 3, 4, 5])
+def test_qudit_swap_computational_basis(dimension):
+    circuit = Circuit(2, dimension)
+
+    x0 = random.choice([i for i in range(dimension)])
+    x1 = random.choice([i for i in range(dimension)])
+
+    for _ in range(x0):
+        circuit.add_gate("X", 0)
+    for _ in range(x1):
+        circuit.add_gate("X", 1)
+    
+    circuit.add_gate("SWAP", 0, 1)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    program = Program(circuit)
+    assert program.simulate() == [MeasurementResult(0, True, x1), MeasurementResult(1, True, x0)]
+
 def test_qubit_deutsch():
     # Create circuit
     circuit = Circuit(2, 2)
@@ -78,10 +96,10 @@ def test_qubit_deutsch():
 
 def test_deutsch():
     # input the dimension here
-    d = 3
+    dimension = 3
     
     # Create circuit
-    circuit = Circuit(2, d)
+    circuit = Circuit(2, dimension)
 
     # Put qudits into |+> and |-> states
     circuit.add_gate("H", 0)
@@ -92,8 +110,8 @@ def test_deutsch():
     is_constant = False
 
     if is_constant:
-        # constant function is a random constant between 0 and d - 1 inclusive
-        function_constant = random.choice([i for i in range(d)])
+        # constant function is a random constant between 0 and dimension - 1 inclusive
+        function_constant = random.choice([i for i in range(dimension)])
         for i in range(function_constant):
             circuit.add_gate("X", 1)
     else:
