@@ -23,8 +23,13 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     13: apply_SWAP,  # SWAP gate
     14: apply_measure, # Measure gate in computational basis
     15: apply_measure_x, # Measure gate in X basis
-    16: apply_reset # Reset gate
+    16: apply_reset, # Reset gate
+    17: apply_single_qudit_noise # Random Pauli noise gate
 }
+
+# Defined to eventually support noise parameters on arbitrary gates
+# Also partial work for classifying all gates for more sophisticated behavior in apply_gate
+noise_gate_indices = {17}
 
 
 class Program:
@@ -177,7 +182,7 @@ class Program:
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
-        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index)
+        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, instruc.params)
         return measurement_result
 
 

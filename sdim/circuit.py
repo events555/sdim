@@ -1,6 +1,6 @@
 from .gatedata import GateData
 from dataclasses import dataclass
-from typing import Union, List
+from typing import Union, Optional, List
 
 @dataclass
 class CircuitInstruction:
@@ -17,6 +17,7 @@ class CircuitInstruction:
         target_index (int, optional): The index of the target qudit for two-qudit gates.
         gate_id (int): The unique identifier for the gate.
         name (str): The canonical name of the gate.
+        params (dict, optional): Additional parameters for specific gates (i.e. noise gates)
 
     Raises:
         ValueError: If the specified gate is not found in gate_data.
@@ -27,6 +28,9 @@ class CircuitInstruction:
     target_index: int = None
     gate_id: int = None
     name: str = None
+    #channel: Optional[str] = None
+    #prob: Optional[float] = None
+    params: Optional[dict] = None
 
     def __post_init__(self):
         self.gate_id = self.gate_data.get_gate_id(self.gate_name)
@@ -71,7 +75,7 @@ class Circuit:
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
-    def add_gate(self, gate_name: str, control: Union[int, List[int]], target: Union[int, List[int], None] = None):
+    def add_gate(self, gate_name: str, control: Union[int, List[int]], target: Union[int, List[int], None] = None, **kwargs):
         """
         Adds gate operation(s) to the circuit.
 
@@ -79,6 +83,10 @@ class Circuit:
             gate_name (str): The name of the gate to add.
             control (int or List[int]): The index or indices of the control qudit(s).
             target (int, List[int], or None, optional): The index or indices of the target qudit(s).
+
+        Optional parameters:
+            channel (str): Channel type for noise.  Valid channels are "f", "p", and "d" for flip errors, phase errors, and depolarizing noise, respectively
+            prob (float): Probability associated with the noise channel.
 
         Returns:
             Circuit: The current Circuit object with the added operation(s).
@@ -90,10 +98,12 @@ class Circuit:
         control = [control] if isinstance(control, int) else control
         target = [target] if isinstance(target, int) else target
 
+        #apply_additional_depolarizing_noise = (not (is_noise_gate)) and (not (probability is None))
+
         # Handle single-qubit gates
         if target is None:
             for c in control:
-                self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None))
+                self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None, params=kwargs))
             return
 
         # Generate all combinations of control and target qubits
