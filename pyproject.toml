@@ -24,6 +24,7 @@ sympy = ">=1.12.1"
 cirq = ">=1.0.0"
 Diophantine = "*"
 numba = "*"
+networkx = "^3.4.2"
 
 [tool.poetry.dev-dependencies]
 pdoc = "*"

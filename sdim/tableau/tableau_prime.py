@@ -5,7 +5,7 @@ from functools import cached_property
 from typing import Optional, Tuple
 from math import gcd
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
-from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized
+from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized
 from numba import njit, prange
 
 @dataclass
@@ -136,7 +136,7 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
         """
-        hadamard_optimized(
+        hadamard_inv_optimized(
             self.x_block, self.z_block, self.phase_vector,
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
@@ -203,7 +203,7 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Phase gate to.
         """
-        phase_optimized(self.x_block, self.z_block, self.phase_vector,
+        phase_inv_optimized(self.x_block, self.z_block, self.phase_vector,
                        self.destab_x_block, self.destab_z_block,
                        self.destab_phase_vector, 
                        qudit_index,

@@ -375,8 +375,8 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
         prob = 0.5
         noise_channel = 'd'
     else:
-        prob = float(params['prob'])
-        noise_channel = params['noise_channel']
+        prob = float(params.get('prob', 0.5))
+        noise_channel = params.get('noise_channel', 'd')
 
     # TODO: Sanity check parameters
 

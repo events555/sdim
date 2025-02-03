@@ -1,6 +1,7 @@
 src/sdim.egg-info/
-src/circuits/random_circuit_*.chp
-src/circuits/failed_circuit_*.chp
+circuits/random*.chp
+circuits/failed*.chp
+circuits/test*.chp
 **/.pytest_cache/
 .pytest_cache/
 **/__pycache__/

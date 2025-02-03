@@ -63,5 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Update `circuit_io.py`  to support named parameters single-qudit gates.
 - Included support for inverse symbol of Hadamard in the Cirq circuit diagram.
+- Update `tableau_prime.py` to support parallelized for-loops using *numba*
+
+### To-do
+- Fix automated deployment with GitHub actions
+- Implement two-qubit noise
 
 [1.3.0]: https://github.com/events555/sdim/releases/tag/v1.3.0
