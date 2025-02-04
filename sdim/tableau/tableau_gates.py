@@ -289,7 +289,7 @@ def apply_measure_x(tableau: Tableau, qudit_index: int, *_) -> Optional[Measurem
     Returns:
         Optional[MeasurementResult]: The result of the measurement, if applicable.
     """
-    tableau.hadamard(qudit_index)
+    tableau.hadamard_inv(qudit_index)
     if isinstance(tableau, WeylTableau):
         return tableau.measure_z(qudit_index)
     else:

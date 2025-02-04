@@ -64,7 +64,6 @@ def phase_optimized(x_block, z_block, phase_vector,
                    destab_phase_vector,
                    qudit_index: int,
                    num_qudits: int,
-                   phase_order: int,
                    even: int):
     # Parallelize loop over qudits
     for i in prange(num_qudits):
@@ -72,10 +71,8 @@ def phase_optimized(x_block, z_block, phase_vector,
             phase_vector[i] += x_block[qudit_index, i] ** 2
             destab_phase_vector[i] += destab_x_block[qudit_index, i] ** 2
         else:
-            phase_vector[i] += (phase_order * x_block[qudit_index, i] * 
-                            (x_block[qudit_index, i] - 1)) // 2
-            destab_phase_vector[i] += (phase_order * destab_x_block[qudit_index, i] * 
-                                    (destab_x_block[qudit_index, i] - 1)) // 2
+            phase_vector[i] += (x_block[qudit_index, i] * (x_block[qudit_index, i] - 1)) // 2
+            destab_phase_vector[i] += (destab_x_block[qudit_index, i] * (destab_x_block[qudit_index, i] - 1)) // 2
         z_block[qudit_index, i] += x_block[qudit_index, i]
         destab_z_block[qudit_index, i] += destab_x_block[qudit_index, i]
 
@@ -86,19 +83,14 @@ def phase_inv_optimized(x_block, z_block, phase_vector,
                        destab_phase_vector,
                        qudit_index: int,
                        num_qudits: int,
-                       phase_order: int,
                        even: bool):
     for i in prange(num_qudits):
         if even:
             phase_vector[i] -= x_block[qudit_index, i] ** 2
             destab_phase_vector[i] -= destab_x_block[qudit_index, i] ** 2
         else:
-            phase_vector[i] -= (phase_order * x_block[qudit_index, i] * 
-                             (x_block[qudit_index, i]-1)) // 2
-            destab_phase_vector[i] -= (phase_order * destab_x_block[qudit_index, i] * 
-                                    (destab_x_block[qudit_index, i]-1)) // 2
+            phase_vector[i] -= (x_block[qudit_index, i] * (x_block[qudit_index, i]-1)) // 2
+            destab_phase_vector[i] -= (destab_x_block[qudit_index, i] * (destab_x_block[qudit_index, i]-1)) // 2
             
-        z_block[qudit_index, i] = (z_block[qudit_index, i] - 
-                                  x_block[qudit_index, i])
-        destab_z_block[qudit_index, i] = (destab_z_block[qudit_index, i] - 
-                                         destab_x_block[qudit_index, i])
+        z_block[qudit_index, i] -= x_block[qudit_index, i]
+        destab_z_block[qudit_index, i] -= destab_x_block[qudit_index, i]

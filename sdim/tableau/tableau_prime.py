@@ -177,7 +177,6 @@ class ExtendedTableau(Tableau):
                        self.destab_phase_vector, 
                        qudit_index,
                        self.num_qudits,
-                       self.phase_order,
                        self.even)
 
     def phase_inv(self, qudit_index: int):
@@ -208,7 +207,6 @@ class ExtendedTableau(Tableau):
                        self.destab_phase_vector, 
                        qudit_index,
                        self.num_qudits,
-                       self.phase_order,
                        self.even)
     def cnot(self, control: int, target: int):
         """

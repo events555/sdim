@@ -42,10 +42,9 @@ class Tableau:
         """
         Applies the modulo operators to the phase vector and stabilizers according to the order and dimension
         """
-        self.phase_vector %= self.phase_order
         self.z_block %= self.dimension
         self.x_block %= self.dimension
-
+        self.phase_vector %= self.order
     @cached_property
     def coprime_order(self) -> set:
         """
