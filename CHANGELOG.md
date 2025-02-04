@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fix reset gate not properly working for dimensions greater than 2
-
+- Fix sign convention on CZ, where prior CZ_INV was being treated as CZ and vice versa
 ### To-do
 - Fix automated deployment with GitHub actions
 - Implement two-qubit noise

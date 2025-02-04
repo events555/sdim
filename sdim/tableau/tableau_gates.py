@@ -238,9 +238,9 @@ def apply_CZ(tableau: Tableau, control: int, target: int, *_) -> None:
     Returns:
         None
     """
-    tableau.hadamard(target)
-    tableau.cnot(control, target)
     tableau.hadamard_inv(target)
+    tableau.cnot(control, target)
+    tableau.hadamard(target)
     return None
 
 def apply_CZ_inv(tableau: Tableau, control: int, target: int, *_) -> None:
@@ -255,9 +255,9 @@ def apply_CZ_inv(tableau: Tableau, control: int, target: int, *_) -> None:
     Returns:
         None
     """
-    tableau.hadamard(target)
-    tableau.cnot_inv(control, target)
     tableau.hadamard_inv(target)
+    tableau.cnot_inv(control, target)
+    tableau.hadamard(target)
     return None
 
 def apply_measure(tableau: Tableau, qudit_index: int, *_) -> Optional[MeasurementResult]:
