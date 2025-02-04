@@ -94,6 +94,61 @@ def test_qubit_deutsch():
     
     assert program.simulate() == [MeasurementResult(0, True, expected_result)]
 
+def test_z_stabilizer_extraction():
+    """
+    Five qutrit circuit that measures two operators initialized to state $|111\rangle$
+
+    $Z_2 \otimes Z_3 \otimes Z_4^\dag$ onto qutrit 0
+    
+    $Z_2^\dag \otimes Z_3^\dag \otimes Z_4$ onto qutrit 1
+
+    Outcomes are $\omega$ and $\omega^2$ for the operators respectively
+    """
+    circuit = Circuit(dimension=3, num_qudits=5)
+    circuit.add_gate("X", [2, 3, 4])
+    circuit.add_gate("H", 0)
+    circuit.add_gate("CZ", 0, 2)
+    circuit.add_gate("CZ", 0, 3)
+    circuit.add_gate("CZ_INV", 0, 4)
+    circuit.add_gate("H_INV", 0)
+    circuit.add_gate("H", 1)
+    circuit.add_gate("CZ_INV", 1, 2)
+    circuit.add_gate("CZ_INV", 1, 3)
+    circuit.add_gate("CZ", 1, 4)
+    circuit.add_gate("H_INV", 1)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    program = Program(circuit)
+    assert program.simulate() == [MeasurementResult(0, True, 1), MeasurementResult(1, True, 2)]
+
+def test_x_stabilizer_extraction():
+    """
+    Five qutrit circuit that measures two operators 
+    
+    $X_2 \otimes X_3 \otimes X_4^\dag$ onto qutrit 0
+    
+    $X_2^\dag \otimes X_3^\dag \otimes X_4$ onto qutrit 1
+    
+    Introduces a phase error on qutrit 2
+    """
+    circuit = Circuit(dimension=3, num_qudits=5)
+    circuit.add_gate("H", [2,3,4])
+    circuit.add_gate("Z", 2)
+    circuit.add_gate("H", 0)
+    circuit.add_gate("CX", 0, 2)
+    circuit.add_gate("CX", 0, 3)
+    circuit.add_gate("CX_INV", 0, 4)
+    circuit.add_gate("H_INV", 0)
+    circuit.add_gate("H", 1)
+    circuit.add_gate("CX_INV", 1, 2)
+    circuit.add_gate("CX_INV", 1, 3)
+    circuit.add_gate("CX", 1, 4)
+    circuit.add_gate("H_INV", 1)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    program = Program(circuit)
+    assert program.simulate() == [MeasurementResult(0, True, 2), MeasurementResult(1, True, 1)]
+
 def test_deutsch():
     # input the dimension here
     dimension = 3
