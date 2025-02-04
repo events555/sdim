@@ -120,7 +120,9 @@ class Program:
 
                         # Meeasure_reset gate
                         if gate.gate_id == 16:
-                            if measurement_result.measurement_value == 1:
+                            # Apply X gates until we reach 0 from the measurement value
+                            steps_to_zero = (-measurement_result.measurement_value) % self.stabilizer_tableau.dimension
+                            for _ in range(steps_to_zero):
                                 apply_X(self.stabilizer_tableau, gate.qudit_index, None)
 
                     if show_gate:

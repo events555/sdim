@@ -65,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Included support for inverse symbol of Hadamard in the Cirq circuit diagram.
 - Update `tableau_prime.py` to support parallelized for-loops using *numba*
 
+### Fixed
+- Fix reset gate not properly working for dimensions greater than 2
+
 ### To-do
 - Fix automated deployment with GitHub actions
 - Implement two-qubit noise
