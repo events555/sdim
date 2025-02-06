@@ -63,6 +63,78 @@ def test_qudit_swap_computational_basis(dimension):
     program = Program(circuit)
     assert program.simulate() == [MeasurementResult(0, True, x1), MeasurementResult(1, True, x0)]
 
+@pytest.mark.parametrize("dimension", [2, 3, 4, 5])
+def test_qudit_swap_self_inverse(dimension):
+    """
+    Test that the SWAP gate is self-inverse. Applying two consecutive SWAP gates
+    should leave the original state unchanged.
+    """
+    circuit = Circuit(2, dimension)
+    
+    # Prepare a random computational basis state.
+    x0 = random.choice(range(dimension))
+    x1 = random.choice(range(dimension))
+    for _ in range(x0):
+        circuit.add_gate("X", 0)
+    for _ in range(x1):
+        circuit.add_gate("X", 1)
+    
+    # Apply SWAP twice.
+    circuit.add_gate("SWAP", 0, 1)
+    circuit.add_gate("SWAP", 0, 1)
+    
+    # Measure both qudits.
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    
+    program = Program(circuit)
+    expected = [MeasurementResult(0, True, x0), MeasurementResult(1, True, x1)]
+    assert program.simulate() == expected, (
+        f"Double SWAP failed for dimension={dimension} with initial states x0={x0}, x1={x1}"
+    )
+
+@pytest.mark.parametrize("a", range(3))
+@pytest.mark.parametrize("b", range(3))
+def test_qutrit_swap_in_x_basis(a, b):
+    """
+    Test that the SWAP gate correctly swaps states prepared in the X basis.
+    
+    The preparation for each qudit is as follows:
+      1. Start in the computational |0> state.
+      2. Apply X^a (or X^b) to shift |0> to |a> (or |b>).
+      3. Apply the Fourier gate F so that F|a> is an eigenstate of the X operator
+         with eigenvalue ω^a (and similarly for F|b>).
+    
+    After applying SWAP, the state on qudit 0 should be F|b> and on qudit 1 should be F|a>.
+    Measuring directly in the X basis (with "MX") should then return outcomes b and a respectively.
+    """
+    circuit = Circuit(2, 3)
+
+    for _ in range(a):
+        circuit.add_gate("X", 0)
+    circuit.add_gate("DFT", 0)
+
+    for _ in range(b):
+        circuit.add_gate("X", 1)
+    circuit.add_gate("DFT", 1)
+
+    circuit.add_gate("SWAP", 0, 1)
+
+    circuit.add_gate("MX", 0)
+    circuit.add_gate("MX", 1)
+
+    program = Program(circuit)
+    result = program.simulate()
+
+    expected = [
+        MeasurementResult(0, True, b),
+        MeasurementResult(1, True, a)
+    ]
+    assert result == expected, (
+        f"SWAP in X basis failed for preparation F|{a}> and F|{b}>: "
+        f"expected {expected}, got {result}"
+    )
+
 def test_qubit_deutsch():
     # Create circuit
     circuit = Circuit(2, 2)

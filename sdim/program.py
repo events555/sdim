@@ -199,16 +199,19 @@ class Program:
 
         This method iterates through the stored measurement results and prints each one.
         """
-        if len(self.measurement_results) == 0:
+        shot_count = 0
+        for qudit_measurements in self.measurement_results:
+            for measurement_group in qudit_measurements:
+                shot_count = max(shot_count, len(measurement_group))
+                
+        if shot_count == 0:
             print("No measurements recorded.")
             return
-        
-        shots = len(self.measurement_results[0][0]) if self.measurement_results[0] else 0
-        if shots == 1:
+        if shot_count == 1:
             for result in self.simulate():
                 print(result)
         else:
-            for shot_index in range(shots):
+            for shot_index in range(shot_count):
                 print(f"Shot {shot_index + 1}:")
                 for qudit_index, measurements_per_qudit in enumerate(self.measurement_results):
                     for measurement_number, shots_list in enumerate(measurements_per_qudit):
