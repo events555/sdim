@@ -5,7 +5,7 @@ from functools import cached_property
 from typing import Optional, Tuple
 from math import gcd
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
-from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized
+from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized, cnot_optimized, cnot_inv_optimized
 from numba import njit, prange
 
 @dataclass
@@ -122,6 +122,7 @@ class ExtendedTableau(Tableau):
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
         )
+        
     def hadamard_inv(self, qudit_index: int):
         """
         Applies the inverse Hadamard gate to the qudit at the specified index.
@@ -141,6 +142,7 @@ class ExtendedTableau(Tableau):
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
         )
+
     def phase(self, qudit_index: int):
         """
         Applies the Phase gate to the qudit at the specified index.
@@ -208,6 +210,7 @@ class ExtendedTableau(Tableau):
                        qudit_index,
                        self.num_qudits,
                        self.even)
+        
     def cnot(self, control: int, target: int):
         """
         Applies the CNOT gate with the specified control and target qudits.
@@ -226,11 +229,9 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
-        for i in range(self.num_qudits):
-            self.x_block[target, i] = (self.x_block[target, i] + self.x_block[control, i]) % self.dimension
-            self.z_block[control, i] = (self.z_block[control, i] + (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
-            self.destab_x_block[target, i] = (self.destab_x_block[target, i] + self.destab_x_block[control, i]) % self.dimension
-            self.destab_z_block[control, i] = (self.destab_z_block[control, i] + (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
+        cnot_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
+                       self.num_qudits, self.dimension,
+                       control, target)
     
     def cnot_inv(self, control: int, target: int):
         """
@@ -257,11 +258,9 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
-        for i in range(self.num_qudits):
-            self.x_block[target, i] = (self.x_block[target, i] - self.x_block[control, i]) % self.dimension
-            self.z_block[control, i] = (self.z_block[control, i] - (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
-            self.destab_x_block[target, i] = (self.destab_x_block[target, i] - self.destab_x_block[control, i]) % self.dimension
-            self.destab_z_block[control, i] = (self.destab_z_block[control, i] - (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
+        cnot_inv_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
+                       self.num_qudits, self.dimension,
+                       control, target)
             
     def measure(self, qudit_index: int) -> MeasurementResult:
         """

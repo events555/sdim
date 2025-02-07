@@ -102,7 +102,7 @@ class Program:
                         print("Initial state")
                         self.stabilizer_tableau.print_tableau()
                         print("\n")
-                    if time % 100 == 0:
+                    if time % 200 == 0:
                         self.stabilizer_tableau.modulo()
                     measurement_result = self.apply_gate(gate)
                     if measurement_result is not None:

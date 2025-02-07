@@ -94,3 +94,25 @@ def phase_inv_optimized(x_block, z_block, phase_vector,
             
         z_block[qudit_index, i] -= x_block[qudit_index, i]
         destab_z_block[qudit_index, i] -= destab_x_block[qudit_index, i]
+
+@njit(parallel=True)
+def cnot_optimized(x_block, z_block, destab_x_block, destab_z_block,
+                   num_qudits: int, dimension: int,
+                   control: int, target: int):
+    for i in prange(num_qudits):
+        x_block[target, i] += x_block[control, i]
+        z_block[control, i] += (z_block[target, i] * (dimension - 1))
+    for i in prange(num_qudits):
+        destab_x_block[target, i] += destab_x_block[control, i]
+        destab_z_block[control, i] += (destab_z_block[target, i] * (dimension - 1))
+
+@njit(parallel=True)
+def cnot_inv_optimized(x_block, z_block, destab_x_block, destab_z_block,
+                       num_qudits: int, dimension: int,
+                       control: int, target: int):
+    for i in prange(num_qudits):
+        x_block[target, i] -= x_block[control, i]
+        z_block[control, i] -= z_block[target, i] * (dimension - 1)
+    for i in prange(num_qudits):
+        destab_x_block[target, i] -= destab_x_block[control, i]
+        destab_z_block[control, i] -= destab_z_block[target, i] * (dimension - 1)

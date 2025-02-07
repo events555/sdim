@@ -13,3 +13,5 @@ main.py
 /dist/
 profiling_results*
 qutrit_cliff_gate_defs.py
+LRB-experiment-data
+Logical Randomized Benchmarking.ipynb
