@@ -368,17 +368,8 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
     Returns:
         None  
     """
-
-    # Extract parameters
-    # Default behavior is p=0.5, noise_channel='d'
-    if params is None:
-        prob = 0.5
-        noise_channel = 'd'
-    else:
-        prob = float(params.get('prob', 0.5))
-        noise_channel = params.get('noise_channel', 'd')
-
-    # TODO: Sanity check parameters
+    prob = float(params.get('prob', 0.5))
+    noise_channel = params.get('noise_channel', 'd')
 
     if noise_channel == 'd':
         num = random.uniform(0.0, 1.0)

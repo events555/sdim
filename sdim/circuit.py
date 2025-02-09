@@ -28,8 +28,6 @@ class CircuitInstruction:
     target_index: int = None
     gate_id: int = None
     name: str = None
-    #channel: Optional[str] = None
-    #prob: Optional[float] = None
     params: Optional[dict] = None
 
     def __post_init__(self):
@@ -98,9 +96,14 @@ class Circuit:
         control = [control] if isinstance(control, int) else control
         target = [target] if isinstance(target, int) else target
 
-        #apply_additional_depolarizing_noise = (not (is_noise_gate)) and (not (probability is None))
+        gate_name_upper = gate_name.upper()
+        primary_name = self.gate_data.aliasMap.get(gate_name_upper, gate_name_upper)
+        gate = self.gate_data.gateMap.get(primary_name)
 
-        # Handle single-qubit gates
+        if gate and gate.defaults:
+            for key, value in gate.defaults.items():
+                kwargs.setdefault(key, value)
+
         if target is None:
             for c in control:
                 self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None, params=kwargs))

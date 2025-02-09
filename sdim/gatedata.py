@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import numpy as np
 from .tableau.dataclasses import Tableau
+from typing import Optional
 
 @dataclass
 class Gate:
@@ -9,12 +10,13 @@ class Gate:
 
     Attributes:
         name (str): The name of the gate.
-        arg_count (int): The number of arguments (qubits) the gate operates on.
+        arg_count (int): The number of arguments (qudits) the gate operates on.
         gate_id (int): A unique identifier for the gate.
     """
     name: str
     arg_count: int
     gate_id: int
+    defaults: Optional[dict] = None
     def __str__(self):
         return f"{self.name} {self.gate_id}"
 
@@ -97,6 +99,7 @@ class GateData:
     def add_gate_noise(self, d):
         self.add_gate("N1", 1)
         self.add_gate_alias("N1", ["NOISE1"])
+        self.gateMap["N1"].defaults = {"channel": "d", "prob": 0.01}
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:
