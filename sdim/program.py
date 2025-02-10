@@ -109,7 +109,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
     # Initialize measurement tracking
     measurement_counts = np.zeros(n_qudits, dtype=np.int64)
     noise_counter = 0
-    
+    gate_count = 1
     # Initialize results array
     frame_results = np.empty((n_qudits, reference_results.shape[1], extra_shots), 
                            dtype=MEASUREMENT_DTYPE)
@@ -119,7 +119,9 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
         gate_id = inst['gate_id']
         qudit_index = inst['qudit_index']
         target_index = inst['target_index']
-        
+        if gate_count % 10 == 0:
+            x_frame %= dimension
+            z_frame %= dimension
         if gate_id in (14, 15):  # Measurement gates
             q = int(qudit_index)
             m = int(measurement_counts[q])
@@ -309,7 +311,7 @@ class Program:
                         print("Initial state")
                         self.stabilizer_tableau.print_tableau()
                         print("\n")
-                    if time % 200 == 0:
+                    if time % 10 == 0:
                         self.stabilizer_tableau.modulo()
 
                     measurement_result = self.apply_gate(gate)

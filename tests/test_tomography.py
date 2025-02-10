@@ -1,7 +1,7 @@
 import pytest
 from sdim.program import Program
 from sdim.circuit_io import write_circuit, cirq_statevector_from_circuit
-from sdim.random_circuit import generate_random_circuit
+from sdim.random_circuit import generate_random_clifford_circuit
 import numpy as np
 
 def create_key(measurements, dimension):
@@ -12,7 +12,7 @@ def create_key(measurements, dimension):
     return key
 
 def generate_and_test_circuit(depth, dimension, num_qudits):
-    circuit = generate_random_circuit(20, 40, 40, 0, num_qudits, depth, dimension, 1)
+    circuit = generate_random_clifford_circuit(num_qudits, depth, dimension, measurement_rounds=1, gate_set=["H", "P", "CNOT", "CZ", "X"])
 
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector) ** 2
@@ -46,10 +46,10 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
 
 
 @pytest.mark.parametrize("dimension", [2, 3])
-@pytest.mark.parametrize("depth", [15, 30])
+@pytest.mark.parametrize("depth", [150, 350, 500])
 def test_random_circuits(dimension, depth):
     num_qudits = 3
-    num_circuits = 500
+    num_circuits = 120
 
     for i in range(num_circuits):
         circuit = None

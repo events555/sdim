@@ -6,71 +6,68 @@ from .circuit_io import write_circuit
 import random
 from sdim.circuit import Circuit, GateData
 
-def generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, seed=None):
+def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measurement_rounds=0, seed=None, gate_set=None):
     """
-    Generates a random quantum circuit with specified gate type percentages.
-
-    This function creates a circuit with a given distribution of gate types. 
-    By default, it generates no measurement gates unless specified.
-
+    Generates a random quantum circuit with gates sampled uniformly from the implemented Clifford gates.
+    
+    The available gates are:
+        "H", "P", "CNOT", "X", "Z",
+        "H_INV", "P_INV", "CNOT_INV", "X_INV", "Z_INV",
+        "CZ", "CZ_INV"
+    
+    Note:
+        - Two-qudit gates are: "CNOT", "CNOT_INV", "CZ", "CZ_INV".
+        - All other gates are assumed to be single-qudit gates.
+        - Measurement gates (with label "m") are added as extra rounds at the end.
+    
     Args:
-        c_percentage: Percentage of CNOT gates.
-        h_percentage: Percentage of Hadamard gates.
-        p_percentage: Percentage of Phase gates.
-        m_percentage: Percentage of Measurement gates.
-        num_qudits: Number of qudits in the circuit.
-        num_gates: Total number of gates in the circuit.
-        dimension: Dimension of the qudits.
-        measurement_rounds: Number of measurement rounds. Defaults to 0.
-        seed: Random seed for reproducibility. Defaults to None.
-
+        num_qudits (int): Number of qudits in the circuit.
+        num_gates (int): Total number of gates (excluding measurement rounds).
+        dimension (int): The Hilbert space dimension of each qudit.
+        measurement_rounds (int, optional): Number of measurement rounds to add at the end.
+            In each round, every qudit is measured. Defaults to 0.
+        seed (int, optional): Seed for reproducibility. Defaults to None.
+    
     Returns:
         Circuit: A randomly generated Circuit object.
-
+    
     Raises:
-        ValueError: If the sum of all percentages is not equal to 100.
-
-    Note:
-        The percentages should sum to 100 (not 1).
+        Any exceptions that may be raised by the Circuit class.
     """
-    # Check that the percentages sum to 100
-    if c_percentage + h_percentage + p_percentage + m_percentage != 100:
-        raise ValueError("The percentages do not sum to 100")
-
-    # Set the seed for random sampling
+    # Set the random seed if provided
     if seed is not None:
         random.seed(seed)
+    
+    # Define the list of implemented Clifford gates.
+    available_gates = gate_set or ["H", "P", "CNOT", "X", "Z", "H_INV", "P_INV", "CNOT_INV", "X_INV", "Z_INV", "CZ", "CZ_INV"]
 
-    # Calculate the number of each gate
-    num_c = int((c_percentage / 100) * num_gates)
-    num_h = int((h_percentage / 100) * num_gates)
-    num_p = int((p_percentage / 100) * num_gates)
-    num_m = int((m_percentage / 100) * num_gates)
-
-    # Generate the gates
-    gates = ['c'] * num_c + ['h'] * num_h + ['p'] * num_p + ['m'] * num_m
-    random.shuffle(gates)
-
-    # Create the Circuit object
+    
+    # Define the two-qudit gates.
+    two_qudit_gates = {"CNOT", "CNOT_INV", "CZ", "CZ_INV"}
+    
+    # Create the Circuit object (assumes Circuit(num_qudits, dimension) is defined).
     circuit = Circuit(num_qudits, dimension)
-
-    # Generate the circuit
-    for gate in gates:
-        if gate == 'c':
+    
+    # Uniformly select num_gates gates.
+    for _ in range(num_gates):
+        gate = random.choice(available_gates)
+        if gate in two_qudit_gates:
+            # For two-qudit gates, choose two distinct qudits.
             qudits = random.sample(range(num_qudits), 2)
             circuit.add_gate(gate, qudits[0], qudits[1])
         else:
+            # For single-qudit gates, choose one qudit.
             qudit = random.randint(0, num_qudits - 1)
             circuit.add_gate(gate, qudit)
-
-    # Add measurements
+    
+    # Add measurement rounds (if any)
     for _ in range(measurement_rounds):
-        for qubit in range(num_qudits):
-            circuit.add_gate('m', qubit)
-
+        for qudit in range(num_qudits):
+            circuit.add_gate("M", qudit)
+    
     return circuit
 
-def generate_and_write_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds=0, output_file="random_circuit.chp", seed=None):
+def generate_and_write_random_circuit(num_qudits, num_gates, dimension, measurement_rounds=0, output_file="random_circuit.chp", seed=None):
     """
     Generates a random quantum circuit and writes it to a file.
 
@@ -96,7 +93,7 @@ def generate_and_write_random_circuit(c_percentage, h_percentage, p_percentage, 
         The percentages should sum to 100 (not 1).
         The circuit is written to the specified output file.
     """
-    circuit = generate_random_circuit(c_percentage, h_percentage, p_percentage, m_percentage, num_qudits, num_gates, dimension, measurement_rounds, seed)
+    circuit = generate_random_clifford_circuit(num_qudits, num_gates, dimension, measurement_rounds, seed)
     write_circuit(circuit, output_file)
     return circuit
 
