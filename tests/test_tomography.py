@@ -52,15 +52,17 @@ def test_random_circuits(dimension, depth):
     num_circuits = 500
 
     for i in range(num_circuits):
+        circuit = None
         try:
             tvd, amplitudes, probabilities, circuit = generate_and_test_circuit(depth, dimension, num_qudits)
             assert np.isclose(np.sum(probabilities), 1, atol=1e-6), f"Circuit {i+1}: The sum of the probabilities is not approximately 1"
             assert np.isclose(np.sum(amplitudes), 1, atol=1e-6), f"Circuit {i+1}: The sum of the amplitudes is not approximately 1"
             assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
         except Exception as e:
-            file_name = f"failed_circuit_{dimension}_{depth}_{i+1}.chp"
-            comment = f"Failed circuit - Dimension: {dimension}, Depth: {depth}, Circuit: {i+1}"
-            write_circuit(circuit, file_name, comment)
+            if circuit is not None:
+                file_name = f"failed_circuit_{dimension}_{depth}_{i+1}.chp"
+                comment = f"Failed circuit - Dimension: {dimension}, Depth: {depth}, Circuit: {i+1}"
+                write_circuit(circuit, file_name, comment)
             raise e
 
         print(f"Circuit {i+1} - Dimension: {dimension}, Depth: {depth}, Qudits: {num_qudits}")

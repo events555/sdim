@@ -5,6 +5,8 @@ from .tableau.tableau_prime import ExtendedTableau
 from .tableau.tableau_gates import *
 from sympy import isprime
 from numba import njit, prange
+from numba.core import types
+from numba.typed import Dict
 import numpy as np
 import copy
 # Gate function dictionary
@@ -37,15 +39,131 @@ MEASUREMENT_DTYPE = np.dtype([
     ('measurement_value', np.int64)
 ])
 
-# Defined to eventually support noise parameters on arbitrary gates
-# Also partial work for classifying all gates for more sophisticated behavior in apply_gate
 noise_gate_indices = {17}
+
+# @njit
+def apply_clifford_to_frame(x_frame: np.ndarray, z_frame: np.ndarray, 
+                     gate_id: int, qudit_index: int, target_index: int) -> None:
+    """Apply Pauli frame update for a given gate."""
+    if gate_id == 1:  # X gate
+        x_frame[qudit_index] += 1
+    elif gate_id == 2:  # X inverse
+        x_frame[qudit_index] -= 1
+    elif gate_id == 3:  # Z gate
+        z_frame[qudit_index] += 1
+    elif gate_id == 4:  # Z inverse
+        z_frame[qudit_index] -= 1
+    elif gate_id == 5:  # Hadamard
+        tmp = x_frame[qudit_index].copy()
+        x_frame[qudit_index] = -z_frame[qudit_index]
+        z_frame[qudit_index] = tmp
+    elif gate_id == 6:  # Inverse Hadamard
+        tmp = x_frame[qudit_index].copy()
+        x_frame[qudit_index] = z_frame[qudit_index]
+        z_frame[qudit_index] = -tmp
+    elif gate_id == 7:  # P gate
+        z_frame[qudit_index] += x_frame[qudit_index]
+    elif gate_id == 8:  # Inverse P gate
+        z_frame[qudit_index] -= x_frame[qudit_index]
+    elif gate_id == 9:  # CNOT gate
+        x_frame[target_index] += x_frame[qudit_index]
+        z_frame[qudit_index] -= z_frame[target_index]
+    elif gate_id == 10:  # Inverse CNOT
+        x_frame[target_index] -= x_frame[qudit_index]
+        z_frame[qudit_index] += z_frame[target_index]
+    elif gate_id == 11:  # CZ gate
+        z_frame[target_index] += x_frame[qudit_index]
+        z_frame[qudit_index] += x_frame[target_index]
+    elif gate_id == 12:  # Inverse CZ
+        z_frame[target_index] -= x_frame[qudit_index]
+        z_frame[qudit_index] -= x_frame[target_index]
+    elif gate_id == 13:  # SWAP gate
+        tmp = x_frame[qudit_index].copy()
+        x_frame[qudit_index] = x_frame[target_index]
+        x_frame[target_index] = tmp
+        tmp = z_frame[qudit_index].copy()
+        z_frame[qudit_index] = z_frame[target_index]
+        z_frame[target_index] = tmp
+# @njit
+def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
+                  n_qudits: int, dimension: int, extra_shots: int,
+                  noise_array: np.ndarray = None) -> np.ndarray:
+    """
+    Simulates quantum circuit using Pauli frame simulation.
+    
+    Args:
+        ir_array: Array of (gate_id, qudit_index, target_index) tuples
+        reference_results: Reference measurement results
+        n_qudits: Number of qudits
+        dimension: Qudit dimension
+        extra_shots: Number of additional shots to simulate
+        noise_array: Pre-computed noise samples
+        
+    Returns:
+        frame_results: Array of simulated measurement results with shape (n_qudits, num_rounds, extra_shots)
+    """
+    # Initialize frame arrays
+    x_frame = np.zeros((n_qudits, extra_shots), dtype=np.int64)
+    z_frame = np.random.randint(0, dimension, size=(n_qudits, extra_shots))
+    
+    # Initialize measurement tracking
+    measurement_counts = np.zeros(n_qudits, dtype=np.int64)
+    noise_counter = 0
+    
+    # Initialize results array
+    frame_results = np.empty((n_qudits, reference_results.shape[1], extra_shots), 
+                           dtype=MEASUREMENT_DTYPE)
+    
+    # Process each instruction
+    for inst in ir_array:
+        gate_id = inst['gate_id']
+        qudit_index = inst['qudit_index']
+        target_index = inst['target_index']
+        
+        if gate_id in (14, 15):  # Measurement gates
+            q = int(qudit_index)
+            m = int(measurement_counts[q])
+            
+            ref_val = reference_results[q, m]['measurement_value']
+            deterministic = reference_results[q, m]['deterministic']
+            
+            # Handle X-basis measurement
+            if gate_id == 15:
+                tmp = x_frame[q].copy()
+                x_frame[q] = -z_frame[q]
+                z_frame[q] = tmp
+            
+            # Compute and store measurements for each shot
+            for shot in range(extra_shots):
+                new_val = (ref_val + x_frame[q, shot]) % dimension
+                frame_results[q, m, shot] = (q, m, shot, deterministic, new_val)
+            
+            measurement_counts[q] += 1
+            z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
+            
+        elif gate_id == 16:  # Reset
+            q = qudit_index
+            x_frame[q] = 0
+            z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
+            
+        elif gate_id == 17:  # Noise
+            q = qudit_index
+            x_frame[q] += noise_array[noise_counter, :, 0]
+            z_frame[q] += noise_array[noise_counter, :, 1]
+            noise_counter += 1
+            
+        else:  # Other gates
+            apply_clifford_to_frame(x_frame, z_frame, gate_id, qudit_index, 
+                            target_index)
+    
+    return frame_results
 
 @dataclass
 class SimulationOptions:
     shots: int = 1
     show_measurement: bool = False
     record_tableau: bool = False
+    force_tableau: bool = False
     verbose: bool = False
     show_gate: bool = False
     exact: bool = False
@@ -80,12 +198,12 @@ class Program:
         self.measurement_results = []
         self.initial_tableau = copy.copy(self.stabilizer_tableau)
 
-    def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False,
+    def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False, force_tableau: bool = False,
                  verbose: bool = False, show_gate: bool = False, exact: bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]]:
         """
         Runs the list of `Circuit` and applies the gates to the `stabilizer_tableau`.
         
-        Note that using multiple shots without `record_tableau=True` will use the Pauli frame sampler.
+        Note that using multiple shots without `record_tableau=True` or `force_tableau=True` will use the Pauli frame sampler.
         
         This means that things like `show_gate` and `verbose` will **not work for any shot after the first**.
 
@@ -95,6 +213,7 @@ class Program:
             verbose (bool): Whether to print the stabilizer tableau at each time step.
             show_gate (bool): Whether to print the gate name at each time step.
             record_tableau (bool): Whether to record the tableau after each measurement.
+            force_tableau (bool): Whether to force the use of the tableau method.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
                 Much slower but fails less often.
             options (SimulationOptions): An optional SimulationOptions object.
@@ -112,27 +231,34 @@ class Program:
                 shots=shots,
                 show_measurement=show_measurement,
                 record_tableau=record_tableau,
+                force_tableau=force_tableau,
                 verbose=verbose,
                 show_gate=show_gate,
                 exact=exact
             )
-
-        # If using the frame simulation strategy, run one full tableau simulation first.
-        if options.shots > 1 and not options.record_tableau:
-            # Run one shot with the full tableau simulation.
+        if options.shots > 1 and not options.record_tableau and not options.force_tableau:
             tableau_options = copy.copy(options)
             tableau_options.shots = 1
-            reference_results = self._simulate_tableau(tableau_options)
+            self._simulate_tableau(tableau_options)
             
-            # Now simulate the additional shots using the Pauli frame method.
-            extra_shots = options.shots - 1
-            frame_results = self._simulate_frame(reference_results, extra_shots, options)
+            # Convert flattened reference results to structured array
+            ref_array = self._results_to_array(self.measurement_results)
             
-            # Combine the reference shot with the extra shots.
-            combined_results = self._combine_results(reference_results, frame_results)
-            return combined_results
+            # Build IR and noise arrays
+            ir_array, noise = self._build_ir(self.circuits, options.shots - 1)
+            
+            # Run frame simulation
+            frame_results = simulate_frame(
+                ir_array, ref_array, 
+                self.stabilizer_tableau.num_qudits,
+                self.stabilizer_tableau.dimension,
+                options.shots - 1,
+                noise
+            )
+            
+            # Combine results
+            return self._combine_results(frame_results)
         else:
-            # Otherwise, run the full tableau simulation as usual.
             return self._simulate_tableau(options)
 
     def _simulate_tableau(self, options: SimulationOptions) -> list:
@@ -179,8 +305,6 @@ class Program:
             measurement_counts = [0] * num_qudits  
             for circuit in self.circuits:
                 for time, gate in enumerate(circuit.operations):
-                    if gate.gate_id not in GATE_FUNCTIONS:
-                        raise ValueError("Invalid gate value")
                     if time == 0 and options.verbose:
                         print("Initial state")
                         self.stabilizer_tableau.print_tableau()
@@ -188,8 +312,7 @@ class Program:
                     if time % 200 == 0:
                         self.stabilizer_tableau.modulo()
 
-                    gate_function = GATE_FUNCTIONS[gate.gate_id]
-                    measurement_result = gate_function(self.stabilizer_tableau, gate.qudit_index, gate.target_index, gate.params)
+                    measurement_result = self.apply_gate(gate)
                     if measurement_result is not None:
                         qudit_index = measurement_result.qudit_index
                         if options.record_tableau:
@@ -235,178 +358,89 @@ class Program:
             return flattened_results
         else:
             return self.measurement_results
-
-
-    @njit(parallel=True)
-    def _simulate_frame(self, reference_results: list[list[list[MeasurementResult]]],
-                        extra_shots: int,
-                        options: SimulationOptions) -> list[list[list[MeasurementResult]]]:
+    def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
         """
-        Augments the reference measurement results using the Pauli frame method.
-        This function should simulate the circuit for the additional shots using a
-        lightweight, vectorized approach that uses the measurement outcomes from
-        the reference shot.
-        
+        Applies a gate to the stabilizer tableau.
+
         Args:
-            reference_results: The measurement results from one full tableau simulation.
-            extra_shots: The number of additional shots to simulate.
-            options: The SimulationOptions used for the simulation.
-        
+            instruc (CircuitInstruction): A CircuitInstruction object from a Circuit's operation list.
+            exact (bool): Whether to use exact computation methods.
+
         Returns:
-            A 3D list of MeasurementResult objects with dimensions:
-                [qudit_index][measurement_round][shot]
-            for the extra shots.
+            MeasurementResult: A MeasurementResult object if the gate is a measurement gate, otherwise None.
+
+        Raises:
+            ValueError: If an invalid gate value is provided.
         """
+        if instruc.gate_id not in GATE_FUNCTIONS:
+            raise ValueError("Invalid gate value")
+        gate_function = GATE_FUNCTIONS[instruc.gate_id]
+        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, instruc.params)
+        return measurement_result
 
-        tableau = self.stabilizer_tableau
-        n_qudits = tableau.num_qudits
+    @staticmethod
+    def _results_to_array(measurements: list) -> np.ndarray:
+        """
+        Converts measurement results to a structured NumPy array.
 
-        measurement_dtype = np.dtype([
-            ('qudit_index', np.int64),
-            ('meas_round', np.int64),
-            ('shot', np.int64),
-            ('deterministic', np.bool_),
-            ('measurement_value', np.int64)
-        ])
+        Returns:
+            A structured array with shape (num_qudits, max_rounds) containing measurement data
+        """
+        def measurement_to_tuple(m: MeasurementResult, meas_round: int = 0, shot: int = 0):
+            return (m.qudit_index, meas_round, shot, m.deterministic, m.measurement_value)
+        # Ensure the list is not empty and has the expected nested structure.
+        if not measurements or not measurements[0]:
+            raise ValueError("Empty or invalid measurement results format")
 
-        num_rounds = 0
-        for q in range(n_qudits):
-            if len(self.measurement_results[q]) > num_rounds:
-                num_rounds = len(self.measurement_results[q])
-            
-        # Preallocate the structured array for extra-shot results.
-        frame_results = np.empty((n_qudits, num_rounds, extra_shots), dtype=MEASUREMENT_DTYPE)
-        
-        # Initialize frame arrays.
-        x_frame = np.zeros((n_qudits, extra_shots), dtype=np.int8)
-        z_frame = np.random.randint(0, tableau.dimension, size=(n_qudits, extra_shots), dtype=np.int8)
-        measurement_counts = np.zeros(n_qudits, dtype=np.int64)
+        # If it's a 3D list (i.e., each measurement round is a list of shots)
+        if isinstance(measurements[0][0], list):
+            max_rounds = max(len(m) for m in measurements)
+            reference_results = np.empty((len(measurements), max_rounds), dtype=MEASUREMENT_DTYPE)
+            for q, measurements_per_qudit in enumerate(measurements):
+                for m, shots_list in enumerate(measurements_per_qudit):
+                    # Convert the first shot in each round into a tuple.
+                    reference_results[q, m] = measurement_to_tuple(shots_list[0], meas_round=m, shot=0)
+            return reference_results
 
-        ir_array, noise = self._build_ir(self.circuits, extra_shots)
-        noise_counter = 0
+        # If it's a 2D list (each sublist contains MeasurementResult objects, one per round)
+        elif isinstance(measurements[0][0], MeasurementResult):
+            max_rounds = max(len(m) for m in measurements)
+            reference_results = np.empty((len(measurements), max_rounds), dtype=MEASUREMENT_DTYPE)
+            for q, shots_list in enumerate(measurements):
+                for m, measurement in enumerate(shots_list):
+                    reference_results[q, m] = measurement_to_tuple(measurement, meas_round=m, shot=0)
+            return reference_results
 
+        else:
+            raise ValueError("Invalid measurement results format")
 
-        for circuit in self.circuits:
-            for time in range(len(circuit.operations)):
-                gate = circuit.operations[time]
-                # All conjugations are C^dag P C and not C P C^dag.
-                if gate.gate_id == 0:  # I gate
-                    break
-                elif gate.gate_id == 1:  # X gate
-                    x_frame[gate.qudit_index] += 1
-                elif gate.gate_id == 2:  # X inverse
-                    x_frame[gate.qudit_index] -= 1
-                elif gate.gate_id == 3:  # Z gate
-                    z_frame[gate.qudit_index] += 1
-                elif gate.gate_id == 4:  # Z inverse
-                    z_frame[gate.qudit_index] -= 1
-                elif gate.gate_id == 5:  # Hadamard
-                    tmp = x_frame[gate.qudit_index]
-                    x_frame[gate.qudit_index] = z_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] = -tmp
-                elif gate.gate_id == 6:  # Inverse Hadamard
-                    tmp = x_frame[gate.qudit_index]
-                    x_frame[gate.qudit_index] = -z_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] = tmp
-                elif gate.gate_id == 7:  # P gate
-                    z_frame[gate.qudit_index] -= x_frame[gate.qudit_index]
-                elif gate.gate_id == 8:  # Inverse P gate
-                    z_frame[gate.qudit_index] += x_frame[gate.qudit_index]
-                elif gate.gate_id == 9:  # CNOT gate
-                    x_frame[gate.target_index] -= x_frame[gate.qudit_index]
-                    z_frame[gate.target_index] += z_frame[gate.qudit_index]
-                elif gate.gate_id == 10:  # Inverse CNOT
-                    x_frame[gate.target_index] += x_frame[gate.qudit_index]
-                    z_frame[gate.target_index] -= z_frame[gate.qudit_index]
-                elif gate.gate_id == 11:  # CZ gate
-                    z_frame[gate.target_index] -= x_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] -= x_frame[gate.target_index]
-                elif gate.gate_id == 12:  # Inverse CZ
-                    z_frame[gate.target_index] += x_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] += x_frame[gate.target_index]
-                elif gate.gate_id == 13:  # SWAP gate
-                    tmp = x_frame[gate.qudit_index]
-                    x_frame[gate.qudit_index] = x_frame[gate.target_index]
-                    x_frame[gate.target_index] = tmp
-                    tmp = z_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] = z_frame[gate.target_index]
-                    z_frame[gate.target_index] = tmp
-                elif gate.gate_id == 14:  # Measurement (computational basis)
-                    q = gate.qudit_index
-                    meas_round = measurement_counts[q]
-                    # Retrieve reference measurement value and deterministic flag.
-                    ref_val = self.measurement_results[q][meas_round][0].measurement_value
-                    deterministic_flag = self.measurement_results[q][meas_round][0].deterministic
-                    # For each extra shot, compute and store the measurement result.
-                    for shot in range(extra_shots):
-                        new_val = (ref_val + x_frame[q, shot]) % tableau.dimension
-                        frame_results[q, meas_round, shot] = (q, meas_round, shot, deterministic_flag, new_val)
-                    measurement_counts[q] += 1
-                    # Update the z_frame with a fresh random offset after measurement.
-                    z_frame[q] += np.random.randint(0, tableau.dimension, size=extra_shots)
-                elif gate.gate_id == 15:  # Measurement (X basis)
-                    tmp = x_frame[gate.qudit_index]
-                    x_frame[gate.qudit_index] = -z_frame[gate.qudit_index]
-                    z_frame[gate.qudit_index] = tmp
-                    q = gate.qudit_index
-                    meas_round = measurement_counts[q]
-                    ref_val = self.measurement_results[q][meas_round][0].measurement_value
-                    deterministic_flag = self.measurement_results[q][meas_round][0].deterministic
-                    for shot in range(extra_shots):
-                        new_val = (ref_val + x_frame[q, shot]) % tableau.dimension
-                        frame_results[q, meas_round, shot] = (q, meas_round, shot, deterministic_flag, new_val)
-                    measurement_counts[q] += 1
-                    z_frame[q] += np.random.randint(0, tableau.dimension, size=extra_shots)
-                elif gate.gate_id == 16:  # Reset gate
-                    x_frame[gate.qudit_index] = 0
-                    z_frame[gate.qudit_index] = np.random.randint(0, tableau.dimension, size=extra_shots)
-                elif gate.gate_id == 17:  # Single qudit noise
-                    x_frame[gate.qudit_index] += noise[noise_counter][:, 0] 
-                    z_frame[gate.qudit_index] += noise[noise_counter][:, 1] 
-                    noise_counter += 1
-                else:
-                    pass
-                if time % 200 == 0:
-                    for i in range(n_qudits):
-                        for shot in range(extra_shots):
-                            x_frame[i, shot] = x_frame[i, shot] % tableau.dimension
-                            z_frame[i, shot] = z_frame[i, shot] % tableau.dimension
-        return frame_results
-    
     def _combine_results(self, frame_results) -> list:
         """
-        Combines the reference shot results with the extra-shot results from the Pauli frame simulation.
+        Combines the reference simulation (stored in self.measurement_results) with
+        the extra shots computed in frame_results.
+
+        The frame_results is expected to be a 3D structured array with shape:
+            (n_qudits, num_rounds, extra_shots)
+        where each element is a tuple containing
+            ('qudit_index', 'meas_round', 'shot', 'deterministic', 'measurement_value').
         
-        This helper appends the extra-shot measurement results directly to self.measurement_results, which is
-        a grouped 3D list with dimensions:
-            self.measurement_results[qudit_index][measurement_round][shot]
-        where shot 0 is the reference shot. For each measurement round, the deterministic flag is taken from the
-        reference shot, while the qudit_index and measurement_value are taken from the extra-shot (Pauli frame)
-        results contained in frame_results (a NumPy structured array).
-        
-        Args:
-            reference_results: The flattened reference shot results (used only to ensure self.measurement_results is grouped).
-            frame_results: A NumPy structured array with shape (num_qudits, num_rounds, extra_shots)
-                        containing the extra-shot measurement results.
-        
-        Returns:
-            The updated self.measurement_results—a 3D list of MeasurementResult objects with dimensions:
-                [qudit_index][measurement_round][shot],
-            where shot 0 is the reference result and subsequent shots are from the frame simulation.
+        For each qudit and each measurement round, we create a list of MeasurementResult
+        objects for each shot.
         """
-        num_qudits = len(self.measurement_results)
-        for q in range(num_qudits):
-            num_rounds = len(self.measurement_results[q])
-            for m in range(num_rounds):
-                deterministic_flag = self.measurement_results[q][m][0].deterministic
-                for shot in range(frame_results.shape[2]):
-                    rec = frame_results[q, m, shot]
-                    new_result = MeasurementResult(
-                        qudit_index=int(rec['qudit_index']),
-                        deterministic=deterministic_flag,
-                        measurement_value=int(rec['measurement_value'])
+        extra_shots = frame_results.shape[2]
+        num_rounds = frame_results.shape[1]
+        n_qudits = frame_results.shape[0]
+        for qudit_index in range(len(self.measurement_results)):
+            for measurement_number in range(len(self.measurement_results[qudit_index])):
+                for shot in range(extra_shots):
+                    frame_result = frame_results[qudit_index, measurement_number, shot]
+                    self.measurement_results[qudit_index][measurement_number].append(
+                        MeasurementResult(
+                            qudit_index=frame_result['qudit_index'],
+                            deterministic=frame_result['deterministic'],
+                            measurement_value=frame_result['measurement_value']
+                        )
                     )
-                    self.measurement_results[q][m].append(new_result)
         return self.measurement_results
         
     def _build_ir(self, circuits: list[Circuit], extra_shots: int) -> tuple[np.ndarray, np.ndarray]:
@@ -423,7 +457,7 @@ class Program:
             tuple:
                 - A NumPy array of IR instructions with each element as a tuple
                 (gate_id, qudit_index, target_index).
-                - A NumPy array of shape (num_noise_gates, extra_shots) containing
+                - A NumPy array of shape (num_noise_gates, extra_shots, [x_block, z_block]) containing
                 pre-sampled noise outcomes for each noise gate encountered.
                 If no noise gate is present, an empty array is returned.
         """
@@ -436,28 +470,30 @@ class Program:
                     continue
                 target_index = instruction.target_index if instruction.target_index is not None else -1
                 ir_list.append((instruction.gate_id, instruction.qudit_index, target_index))
-                
-                if instruction.gate_id in noise_gate_indices:
-                    # Perform noise sampling only with some probability.
-                    if np.random.random() < instruction.params['probability']:
+                                
+                if instruction.gate_id == 17:
+                    # Always add a noise sample, but only actually sample non-identity with some probability.
+                    if np.random.random() < instruction.params['prob']:
                         channel = instruction.params['noise_channel']
                         if channel == 'd':
                             # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
                             r = np.random.randint(1, dimension**2, size=extra_shots)
                             a = r % dimension
                             b = r // dimension
-                            pair = np.stack((a, b), axis=1) 
-                            noise_list.append(pair)
+                            pair = np.stack((a, b), axis=1)
                         elif channel == 'f':
-                            a = np.random.randint(0, dimension, size=extra_shots)
+                            a = np.random.randint(1, dimension, size=extra_shots)
                             b = np.zeros(extra_shots, dtype=np.int64)
                             pair = np.stack((a, b), axis=1)
-                            noise_list.append(pair)
                         elif channel == 'p':
                             a = np.zeros(extra_shots, dtype=np.int64)
-                            b = np.random.randint(0, dimension, size=extra_shots)
+                            b = np.random.randint(1, dimension, size=extra_shots)
                             pair = np.stack((a, b), axis=1)
-                            noise_list.append(pair)
+                    else:
+                        # If the noise is not applied, use an identity outcome (i.e. no noise)
+                        pair = np.zeros((extra_shots, 2), dtype=np.int64)
+                    noise_list.append(pair)
+
 
         ir_dtype = np.dtype([
             ('gate_id', np.int64),
@@ -470,7 +506,7 @@ class Program:
         if noise_list:
             noise_array = np.array(noise_list, dtype=np.int64)
         else:
-            noise_array = np.empty((0, extra_shots, 2), dtype=np.int64)
+            noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
 
         return ir_array, noise_array
 

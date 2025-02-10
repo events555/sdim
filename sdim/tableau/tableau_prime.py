@@ -1,12 +1,9 @@
 import numpy as np
 import random
 from dataclasses import dataclass
-from functools import cached_property
-from typing import Optional, Tuple
-from math import gcd
+from typing import Optional
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
 from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized, cnot_optimized, cnot_inv_optimized
-from numba import njit, prange
 
 @dataclass
 class ExtendedTableau(Tableau):
@@ -122,7 +119,7 @@ class ExtendedTableau(Tableau):
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
         )
-        
+
     def hadamard_inv(self, qudit_index: int):
         """
         Applies the inverse Hadamard gate to the qudit at the specified index.
