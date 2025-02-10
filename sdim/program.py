@@ -119,7 +119,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
         gate_id = inst['gate_id']
         qudit_index = inst['qudit_index']
         target_index = inst['target_index']
-        if gate_count % 10 == 0:
+        if gate_count % 64 == 0:
             x_frame %= dimension
             z_frame %= dimension
         if gate_id in (14, 15):  # Measurement gates
@@ -157,6 +157,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
         else:  # Other gates
             apply_clifford_to_frame(x_frame, z_frame, gate_id, qudit_index, 
                             target_index)
+        gate_count += 1
     
     return frame_results
 
@@ -311,7 +312,7 @@ class Program:
                         print("Initial state")
                         self.stabilizer_tableau.print_tableau()
                         print("\n")
-                    if time % 10 == 0:
+                    if time % 64 == 0:
                         self.stabilizer_tableau.modulo()
 
                     measurement_result = self.apply_gate(gate)

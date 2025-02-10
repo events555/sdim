@@ -46,7 +46,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
 
 
 @pytest.mark.parametrize("dimension", [2, 3])
-@pytest.mark.parametrize("depth", [5, 10, 15, 30, 50, 100])
+@pytest.mark.parametrize("depth", [5, 10, 15, 30, 50, 100, 500, 1000])
 def test_random_circuits(dimension, depth):
     num_qudits = 3
     num_circuits = 1000
