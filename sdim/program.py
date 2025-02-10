@@ -46,13 +46,13 @@ def apply_clifford_to_frame(x_frame: np.ndarray, z_frame: np.ndarray,
                      gate_id: int, qudit_index: int, target_index: int) -> None:
     """Apply Pauli frame update for a given gate."""
     if gate_id == 1:  # X gate
-        x_frame[qudit_index] += 1
+        pass
     elif gate_id == 2:  # X inverse
-        x_frame[qudit_index] -= 1
+        pass
     elif gate_id == 3:  # Z gate
-        z_frame[qudit_index] += 1
+        pass
     elif gate_id == 4:  # Z inverse
-        z_frame[qudit_index] -= 1
+        pass
     elif gate_id == 5:  # Hadamard
         tmp = x_frame[qudit_index].copy()
         x_frame[qudit_index] = -z_frame[qudit_index]

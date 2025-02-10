@@ -162,13 +162,13 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         "CNOT": GeneralizedCNOTGate(circuit.dimension),
         "X": GeneralizedXPauliGate(circuit.dimension),
         "Z": GeneralizedZPauliGate(circuit.dimension),
-        "H_INV": cirq.inverse(GeneralizedHadamardGate(circuit.dimension)),
-        "P_INV": cirq.inverse(GeneralizedPhaseShiftGate(circuit.dimension)),
-        "CNOT_INV": cirq.inverse(GeneralizedCNOTGate(circuit.dimension)),
-        "X_INV": cirq.inverse(GeneralizedXPauliGate(circuit.dimension)),
-        "Z_INV": cirq.inverse(GeneralizedZPauliGate(circuit.dimension)),
+        "H_INV": GeneralizedHadamardGateInverse(circuit.dimension),
+        "P_INV": GeneralizedPhaseShiftGateInverse(circuit.dimension),
+        "CNOT_INV": GeneralizedCNOTGateInverse(circuit.dimension),
+        "X_INV": GeneralizedXPauliGateInverse(circuit.dimension),
+        "Z_INV": GeneralizedZPauliGateInverse(circuit.dimension),
         "CZ": GeneralizedCZGate(circuit.dimension),
-        "CZ_INV": cirq.inverse(GeneralizedCZGate(circuit.dimension)),
+        "CZ_INV": GeneralizedCZGateInverse(circuit.dimension),
         "N1" : IdentityGate(circuit.dimension) # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
     }
 
