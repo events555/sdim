@@ -150,12 +150,8 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             
         elif gate_id == 17:  # Noise
             q = qudit_index
-            print(x_frame[q])
-            #print(z_frame[q])
             x_frame[q] += noise_array[noise_counter, :, 0]
             z_frame[q] += noise_array[noise_counter, :, 1]
-            print(x_frame[q])
-            #print(z_frame[q])
             noise_counter += 1
             
         else:  # Other gates
