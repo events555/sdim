@@ -150,8 +150,12 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             
         elif gate_id == 17:  # Noise
             q = qudit_index
+            print(x_frame[q])
+            #print(z_frame[q])
             x_frame[q] += noise_array[noise_counter, :, 0]
             z_frame[q] += noise_array[noise_counter, :, 1]
+            print(x_frame[q])
+            #print(z_frame[q])
             noise_counter += 1
             
         else:  # Other gates
@@ -476,27 +480,30 @@ class Program:
                                 
                 if instruction.gate_id == 17:
                     # Always add a noise sample, but only actually sample non-identity with some probability.
-                    if np.random.random() < instruction.params['prob']:
-                        channel = instruction.params['noise_channel']
-                        if channel == 'd':
-                            # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
-                            r = np.random.randint(1, dimension**2, size=extra_shots)
-                            a = r % dimension
-                            b = r // dimension
-                            pair = np.stack((a, b), axis=1)
-                        elif channel == 'f':
-                            a = np.random.randint(1, dimension, size=extra_shots)
-                            b = np.zeros(extra_shots, dtype=np.int64)
-                            pair = np.stack((a, b), axis=1)
-                        elif channel == 'p':
-                            a = np.zeros(extra_shots, dtype=np.int64)
-                            b = np.random.randint(1, dimension, size=extra_shots)
-                            pair = np.stack((a, b), axis=1)
-                    else:
-                        # If the noise is not applied, use an identity outcome (i.e. no noise)
-                        pair = np.zeros((extra_shots, 2), dtype=np.int64)
-                    noise_list.append(pair)
+                    channel = instruction.params['noise_channel']
+                    if channel == 'd':
+                        # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
+                        r = np.random.randint(1, dimension**2 - 1, size=extra_shots)
+                        a = r % dimension
+                        b = r // dimension
+                    elif channel == 'f':
+                        a = np.random.randint(1, dimension - 1, size=extra_shots)
+                        b = np.zeros(extra_shots, dtype=np.int64)
+                    elif channel == 'p':
+                        a = np.zeros(extra_shots, dtype=np.int64)
+                        b = np.random.randint(1, dimension - 1, size=extra_shots)
 
+                    # Roll to see if the channel applies on this each shot
+                    shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)
+                    # Mask that checks for failure to clear threshold, aka applying I = X^0 Z^0
+                    mask = shot_dice_rolls < 1.0 - instruction.params['prob']
+
+                    # Apply mask to both Pauli exponents
+                    a[mask] = 0
+                    b[mask] = 0
+
+                    pair = np.stack((a, b), axis=1)
+                    noise_list.append(pair)
 
         ir_dtype = np.dtype([
             ('gate_id', np.int64),
@@ -510,6 +517,7 @@ class Program:
             noise_array = np.array(noise_list, dtype=np.int64)
         else:
             noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
+
 
         return ir_array, noise_array
 
