@@ -193,8 +193,6 @@ def test_single_qudit_depolarizing():
     for s in range(shots):
         measurement_counts[result[0][0][s].measurement_value] += 1
 
-
-    print("Our p is " + str(p))
     empirical_probs = [measurement_counts[i] / shots for i in range(dimension)]
     ideal_probs = [((1 - p) + (dimension - 1) * (p / (dimension * dimension - 1)))] + [dimension * (p / (dimension * dimension - 1)) for _ in range(dimension - 1)]
     fuzzy_close = [abs(empirical_probs[i] - ideal_probs[i]) < 0.01 for i in range(dimension)]

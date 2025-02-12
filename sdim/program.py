@@ -28,7 +28,7 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     14: apply_measure, # Measure gate in computational basis
     15: apply_measure_x, # Measure gate in X basis
     16: apply_reset, # Reset gate
-    17: apply_single_qudit_noise # Random Pauli noise gate
+    17: apply_I # Single qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless reference tableau
 }
 
 MEASUREMENT_DTYPE = np.dtype([
@@ -127,6 +127,9 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             m = int(measurement_counts[q])
             
             ref_val = reference_results[q, m]['measurement_value']
+
+            print(f"Reference measurement is: {ref_val}")
+
             deterministic = reference_results[q, m]['deterministic']
             
             # Handle X-basis measurement
@@ -479,15 +482,15 @@ class Program:
                     channel = instruction.params['noise_channel']
                     if channel == 'd':
                         # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
-                        r = np.random.randint(1, dimension**2 - 1, size=extra_shots)
+                        r = np.random.randint(1, dimension**2, size=extra_shots)
                         a = r % dimension
                         b = r // dimension
                     elif channel == 'f':
-                        a = np.random.randint(1, dimension - 1, size=extra_shots)
+                        a = np.random.randint(1, dimension, size=extra_shots)
                         b = np.zeros(extra_shots, dtype=np.int64)
                     elif channel == 'p':
                         a = np.zeros(extra_shots, dtype=np.int64)
-                        b = np.random.randint(1, dimension - 1, size=extra_shots)
+                        b = np.random.randint(1, dimension, size=extra_shots)
 
                     # Roll to see if the channel applies on this each shot
                     shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)

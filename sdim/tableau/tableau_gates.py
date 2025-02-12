@@ -348,6 +348,8 @@ def apply_reset(tableau: Tableau, qudit_index: int, *_) -> Optional[MeasurementR
 
 def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dict) -> None:
     """
+    DEPRECIATED -- Noise behavior is handled in program.py in Pauli frames.  This gate definition is nonetheless included for the sake of documentation and completeness.
+    
     Given a probability and noise channel type, probabilistically applies a qudit Pauli to a target qudit.  Supports channels for flips, phase dampening, and depolarizing noise.  
     Defaults to applying depolarizing noise with probability 0.5 if no parameters are passed.  
     For a tableau of dimension d and with a probability argument p, the channels behave in the following way:
@@ -376,10 +378,12 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
         # Determine whether to apply I or not
         if num < 1.0 - prob:
             return None
+        
         # Sample error from all non-identity Pauli gates 
-        z_exp, x_exp = 0, 0
-        while z_exp == 0 and x_exp == 0:
-            z_exp, x_exp = random.randint(0, tableau.dimension - 1), random.randint(0, tableau.dimension - 1)
+        elem = random.randint(1, tableau.dimension - 1)
+        x_exp = elem % tableau.dimension
+        z_exp = elem // tableau.dimension
+
         # Apply the Pauli gates.  Order does not matter up to phase since measurement statistics are identical.
         for _ in range(x_exp):
             apply_X(tableau=tableau, qudit_index=qudit_index)
