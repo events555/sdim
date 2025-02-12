@@ -127,9 +127,6 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             m = int(measurement_counts[q])
             
             ref_val = reference_results[q, m]['measurement_value']
-
-            print(f"Reference measurement is: {ref_val}")
-
             deterministic = reference_results[q, m]['deterministic']
             
             # Handle X-basis measurement
@@ -495,7 +492,8 @@ class Program:
                     # Roll to see if the channel applies on this each shot
                     shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)
                     # Mask that checks for failure to clear threshold, aka applying I = X^0 Z^0
-                    mask = shot_dice_rolls < 1.0 - instruction.params['prob']
+                    probability = float(instruction.params['prob'])
+                    mask = shot_dice_rolls < 1.0 - probability
 
                     # Apply mask to both Pauli exponents
                     a[mask] = 0

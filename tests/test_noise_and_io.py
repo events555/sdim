@@ -21,43 +21,6 @@ two_qudit_gates = ["CNOT", "CNOT_INV", "CZ", "CZ_INV"]
 
 
 
-# def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits : int = 2, sample_with_noise_gates = True):
-
-#     single_qudit_non_noise_gates = single_qudit_deterministic_gates + single_qudit_measurement_gates
-#     single_qudit_gates_with_noise = single_qudit_non_noise_gates + single_qudit_noise_gates
-
-#     if num_qudits < 2:
-#         raise ValueError("Can't have less than 2 qudits in a multi qudit test!")
-
-#     c = Circuit(dimension=dimension, num_qudits=num_qudits)
-
-#     for _ in range(depth):
-
-#         apply_single_qudit_gate = random.choice([True, False])
-
-#         if apply_single_qudit_gate:
-#             qudit_target = random.randint(0, num_qudits - 1)
-#             gate_set = single_qudit_gates_with_noise  if sample_with_noise_gates else single_qudit_non_noise_gates
-#             gate = random.choice(gate_set)
-
-#             if gate == "N1":
-#                 p = random.uniform(0.0, 1.0)
-#                 channel = random.choice(['f', 'p', 'd'])
-#                 c.add_gate(gate, qudit_target, prob=p, noise_channel=channel)
-#             else:
-#                 c.add_gate(gate, qudit_target)
-#         else:
-#             qudit_control = 0
-#             qudit_target = 0
-#             gate = random.choice(two_qudit_gates)
-
-#             while (qudit_control == qudit_target):
-#                 qudit_control = random.randint(0, num_qudits - 1)
-#                 qudit_target = random.randint(0, num_qudits - 1)
-
-#             c.add_gate(gate, qudit_control, qudit_target)
-
-#     return c
 def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits : int = 2, sample_with_noise_gates = True):
 
     single_qudit_non_noise_gates = single_qudit_deterministic_gates
@@ -93,10 +56,10 @@ def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits
                 qudit_target = random.randint(0, num_qudits - 1)
 
             c.add_gate(gate, qudit_control, qudit_target)
-
-    c.add_gate("M", [i for i in range(num_qudits)])
+            
 
     return c
+
 
 def generic_read_write_test(has_noise : bool = True):
 
