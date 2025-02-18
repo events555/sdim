@@ -90,27 +90,29 @@ class Circuit:
         target: Optional[Union[int, Iterable[int]]] = None,
         arg: Optional[Union[float, Iterable[float]]] = None,
         *,
-        tag: str = ""
+        tag: str = "",
+        **kwargs
     ) -> "Circuit":
         """
         Appends an operation to the circuit.
 
         Overloads:
-          1. Append with a gate name and targets:
-             - `append("X", 0)`
-             - `append("X", [0, 1])`
-          2. Append with a gate name, control(s), and target(s) for two-qudit operations:
-             - `append("CNOT", 0, 1)`
-             - `append("CNOT", [0, 2], [1, 3])`
-          3. Append a pre-constructed CircuitInstruction.
+        1. Append with a gate name and targets:
+            - `append("X", 0)`
+            - `append("X", [0, 1])`
+        2. Append with a gate name, control(s), and target(s) for two-qudit operations:
+            - `append("CNOT", 0, 1)`
+            - `append("CNOT", [0, 2], [1, 3])`
+        3. Append a pre-constructed CircuitInstruction.
         
         Args:
             name_or_op: Either the gate name (str) or a CircuitInstruction.
             targets: For single-qudit operations, the target(s). For two-qudit operations,
-                     this represents the control(s).
+                    this represents the control(s).
             target: For two-qudit operations, the target(s). Leave as None for single-qudit operations.
             arg: Optional parameter(s) for the gate.
             tag: An optional string tag.
+            **kwargs: Additional keyword arguments (e.g., prob, noise_channel) to include in the parameters.
         
         Returns:
             The Circuit object (self).
@@ -121,15 +123,17 @@ class Circuit:
             return self
 
         gate_name = name_or_op.upper()
+        # Start building the parameters dict.
         params = {}
         if arg is not None:
             params["arg"] = arg
         if tag:
             params["tag"] = tag
+        # Merge any additional keyword arguments.
+        params.update(kwargs)
 
         # Case 1: Single-qudit or broadcast operation.
         if target is None:
-            # Ensure targets is iterable.
             if isinstance(targets, int):
                 targets = [targets]
             else:
@@ -140,23 +144,18 @@ class Circuit:
             return self
 
         # Case 2: Paired control and target operation.
-        # Convert control (passed in as `targets`) to a list.
         if isinstance(targets, int):
             controls = [targets]
         else:
             controls = list(targets)
-        # Convert target to a list.
         if isinstance(target, int):
             targets_list = [target]
         else:
             targets_list = list(target)
         
-        qubit_pairs = []
         if len(controls) == 1:
-            # Broadcast single control across all targets.
             qubit_pairs = [(controls[0], t) for t in targets_list]
         elif len(targets_list) == 1:
-            # Broadcast single target across all controls.
             qubit_pairs = [(c, targets_list[0]) for c in controls]
         elif len(controls) == len(targets_list):
             qubit_pairs = list(zip(controls, targets_list))
@@ -167,6 +166,7 @@ class Circuit:
             instr = CircuitInstruction(self.gate_data, gate_name, c, target_index=t, params=params)
             self.operations.append(instr)
         return self
+
 
     def __mul__(self, repetitions:int):
         """
