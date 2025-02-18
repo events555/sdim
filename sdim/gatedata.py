@@ -43,62 +43,62 @@ class GateData:
         self.gateMap = {}
         self.aliasMap = {}
         self.dimension = dimension
-        self.add_gate_data_pauli(dimension)
-        self.add_gate_hada(dimension)
-        self.add_gate_controlled(dimension)
-        self.add_gate_collapsing(dimension)
-        self.add_gate_noise(dimension)
+        self.append_data_pauli(dimension)
+        self.append_hada(dimension)
+        self.append_controlled(dimension)
+        self.append_collapsing(dimension)
+        self.append_noise(dimension)
 
     def __str__(self):
         return "\n".join(str(gate) for gate in self.gateMap.values())
 
-    def add_gate(self, name, arg_count):
+    def append(self, name, arg_count):
         gate_id = self.num_gates
         gate = Gate(name, arg_count, gate_id)
         self.gateMap[name] = gate
         self.num_gates += 1
 
-    def add_gate_alias(self, name, list_alias):
+    def append_alias(self, name, list_alias):
         for alias in list_alias:
             self.aliasMap[alias] = name
 
-    def add_gate_data_pauli(self, d):
-        self.add_gate("I", 1)
-        self.add_gate("X", 1)
-        self.add_gate("X_INV", 1)
-        self.add_gate("Z", 1)
-        self.add_gate("Z_INV", 1)
+    def append_data_pauli(self, d):
+        self.append("I", 1)
+        self.append("X", 1)
+        self.append("X_INV", 1)
+        self.append("Z", 1)
+        self.append("Z_INV", 1)
 
-    def add_gate_hada(self, d):
-        self.add_gate("H", 1)
-        self.add_gate_alias("H", ["R", "DFT"])
-        self.add_gate("H_INV", 1)
-        self.add_gate_alias("H_INV", ["R_INV", "DFT_INV", "H_DAG", "R_DAG", "DFT_DAG"])
-        self.add_gate("P", 1)
-        self.add_gate_alias("P", ["PHASE", "S"])
-        self.add_gate("P_INV", 1)
-        self.add_gate_alias("P_INV", ["PHASE_INV", "S_INV"])
+    def append_hada(self, d):
+        self.append("H", 1)
+        self.append_alias("H", ["R", "DFT"])
+        self.append("H_INV", 1)
+        self.append_alias("H_INV", ["R_INV", "DFT_INV", "H_DAG", "R_DAG", "DFT_DAG"])
+        self.append("P", 1)
+        self.append_alias("P", ["PHASE", "S"])
+        self.append("P_INV", 1)
+        self.append_alias("P_INV", ["PHASE_INV", "S_INV"])
 
-    def add_gate_controlled(self, d):
-        self.add_gate("CNOT", 2)
-        self.add_gate_alias("CNOT", ["SUM", "CX", "C"])
-        self.add_gate("CNOT_INV", 2)
-        self.add_gate_alias("CNOT_INV", ["SUM_INV", "CX_INV", "C_INV"])
-        self.add_gate("CZ", 2)
-        self.add_gate("CZ_INV", 2)
-        self.add_gate("SWAP", 2)
+    def append_controlled(self, d):
+        self.append("CNOT", 2)
+        self.append_alias("CNOT", ["SUM", "CX", "C"])
+        self.append("CNOT_INV", 2)
+        self.append_alias("CNOT_INV", ["SUM_INV", "CX_INV", "C_INV"])
+        self.append("CZ", 2)
+        self.append("CZ_INV", 2)
+        self.append("SWAP", 2)
 
-    def add_gate_collapsing(self, d):
-        self.add_gate("M", 1)
-        self.add_gate_alias("M", ["MEASURE", "COLLAPSE", "MZ"])
-        self.add_gate("M_X", 1)
-        self.add_gate_alias("M_X", ["MEASURE_X", "MX"])
-        self.add_gate("RESET", 1)
-        self.add_gate_alias("RESET", ["MR", "MEASURE_RESET", "MEASURE_R"])
+    def append_collapsing(self, d):
+        self.append("M", 1)
+        self.append_alias("M", ["MEASURE", "COLLAPSE", "MZ"])
+        self.append("M_X", 1)
+        self.append_alias("M_X", ["MEASURE_X", "MX"])
+        self.append("RESET", 1)
+        self.append_alias("RESET", ["MR", "MEASURE_RESET", "MEASURE_R"])
 
-    def add_gate_noise(self, d):
-        self.add_gate("N1", 1)
-        self.add_gate_alias("N1", ["NOISE1"])
+    def append_noise(self, d):
+        self.append("N1", 1)
+        self.append_alias("N1", ["NOISE1"])
         self.gateMap["N1"].defaults = {"channel": "d", "prob": 0.01}
 
     def get_gate_id(self, gate_name):

@@ -43,9 +43,9 @@ def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits
             if gate == "N1":
                 p = random.uniform(0.0, 1.0)
                 channel = random.choice(['f', 'p', 'd'])
-                c.add_gate(gate, qudit_target, prob=p, noise_channel=channel)
+                c.append(gate, qudit_target, prob=p, noise_channel=channel)
             else:
-                c.add_gate(gate, qudit_target)
+                c.append(gate, qudit_target)
         else:
             qudit_control = 0
             qudit_target = 0
@@ -55,7 +55,7 @@ def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits
                 qudit_control = random.randint(0, num_qudits - 1)
                 qudit_target = random.randint(0, num_qudits - 1)
 
-            c.add_gate(gate, qudit_control, qudit_target)
+            c.append(gate, qudit_control, qudit_target)
             
 
     return c
@@ -109,14 +109,14 @@ def generic_single_error_type(testing_X : bool = True):
     c = Circuit(dimension=dimension, num_qudits=1)
 
     if not testing_X:
-        c.add_gate("H", 0)
+        c.append("H", 0)
     
-    c.add_gate("N1", 0, prob=p, noise_channel=channel)
+    c.append("N1", 0, prob=p, noise_channel=channel)
 
     if not testing_X:
-        c.add_gate("H_INV", 0)
+        c.append("H_INV", 0)
 
-    c.add_gate("M", 0)
+    c.append("M", 0)
 
     result = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
@@ -147,8 +147,8 @@ def test_single_qudit_depolarizing():
     shots = 100000
 
     c = Circuit(dimension=dimension, num_qudits=1)
-    c.add_gate("N1", 0, prob=p, noise_channel='d')
-    c.add_gate("M", 0)
+    c.append("N1", 0, prob=p, noise_channel='d')
+    c.append("M", 0)
 
     result = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
@@ -188,8 +188,8 @@ def test_deterministic_gates():
     circuit_gates = gates + inverse_gates
     c = Circuit(dimension=dimension, num_qudits=1)
     for g in circuit_gates:
-        c.add_gate(g, 0)
-    c.add_gate("M", 0)
+        c.append(g, 0)
+    c.append("M", 0)
     # Run circuit
     result = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]

@@ -13,22 +13,22 @@ MEASUREMENT_DTYPE = np.dtype([
 
 def test_measurement_format():
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     result = program.simulate(shots=1)
     assert result == [MeasurementResult(0, True, 0), MeasurementResult(1, True, 0)] # flattened list
     assert program.measurement_results == [[[MeasurementResult(0, True, 0)]], [[MeasurementResult(1, True, 0)]]] # list of list of list
 
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     result = program.simulate(shots=1)
     assert result == [MeasurementResult(0, True, 0), MeasurementResult(0, True, 0), MeasurementResult(1, True, 0), MeasurementResult(1, True, 0)] #still flattened list
     assert program.measurement_results == [[[MeasurementResult(0, True, 0)],[MeasurementResult(0, True, 0)]], [[MeasurementResult(1, True, 0)], [MeasurementResult(1, True, 0)]]]
 
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     result = program.simulate(shots=2, force_tableau=True)
     assert result == [[[MeasurementResult(0, True, 0), MeasurementResult(0, True, 0)]], [[MeasurementResult(1, True, 0), MeasurementResult(1, True, 0)]]]
@@ -36,8 +36,8 @@ def test_measurement_format():
     assert result == program.measurement_results
 
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     result = program.simulate(shots=2, force_tableau=True)
     assert result == [[[MeasurementResult(0, True, 0), MeasurementResult(0, True, 0)], [MeasurementResult(0, True, 0), MeasurementResult(0, True, 0)]], 
@@ -76,7 +76,7 @@ def test_results_to_array():
                             dtype=MEASUREMENT_DTYPE)
     
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     program.simulate()
     results = program.measurement_results
@@ -96,7 +96,7 @@ def test_combine_results():
     ])
 
     circuit = Circuit(dimension=3, num_qudits=2)
-    circuit.add_gate("M", [0,1])
+    circuit.append("M", [0,1])
     program = Program(circuit)
     program.simulate()
     # reference_results = program._results_to_array(program.measurement_results)
@@ -116,9 +116,9 @@ def test_build_ir():
         ('target_index', np.int64)
     ])
     c = Circuit(dimension=3, num_qudits=2)
-    c.add_gate("H", 0)
-    c.add_gate("CNOT", 0, 1)
-    c.add_gate("M", [0, 1])
+    c.append("H", 0)
+    c.append("CNOT", 0, 1)
+    c.append("M", [0, 1])
     p = Program(c)
     extra_shots = 1
     ir, noise = p._build_ir(p.circuits, extra_shots)
@@ -129,19 +129,19 @@ def test_build_ir():
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
 
-    c.add_gate("N1", 0, prob=1.0, noise_channel='f')
+    c.append("N1", 0, prob=1.0, noise_channel='f')
     ir, noise = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[0][0][0])
 
-    c.add_gate("N1", 1, prob=1.0, noise_channel='p')
+    c.append("N1", 1, prob=1.0, noise_channel='p')
     ir, noise = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[1][0][1])
 
-    c.add_gate("N1", 1, prob=1.0, noise_channel='d')
+    c.append("N1", 1, prob=1.0, noise_channel='d')
     ir, noise = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1), (17, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)

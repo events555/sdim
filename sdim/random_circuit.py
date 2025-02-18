@@ -54,16 +54,16 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
         if gate in two_qudit_gates:
             # For two-qudit gates, choose two distinct qudits.
             qudits = random.sample(range(num_qudits), 2)
-            circuit.add_gate(gate, qudits[0], qudits[1])
+            circuit.append(gate, qudits[0], qudits[1])
         else:
             # For single-qudit gates, choose one qudit.
             qudit = random.randint(0, num_qudits - 1)
-            circuit.add_gate(gate, qudit)
+            circuit.append(gate, qudit)
     
     # Add measurement rounds (if any)
     for _ in range(measurement_rounds):
         for qudit in range(num_qudits):
-            circuit.add_gate("M", qudit)
+            circuit.append("M", qudit)
     
     return circuit
 

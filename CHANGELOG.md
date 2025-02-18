@@ -76,3 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix sign convention on CZ, where prior CZ_INV was being treated as CZ and vice versa
 
 [1.3.0]: https://github.com/events555/sdim/releases/tag/v1.3.0
+
+
+## [2.0.0] - 2025-
+
+### Added
+
+### Changed
+
+- **Change `append()` --> `append()` to match stim**
+- **Change `Program` --> `Sampler()` to match stim**
