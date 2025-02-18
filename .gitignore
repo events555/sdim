@@ -1,17 +1,25 @@
-src/sdim.egg-info/
+# Ignore everything by default except the directories
+*
+
+# Whitelist specific files and directories
+!src/
+!circuits/
+!docs/
+!examples/
+!tests/
+
+!README.md
+!CHANGELOG.md
+!TODO.md
+
+!pyproject.toml
+!poetry.lock
+
+!LICENSE
+
+# Ignore specific files and directories
 circuits/random*.chp
 circuits/failed*.chp
 circuits/test*.chp
-**/.pytest_cache/
-.pytest_cache/
+
 **/__pycache__/
-*.vscode/
-*.trunk/
-output.prof
-/docs/
-main.py
-/dist/
-profiling_results*
-qutrit_cliff_gate_defs.py
-LRB-experiment-data
-Logical Randomized Benchmarking.ipynb

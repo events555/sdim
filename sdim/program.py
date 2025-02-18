@@ -42,49 +42,6 @@ MEASUREMENT_DTYPE = np.dtype([
 noise_gate_indices = {17}
 
 # @njit
-def apply_clifford_to_frame(x_frame: np.ndarray, z_frame: np.ndarray, 
-                     gate_id: int, qudit_index: int, target_index: int) -> None:
-    """Apply Pauli frame update for a given gate."""
-    if gate_id == 1:  # X gate
-        pass
-    elif gate_id == 2:  # X inverse
-        pass
-    elif gate_id == 3:  # Z gate
-        pass
-    elif gate_id == 4:  # Z inverse
-        pass
-    elif gate_id == 5:  # Hadamard
-        tmp = x_frame[qudit_index].copy()
-        x_frame[qudit_index] = -z_frame[qudit_index]
-        z_frame[qudit_index] = tmp
-    elif gate_id == 6:  # Inverse Hadamard
-        tmp = x_frame[qudit_index].copy()
-        x_frame[qudit_index] = z_frame[qudit_index]
-        z_frame[qudit_index] = -tmp
-    elif gate_id == 7:  # P gate
-        z_frame[qudit_index] += x_frame[qudit_index]
-    elif gate_id == 8:  # Inverse P gate
-        z_frame[qudit_index] -= x_frame[qudit_index]
-    elif gate_id == 9:  # CNOT gate
-        x_frame[target_index] += x_frame[qudit_index]
-        z_frame[qudit_index] -= z_frame[target_index]
-    elif gate_id == 10:  # Inverse CNOT
-        x_frame[target_index] -= x_frame[qudit_index]
-        z_frame[qudit_index] += z_frame[target_index]
-    elif gate_id == 11:  # CZ gate
-        z_frame[target_index] += x_frame[qudit_index]
-        z_frame[qudit_index] += x_frame[target_index]
-    elif gate_id == 12:  # Inverse CZ
-        z_frame[target_index] -= x_frame[qudit_index]
-        z_frame[qudit_index] -= x_frame[target_index]
-    elif gate_id == 13:  # SWAP gate
-        tmp = x_frame[qudit_index].copy()
-        x_frame[qudit_index] = x_frame[target_index]
-        x_frame[target_index] = tmp
-        tmp = z_frame[qudit_index].copy()
-        z_frame[qudit_index] = z_frame[target_index]
-        z_frame[target_index] = tmp
-# @njit
 def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
                   n_qudits: int, dimension: int, extra_shots: int,
                   noise_array: np.ndarray = None) -> np.ndarray:
@@ -122,41 +79,78 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
         if gate_count % 64 == 0:
             x_frame %= dimension
             z_frame %= dimension
+        if gate_id == 1:  # X gate
+            pass
+        elif gate_id == 2:  # X inverse
+            pass
+        elif gate_id == 3:  # Z gate
+            pass
+        elif gate_id == 4:  # Z inverse
+            pass
+        elif gate_id == 5:  # Hadamard
+            tmp = x_frame[qudit_index].copy()
+            x_frame[qudit_index] = -z_frame[qudit_index]
+            z_frame[qudit_index] = tmp
+        elif gate_id == 6:  # Inverse Hadamard
+            tmp = x_frame[qudit_index].copy()
+            x_frame[qudit_index] = z_frame[qudit_index]
+            z_frame[qudit_index] = -tmp
+        elif gate_id == 7:  # P gate
+            z_frame[qudit_index] += x_frame[qudit_index]
+        elif gate_id == 8:  # Inverse P gate
+            z_frame[qudit_index] -= x_frame[qudit_index]
+        elif gate_id == 9:  # CNOT gate
+            x_frame[target_index] += x_frame[qudit_index]
+            z_frame[qudit_index] -= z_frame[target_index]
+        elif gate_id == 10:  # Inverse CNOT
+            x_frame[target_index] -= x_frame[qudit_index]
+            z_frame[qudit_index] += z_frame[target_index]
+        elif gate_id == 11:  # CZ gate
+            z_frame[target_index] += x_frame[qudit_index]
+            z_frame[qudit_index] += x_frame[target_index]
+        elif gate_id == 12:  # Inverse CZ
+            z_frame[target_index] -= x_frame[qudit_index]
+            z_frame[qudit_index] -= x_frame[target_index]
+        elif gate_id == 13:  # SWAP gate
+            tmp = x_frame[qudit_index].copy()
+            x_frame[qudit_index] = x_frame[target_index]
+            x_frame[target_index] = tmp
+            tmp = z_frame[qudit_index].copy()
+            z_frame[qudit_index] = z_frame[target_index]
+            z_frame[target_index] = tmp
         if gate_id in (14, 15):  # Measurement gates
-            q = int(qudit_index)
-            m = int(measurement_counts[q])
+            m = measurement_counts[qudit_index]
             
-            ref_val = reference_results[q, m]['measurement_value']
-            deterministic = reference_results[q, m]['deterministic']
+            ref_val = reference_results[qudit_index, m]['measurement_value']
+            deterministic = reference_results[qudit_index, m]['deterministic']
             
             # Handle X-basis measurement
             if gate_id == 15:
-                tmp = x_frame[q].copy()
-                x_frame[q] = -z_frame[q]
-                z_frame[q] = tmp
-            
+                tmp = x_frame[qudit_index].copy()
+                x_frame[qudit_index] = z_frame[qudit_index]
+                z_frame[qudit_index] = -tmp
+                
             # Compute and store measurements for each shot
             for shot in range(extra_shots):
-                new_val = (ref_val + x_frame[q, shot]) % dimension
-                frame_results[q, m, shot] = (q, m, shot, deterministic, new_val)
+                new_val = (ref_val + x_frame[qudit_index, shot]) % dimension
+                frame_results[qudit_index, m, shot]['qudit_index'] = qudit_index
+                frame_results[qudit_index, m, shot]['meas_round'] = m
+                frame_results[qudit_index, m, shot]['shot'] = shot
+                frame_results[qudit_index, m, shot]['deterministic'] = deterministic
+                frame_results[qudit_index, m, shot]['measurement_value'] = new_val
+
             
-            measurement_counts[q] += 1
-            z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
+            measurement_counts[qudit_index] += 1
+            z_frame[qudit_index] = np.random.randint(0, dimension, size=extra_shots)
             
         elif gate_id == 16:  # Reset
-            q = qudit_index
-            x_frame[q] = 0
-            z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
+            x_frame[qudit_index] = 0
+            z_frame[qudit_index] = np.random.randint(0, dimension, size=extra_shots)
             
         elif gate_id == 17:  # Noise
-            q = qudit_index
-            x_frame[q] += noise_array[noise_counter, :, 0]
-            z_frame[q] += noise_array[noise_counter, :, 1]
+            x_frame[qudit_index] += noise_array[noise_counter, :, 0]
+            z_frame[qudit_index] += noise_array[noise_counter, :, 1]
             noise_counter += 1
-            
-        else:  # Other gates
-            apply_clifford_to_frame(x_frame, z_frame, gate_id, qudit_index, 
-                            target_index)
         gate_count += 1
     
     return frame_results
@@ -170,7 +164,6 @@ class SimulationOptions:
     verbose: bool = False
     show_gate: bool = False
     exact: bool = False
-
 
 class Program:
     """
@@ -361,6 +354,7 @@ class Program:
             return flattened_results
         else:
             return self.measurement_results
+    
     def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
         """
         Applies a gate to the stabilizer tableau.
@@ -424,26 +418,30 @@ class Program:
 
         The frame_results is expected to be a 3D structured array with shape:
             (n_qudits, num_rounds, extra_shots)
-        where each element is a tuple containing
+        where each element is a record with fields:
             ('qudit_index', 'meas_round', 'shot', 'deterministic', 'measurement_value').
-        
+
         For each qudit and each measurement round, we create a list of MeasurementResult
-        objects for each shot.
+        objects (one per shot) and append them.
         """
         extra_shots = frame_results.shape[2]
-        num_rounds = frame_results.shape[1]
         n_qudits = frame_results.shape[0]
-        for qudit_index in range(len(self.measurement_results)):
-            for measurement_number in range(len(self.measurement_results[qudit_index])):
-                for shot in range(extra_shots):
-                    frame_result = frame_results[qudit_index, measurement_number, shot]
-                    self.measurement_results[qudit_index][measurement_number].append(
-                        MeasurementResult(
-                            qudit_index=frame_result['qudit_index'],
-                            deterministic=frame_result['deterministic'],
-                            measurement_value=frame_result['measurement_value']
-                        )
+        # Loop over qudits and measurement rounds and build the shot results in one go.
+        for qudit_index in range(n_qudits):
+            # It may be that len(self.measurement_results[qudit_index]) equals the number of rounds.
+            num_rounds = len(self.measurement_results[qudit_index])
+            for meas_round in range(num_rounds):
+                # Build the list of MeasurementResult objects for this qudit and measurement round
+                new_results = [
+                    MeasurementResult(
+                        qudit_index = int(frame_results[qudit_index, meas_round, shot]['qudit_index']),
+                        deterministic = bool(frame_results[qudit_index, meas_round, shot]['deterministic']),
+                        measurement_value = int(frame_results[qudit_index, meas_round, shot]['measurement_value'])
                     )
+                    for shot in range(extra_shots)
+                ]
+                # Extend the already-existing list for this measurement round
+                self.measurement_results[qudit_index][meas_round].extend(new_results)
         return self.measurement_results
         
     def _build_ir(self, circuits: list[Circuit], extra_shots: int) -> tuple[np.ndarray, np.ndarray]:

@@ -54,22 +54,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [1.2.0]: https://github.com/events555/sdim/releases/tag/v1.2.0
 
-## [1.3.0] - 2025-02-02
+## [1.3.0] - 2025-02-18
 
 ### Added
 - Add noise validation with `test_noise_and_io.py` using PyTest framework.
 - Add Cirq definitions for CZ and its inverse gates.
+- Add PauliFrame simulator to sample from measurement distribution faster
+- Add tests for syndrome extraction
+- Add arguments to GateData for noise support
+- Add TODO.md
+- Add helper functions for integrated PauliFrame simulator (ie. convert to numpy array to MeasurementResult list)
 
 ### Changed
 - Update `circuit_io.py`  to support named parameters single-qudit gates.
 - Included support for inverse symbol of Hadamard in the Cirq circuit diagram.
-- Update `tableau_prime.py` to support parallelized for-loops using *numba*
+- Update .gitignore
+- Change numpy version requirements
 
 ### Fixed
 - Fix reset gate not properly working for dimensions greater than 2
 - Fix sign convention on CZ, where prior CZ_INV was being treated as CZ and vice versa
-### To-do
-- Fix automated deployment with GitHub actions
-- Implement two-qubit noise
 
 [1.3.0]: https://github.com/events555/sdim/releases/tag/v1.3.0
