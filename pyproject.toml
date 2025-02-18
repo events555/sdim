@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sdim"
-version = "1.1.0"
+version = "1.2.0"
 description = "A tableau Clifford simulator for qudits"
 authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>"]
 license = "GPL-3.0-or-later"
@@ -18,13 +18,16 @@ Repository = "https://github.com/events555/sdim"
 Documentation = "https://events555.github.io/sdim/sdim.html"
 
 [tool.poetry.dependencies]
-python = "^3.7"
-numpy = "*"
-sympy = "*"
-cirq = "*"
-pdoc = "*"
+python = "^3.11"
+numpy = ">=1.25.0"
+sympy = ">=1.12.1"
+cirq = ">=1.0.0"
 Diophantine = "*"
+numba = "*"
+networkx = "^3.4.2"
 
+[tool.poetry.dev-dependencies]
+pdoc = "*"
 
 [build-system]
 requires = ["poetry-core"]

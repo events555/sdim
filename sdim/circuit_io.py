@@ -53,17 +53,36 @@ def read_circuit(filename):
             continue
         parts = line.split()
         gate_name = parts[0].upper()
-        gate_qubits = [int(qubit) for qubit in parts[1:]]
 
-        # The number of arguments is the number of parts minus 1 (for the gate name)
-        num_args = len(parts) - 1
+        # Extract all purely numerical arguments as qubit indices
+        gate_qubits = [int(qubit) for qubit in parts[1:] if qubit.isdigit()]
 
-        if num_args == 1:
+        # Extract all extra parameters
+        extra_params = [text for text in parts[1:] if '=' in text]
+
+        params_dict = None if len(extra_params) == 0 else dict()
+
+        # Check for extra parameters
+        for param in extra_params:
+            param_parts = param.split('=')
+            if len(param_parts) != 2:
+                raise ValueError("Extra parameter doesn't have the correct format.")
+            params_dict[param_parts[0]] = param_parts[1]
+
+        num_indices = len(gate_qubits)
+
+        if num_indices == 1:
             # Single-qubit gate
-            circuit.add_gate(gate_name, gate_qubits[0])
-        elif num_args == 2:
+            if params_dict is None:
+                circuit.add_gate(gate_name, gate_qubits[0])
+            else:    
+                circuit.add_gate(gate_name, gate_qubits[0], **params_dict)
+        elif num_indices == 2:
             # Two-qubit gate
-            circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1])
+            if params_dict is None:
+                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1])
+            else:
+                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1], **params_dict)
         else:
             raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
 
@@ -91,10 +110,16 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
 
     for gate in circuit.operations:
         gate_str = gate.gate_name
+        print("Gate is " + gate_str)
         if gate.target_index is not None:
             gate_str += f" {gate.qudit_index} {gate.target_index}"
         else:
             gate_str += f" {gate.qudit_index}"
+        # Writing extra parameters
+        if not (gate.params is None):
+            for key, value in gate.params.items():
+                gate_str += f" {key}={value}"
+
         chp_content += f"{gate_str}\n"
 
     if directory is None:
@@ -137,11 +162,14 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         "CNOT": GeneralizedCNOTGate(circuit.dimension),
         "X": GeneralizedXPauliGate(circuit.dimension),
         "Z": GeneralizedZPauliGate(circuit.dimension),
-        "H_INV": cirq.inverse(GeneralizedHadamardGate(circuit.dimension)),
-        "P_INV": cirq.inverse(GeneralizedPhaseShiftGate(circuit.dimension)),
-        "CNOT_INV": cirq.inverse(GeneralizedCNOTGate(circuit.dimension)),
-        "X_INV": cirq.inverse(GeneralizedXPauliGate(circuit.dimension)),
-        "Z_INV": cirq.inverse(GeneralizedZPauliGate(circuit.dimension)),
+        "H_INV": GeneralizedHadamardGateInverse(circuit.dimension),
+        "P_INV": GeneralizedPhaseShiftGateInverse(circuit.dimension),
+        "CNOT_INV": GeneralizedCNOTGateInverse(circuit.dimension),
+        "X_INV": GeneralizedXPauliGateInverse(circuit.dimension),
+        "Z_INV": GeneralizedZPauliGateInverse(circuit.dimension),
+        "CZ": GeneralizedCZGate(circuit.dimension),
+        "CZ_INV": GeneralizedCZGateInverse(circuit.dimension),
+        "N1" : IdentityGate(circuit.dimension) # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
     }
 
     # Create a Cirq circuit.

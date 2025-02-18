@@ -36,3 +36,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rename `composite.md` to `COMPOSITE.md`
 
 [1.1.0]: https://github.com/events555/sdim/releases/tag/v1.1.0
+
+## [1.2.0] - 2024-11-19
+
+### Fixed
+
+- Fix incorrect phase calculation on H_INV implementation in `tableau_prime.py`
+- Fix incorrect tableau conjugations for P_INV and H_INV for documentation
+- Fix implementation in prime dimensions for SWAP gate 
+
+### Added
+- Add empty `surface_code.ipynb` to examples
+- Add Optional `stabilizer_tableau` to `MeasurementResult` dataclass 
+- Add `record_tableau` argument to `simulate()` to record final stabilizer tableau before measurement
+- Add unit test for SWAP gate
+- Add automated GitHub action workflow for PyPi deployment from `main` and `dev` branch to PyPi and TestPyPi respectively
+
+[1.2.0]: https://github.com/events555/sdim/releases/tag/v1.2.0
+
+## [1.3.0] - 2025-02-18
+
+### Added
+- Add noise validation with `test_noise_and_io.py` using PyTest framework.
+- Add Cirq definitions for CZ and its inverse gates.
+- Add PauliFrame simulator to sample from measurement distribution faster
+- Add tests for syndrome extraction
+- Add arguments to GateData for noise support
+- Add TODO.md
+- Add helper functions for integrated PauliFrame simulator (ie. convert to numpy array to MeasurementResult list)
+
+### Changed
+- Update `circuit_io.py`  to support named parameters single-qudit gates.
+- Included support for inverse symbol of Hadamard in the Cirq circuit diagram.
+- Update .gitignore
+- Change numpy version requirements
+
+### Fixed
+- Fix reset gate not properly working for dimensions greater than 2
+- Fix sign convention on CZ, where prior CZ_INV was being treated as CZ and vice versa
+
+[1.3.0]: https://github.com/events555/sdim/releases/tag/v1.3.0

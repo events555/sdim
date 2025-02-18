@@ -142,9 +142,7 @@ class GeneralizedHadamardGate(cirq.Gate):
         if exponent == 1:
             return self
         if exponent == -1:
-            inv_gate = GeneralizedHadamardGate(self.d)
-            inv_gate._unitary = lambda: np.conj(self._unitary()).T
-            return inv_gate
+            return GeneralizedHadamardGateInverse(self.d)
         return NotImplemented
 
     def _circuit_diagram_info_(self, args):
@@ -170,7 +168,7 @@ class GeneralizedHadamardGateInverse(cirq.Gate):
             return GeneralizedHadamardGate(self.d)
         return NotImplemented
 
-    def _circuit_diagram_info_(self, args):
+    def _circuit_diagram_info_(self, args): 
         return f"H_{self.d}†"
     
 
@@ -354,6 +352,47 @@ class GeneralizedCNOTGateInverse(cirq.Gate):
     def _circuit_diagram_info_(self, args):
         return (f"CNOT_{self.d}_control†", f"CNOT_{self.d}_target†")
     
+class GeneralizedCZGate(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedCZGate, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d, self.d)
+
+    def _unitary_(self):
+        return (np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))
+    
+    def __pow__(self, exponent):
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedCZGateInverse(self.d)
+        
+    def _circuit_diagram_info_(self, args):
+        return (f"CZ_{self.d}_control", f"CZ_{self.d}_target")
+    
+
+class GeneralizedCZGateInverse(cirq.Gate):
+    def __init__(self, d):
+        super(GeneralizedCZGateInverse, self).__init__()
+        self.d = d
+
+    def _qid_shape_(self):
+        return (self.d, self.d)
+
+    def _unitary_(self):
+        return np.conj((np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))).T
+    
+    def __pow__(self, exponent):
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedCZGate(self.d)
+        
+    def _circuit_diagram_info_(self, args):
+        return (f"CZ_{self.d}_control†", f"CZ_{self.d}_target†")
+
 class IdentityGate(cirq.Gate):
     def __init__(self, d):
         super(IdentityGate, self).__init__()

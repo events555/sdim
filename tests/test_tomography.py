@@ -1,7 +1,7 @@
 import pytest
 from sdim.program import Program
 from sdim.circuit_io import write_circuit, cirq_statevector_from_circuit
-from sdim.random_circuit import generate_random_circuit
+from sdim.random_circuit import generate_random_clifford_circuit
 import numpy as np
 
 def create_key(measurements, dimension):
@@ -12,7 +12,7 @@ def create_key(measurements, dimension):
     return key
 
 def generate_and_test_circuit(depth, dimension, num_qudits):
-    circuit = generate_random_circuit(20, 40, 40, 0, num_qudits, depth, dimension, 1)
+    circuit = generate_random_clifford_circuit(num_qudits, depth, dimension, measurement_rounds=1)
 
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector) ** 2
@@ -46,21 +46,27 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
 
 
 @pytest.mark.parametrize("dimension", [2, 3])
-@pytest.mark.parametrize("depth", [15, 30])
+@pytest.mark.parametrize("depth", [5, 10, 15, 30, 50, 100, 500, 1000])
 def test_random_circuits(dimension, depth):
     num_qudits = 3
-    num_circuits = 500
+    num_circuits = 1000
 
     for i in range(num_circuits):
+        circuit = None
+        amplitudes = None
+        probabilities = None
         try:
             tvd, amplitudes, probabilities, circuit = generate_and_test_circuit(depth, dimension, num_qudits)
             assert np.isclose(np.sum(probabilities), 1, atol=1e-6), f"Circuit {i+1}: The sum of the probabilities is not approximately 1"
             assert np.isclose(np.sum(amplitudes), 1, atol=1e-6), f"Circuit {i+1}: The sum of the amplitudes is not approximately 1"
             assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
         except Exception as e:
-            file_name = f"failed_circuit_{dimension}_{depth}_{i+1}.chp"
-            comment = f"Failed circuit - Dimension: {dimension}, Depth: {depth}, Circuit: {i+1}"
-            write_circuit(circuit, file_name, comment)
+            if circuit is not None:
+                file_name = f"failed_circuit_{dimension}_{depth}_{i+1}.chp"
+                comment = f"Failed circuit - Dimension: {dimension}, Depth: {depth}, Circuit: {i+1}"
+                print("Probabilities:", probabilities)
+                print("Amplitudes:", amplitudes)
+                write_circuit(circuit, file_name, comment)
             raise e
 
         print(f"Circuit {i+1} - Dimension: {dimension}, Depth: {depth}, Qudits: {num_qudits}")

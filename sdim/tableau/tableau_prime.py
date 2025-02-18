@@ -1,11 +1,9 @@
 import numpy as np
 import random
 from dataclasses import dataclass
-from functools import cached_property
-from typing import Optional, Tuple
-from math import gcd
+from typing import Optional
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
-
+from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized, cnot_optimized, cnot_inv_optimized
 
 @dataclass
 class ExtendedTableau(Tableau):
@@ -86,7 +84,15 @@ class ExtendedTableau(Tableau):
             self.destab_x_block = np.eye(self.num_qudits, dtype=np.int64)
         if self.destab_phase_vector is None:
             self.destab_phase_vector = np.zeros(self.num_qudits, dtype=np.int64)
-            
+
+    def modulo(self):
+        """
+        Reduces the tableau modulo the qudit dimension.
+        """
+        super().modulo()
+        self.destab_x_block %= self.dimension
+        self.destab_z_block %= self.dimension
+        self.destab_phase_vector %= self.order
     
     def hadamard(self, qudit_index: int):
         """
@@ -108,31 +114,17 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the Hadamard gate to.
         """
-        for i in range(self.num_qudits):
-            # We gain a phase from commuting XZ that depends on the product of xpow and zpow but multiply by 2 because we are tracking omega 1/2
-            # ie. HXZP' = ZX! = w^d-1 XZ
-            self.x_block[qudit_index, i], self.z_block[qudit_index, i] = -self.z_block[qudit_index, i], self.x_block[qudit_index, i]
-            self.phase_vector[i] += self.phase_order * self.x_block[qudit_index, i] * self.z_block[qudit_index, i]
-            self.phase_vector[i] %= self.order
+        hadamard_optimized(
+            self.x_block, self.z_block, self.phase_vector,
+            self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+            qudit_index, self.num_qudits, self.phase_order
+        )
 
-            self.destab_x_block[qudit_index, i], self.destab_z_block[qudit_index, i] = -self.destab_z_block[qudit_index, i], self.destab_x_block[qudit_index, i]
-            self.destab_phase_vector[i] += self.phase_order * self.destab_x_block[qudit_index, i] * self.destab_z_block[qudit_index, i]
-            self.destab_phase_vector[i] %= self.order
-    
     def hadamard_inv(self, qudit_index: int):
         """
         Applies the inverse Hadamard gate to the qudit at the specified index.
 
-        The inverse Hadamard gate transformations depend on whether the qudit dimension is odd or even:
-
-        For odd dimensions:
-
-        | Input | Output   |
-        |-------|----------|
-        | $X$   | $Z^{-1}$ |
-        | $Z$   | $X$      |
-
-        For even dimensions:
+        The inverse Hadamard gate performs the following transformations:
 
         | Input | Output   |
         |-------|----------|
@@ -142,20 +134,11 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
         """
-        for i in range(self.num_qudits):
-            new_z_block = -self.x_block[qudit_index, i].copy()
-            new_x_block = self.z_block[qudit_index, i].copy()
-            self.z_block[qudit_index, i] = new_z_block % self.order
-            self.x_block[qudit_index, i] = new_x_block % self.order
-            self.phase_vector[i] -= self.phase_order * self.x_block[qudit_index, i] * self.z_block[qudit_index, i]
-            self.phase_vector[i] %= self.order
-
-            new_destab_z_block = -self.destab_x_block[qudit_index, i].copy()
-            new_destab_x_block = self.destab_z_block[qudit_index, i].copy()
-            self.destab_z_block[qudit_index, i] = new_destab_z_block % self.order
-            self.destab_x_block[qudit_index, i] = new_destab_x_block % self.order
-            self.destab_phase_vector[i] -= self.phase_order * self.destab_x_block[qudit_index, i] * self.destab_z_block[qudit_index, i]
-            self.destab_phase_vector[i] %= self.order
+        hadamard_inv_optimized(
+            self.x_block, self.z_block, self.phase_vector,
+            self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+            qudit_index, self.num_qudits, self.phase_order
+        )
 
     def phase(self, qudit_index: int):
         """
@@ -174,7 +157,7 @@ class ExtendedTableau(Tableau):
 
         | Input           | Output               |
         |-----------------|----------------------|
-        | $XZ$            | $\omega^{1/2} XZ$    |
+        | $X$             | $\omega^{1/2} XZ$    |
         | $Z$             | $Z$                  |
 
         Where $\omega = e^{2\pi i / d}$ and $d$ is the qudit dimension.
@@ -188,26 +171,13 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the Phase gate to.
         """
-        for i in range(self.num_qudits):
-            if self.even:
-                # Original commutation was xpow*(xpow-1)/2, but we are tracking number of omega 1/2 so we multiply by 2
-                # We also gain an omega 1/2 for every xpow so we get 2*xpow*(xpow-1)/2 + xpow
-                # This simplifies to xpow^2
-                self.phase_vector[i] += self.x_block[qudit_index, i] ** 2
-                self.phase_vector[i] %= self.order
-                self.destab_phase_vector[i] += self.destab_x_block[qudit_index, i] ** 2
-                self.destab_phase_vector[i] %= self.order
-            else:
-                # We gain a phase from commuting XZ depending on the number of X from PXP' = XZ
-                # ie. PXXXP' = XZXZXZ = w^3 XXXZZZ
-                # This followed from (XZ)^r = w^(r(r-1)/2)X^r Z^r
-                self.phase_vector[i] += self.x_block[qudit_index, i] * (self.x_block[qudit_index, i]-1) // 2
-                self.phase_vector[i] %= self.order
-                self.destab_phase_vector[i] += self.destab_x_block[qudit_index, i] * (self.destab_x_block[qudit_index, i]-1) // 2
-                self.destab_phase_vector[i] %= self.order
-            self.z_block[qudit_index, i] = (self.z_block[qudit_index, i] + self.x_block[qudit_index, i]) % self.dimension
-            self.destab_z_block[qudit_index, i] = (self.destab_z_block[qudit_index, i] + self.destab_x_block[qudit_index, i]) % self.dimension
-    
+        phase_optimized(self.x_block, self.z_block, self.phase_vector,
+                       self.destab_x_block, self.destab_z_block,
+                       self.destab_phase_vector, 
+                       qudit_index,
+                       self.num_qudits,
+                       self.even)
+
     def phase_inv(self, qudit_index: int):
         """
         Applies the inverse Phase gate to the qudit at the specified index.
@@ -223,28 +193,21 @@ class ExtendedTableau(Tableau):
 
         For even dimensions:
 
-        | Input               | Output |
-        |---------------------|--------|
-        | $\omega^{1/2} XZ$   | $XZ$   |
-        | $Z$                 | $Z$    |
+        | Input        | Output                  |
+        |--------------|-------------------------|
+        | $X$          | $\omega^{-1/2} XZ^{-1}$ |
+        | $Z$          | $Z$                     |
 
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Phase gate to.
         """
-        for i in range(self.num_qudits):
-            if self.even:
-                self.phase_vector[i] -= self.x_block[qudit_index, i] ** 2
-                self.phase_vector[i] %= self.order
-                self.destab_phase_vector[i] -= self.destab_x_block[qudit_index, i] ** 2
-                self.destab_phase_vector[i] %= self.order
-            else:
-                self.phase_vector[i] -= self.x_block[qudit_index, i] * (self.x_block[qudit_index, i]-1) // 2
-                self.phase_vector[i] %= self.order
-                self.destab_phase_vector[i] -= self.destab_x_block[qudit_index, i] * (self.destab_x_block[qudit_index, i]-1) // 2
-                self.destab_phase_vector[i] %= self.order
-            self.z_block[qudit_index, i] = (self.z_block[qudit_index, i] - self.x_block[qudit_index, i]) % self.dimension
-            self.destab_z_block[qudit_index, i] = (self.destab_z_block[qudit_index, i] - self.destab_x_block[qudit_index, i]) % self.dimension
-
+        phase_inv_optimized(self.x_block, self.z_block, self.phase_vector,
+                       self.destab_x_block, self.destab_z_block,
+                       self.destab_phase_vector, 
+                       qudit_index,
+                       self.num_qudits,
+                       self.even)
+        
     def cnot(self, control: int, target: int):
         """
         Applies the CNOT gate with the specified control and target qudits.
@@ -263,11 +226,9 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
-        for i in range(self.num_qudits):
-            self.x_block[target, i] = (self.x_block[target, i] + self.x_block[control, i]) % self.dimension
-            self.z_block[control, i] = (self.z_block[control, i] + (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
-            self.destab_x_block[target, i] = (self.destab_x_block[target, i] + self.destab_x_block[control, i]) % self.dimension
-            self.destab_z_block[control, i] = (self.destab_z_block[control, i] + (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
+        cnot_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
+                       self.num_qudits, self.dimension,
+                       control, target)
     
     def cnot_inv(self, control: int, target: int):
         """
@@ -294,11 +255,9 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
-        for i in range(self.num_qudits):
-            self.x_block[target, i] = (self.x_block[target, i] - self.x_block[control, i]) % self.dimension
-            self.z_block[control, i] = (self.z_block[control, i] - (self.z_block[target, i] * (self.dimension - 1))) % self.dimension
-            self.destab_x_block[target, i] = (self.destab_x_block[target, i] - self.destab_x_block[control, i]) % self.dimension
-            self.destab_z_block[control, i] = (self.destab_z_block[control, i] - (self.destab_z_block[target, i] * (self.dimension - 1))) % self.dimension
+        cnot_inv_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
+                       self.num_qudits, self.dimension,
+                       control, target)
             
     def measure(self, qudit_index: int) -> MeasurementResult:
         """

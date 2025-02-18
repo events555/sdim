@@ -1,13 +1,25 @@
-src/sdim.egg-info/
-src/circuits/random_circuit_*.chp
-src/circuits/failed_circuit_*.chp
-**/.pytest_cache/
-.pytest_cache/
+# Ignore everything by default except the directories
+*
+
+# Whitelist specific files and directories
+!src/
+!circuits/
+!docs/
+!examples/
+!tests/
+
+!README.md
+!CHANGELOG.md
+!TODO.md
+
+!pyproject.toml
+!poetry.lock
+
+!LICENSE
+
+# Ignore specific files and directories
+circuits/random*.chp
+circuits/failed*.chp
+circuits/test*.chp
+
 **/__pycache__/
-*.vscode/
-*.trunk/
-output.prof
-profiling_results.txt
-/docs/
-main.py
-/dist/
