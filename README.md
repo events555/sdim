@@ -22,10 +22,10 @@ from sdim import Circuit, Program
 circuit = Circuit(4, 2) # Create a circuit with 4 qubits and dimension 2
 
 # Add gates to the circuit
-circuit.add_gate('H', 0)  # Hadamard gate on qubit 0
-circuit.add_gate('CNOT', 0, 1)  # CNOT gate with control on qubit 0 and target on qubit 1
-circuit.add_gate('CNOT', 0, [2, 3]) # Short-hand for multiple target qubits, applies CNOT between 0 -> 2 and 0 -> 3
-circuit.add_gate('MEASURE', [0, 1, 2, 3]) # Short-hand for multiple single-qubit gates
+circuit.append('H', 0)  # Hadamard gate on qubit 0
+circuit.append('CNOT', 0, 1)  # CNOT gate with control on qubit 0 and target on qubit 1
+circuit.append('CNOT', 0, [2, 3]) # Short-hand for multiple target qubits, applies CNOT between 0 -> 2 and 0 -> 3
+circuit.append('MEASURE', [0, 1, 2, 3]) # Short-hand for multiple single-qubit gates
 
 # Create a program and add the circuit
 program = Program(circuit) # Must be given an initial circuit as a constructor argument

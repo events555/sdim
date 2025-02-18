@@ -1,6 +1,6 @@
 from .gatedata import GateData
 from dataclasses import dataclass
-from typing import Union, Optional, List
+from typing import List, Union, Optional, Iterable, overload
 
 @dataclass
 class CircuitInstruction:
@@ -59,7 +59,7 @@ class Circuit:
     """
     num_qudits: int
     dimension: int = 2
-    operations: list = None
+    operations: List[CircuitInstruction] = None
     gate_data: GateData = None
 
     def __post_init__(self):
@@ -73,57 +73,100 @@ class Circuit:
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
-    def add_gate(self, gate_name: str, control: Union[int, List[int]], target: Union[int, List[int], None] = None, **kwargs):
-        """
-        Adds gate operation(s) to the circuit.
+    @overload
+    def append(self, name: str, control: Union[int, Iterable[int]], 
+               target: Union[int, Iterable[int]], 
+               arg: Optional[Union[float, Iterable[float]]] = None, *, tag: str = "") -> "Circuit":
+        ...
 
+    @overload
+    def append(self, op: CircuitInstruction) -> "Circuit":
+        ...
+
+    def append(
+        self,
+        name_or_op: Union[str, CircuitInstruction],
+        targets: Optional[Union[int, Iterable[int]]] = None,
+        target: Optional[Union[int, Iterable[int]]] = None,
+        arg: Optional[Union[float, Iterable[float]]] = None,
+        *,
+        tag: str = ""
+    ) -> "Circuit":
+        """
+        Appends an operation to the circuit.
+
+        Overloads:
+          1. Append with a gate name and targets:
+             - `append("X", 0)`
+             - `append("X", [0, 1])`
+          2. Append with a gate name, control(s), and target(s) for two-qudit operations:
+             - `append("CNOT", 0, 1)`
+             - `append("CNOT", [0, 2], [1, 3])`
+          3. Append a pre-constructed CircuitInstruction.
+        
         Args:
-            gate_name (str): The name of the gate to add.
-            control (int or List[int]): The index or indices of the control qudit(s).
-            target (int, List[int], or None, optional): The index or indices of the target qudit(s).
-
-        Optional parameters:
-            channel (str): Channel type for noise.  Valid channels are "f", "p", and "d" for flip errors, phase errors, and depolarizing noise, respectively
-            prob (float): Probability associated with the noise channel.
-
+            name_or_op: Either the gate name (str) or a CircuitInstruction.
+            targets: For single-qudit operations, the target(s). For two-qudit operations,
+                     this represents the control(s).
+            target: For two-qudit operations, the target(s). Leave as None for single-qudit operations.
+            arg: Optional parameter(s) for the gate.
+            tag: An optional string tag.
+        
         Returns:
-            Circuit: The current Circuit object with the added operation(s).
-
-        Raises:
-            ValueError: If the input combination is invalid.
+            The Circuit object (self).
         """
-        # Convert single integers to lists for uniform processing
-        control = [control] if isinstance(control, int) else control
-        target = [target] if isinstance(target, int) else target
+        # Case 3: Directly appending an existing instruction.
+        if isinstance(name_or_op, CircuitInstruction):
+            self.operations.append(name_or_op)
+            return self
 
-        gate_name_upper = gate_name.upper()
-        primary_name = self.gate_data.aliasMap.get(gate_name_upper, gate_name_upper)
-        gate = self.gate_data.gateMap.get(primary_name)
+        gate_name = name_or_op.upper()
+        params = {}
+        if arg is not None:
+            params["arg"] = arg
+        if tag:
+            params["tag"] = tag
 
-        if gate and gate.defaults:
-            for key, value in gate.defaults.items():
-                kwargs.setdefault(key, value)
-
+        # Case 1: Single-qudit or broadcast operation.
         if target is None:
-            for c in control:
-                self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None, params=kwargs))
-            return
+            # Ensure targets is iterable.
+            if isinstance(targets, int):
+                targets = [targets]
+            else:
+                targets = list(targets) if targets is not None else []
+            for t in targets:
+                instr = CircuitInstruction(self.gate_data, gate_name, t, target_index=None, params=params)
+                self.operations.append(instr)
+            return self
 
-        # Generate all combinations of control and target qubits
-        qubit_pairs = []
-        if len(control) == 1:
-            qubit_pairs = [(control[0], t) for t in target]
-        elif len(target) == 1:
-            qubit_pairs = [(c, target[0]) for c in control]
-        elif len(control) == len(target):
-            qubit_pairs = list(zip(control, target))
+        # Case 2: Paired control and target operation.
+        # Convert control (passed in as `targets`) to a list.
+        if isinstance(targets, int):
+            controls = [targets]
         else:
-            raise ValueError("Invalid combination of control and target qubits")
+            controls = list(targets)
+        # Convert target to a list.
+        if isinstance(target, int):
+            targets_list = [target]
+        else:
+            targets_list = list(target)
+        
+        qubit_pairs = []
+        if len(controls) == 1:
+            # Broadcast single control across all targets.
+            qubit_pairs = [(controls[0], t) for t in targets_list]
+        elif len(targets_list) == 1:
+            # Broadcast single target across all controls.
+            qubit_pairs = [(c, targets_list[0]) for c in controls]
+        elif len(controls) == len(targets_list):
+            qubit_pairs = list(zip(controls, targets_list))
+        else:
+            raise ValueError("Invalid combination: control and target must be of equal length or one must be singular.")
 
-        # Add instructions for all qubit pairs
         for c, t in qubit_pairs:
-            self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, t))
-        return
+            instr = CircuitInstruction(self.gate_data, gate_name, c, target_index=t, params=params)
+            self.operations.append(instr)
+        return self
 
     def __mul__(self, repetitions:int):
         """
@@ -230,13 +273,13 @@ class Circuit:
                 gate_name = op[0]
                 qudits = op[1]
                 if len(qudits) == 1:
-                    circuit.add_gate(gate_name, qudits[0])
+                    circuit.append(gate_name, qudits[0])
                 elif len(qudits) == 2:
-                    circuit.add_gate(gate_name, qudits[0], qudits[1])
+                    circuit.append(gate_name, qudits[0], qudits[1])
                 else:
                     raise ValueError(f"Unsupported number of qudits for gate {gate_name}")
             elif isinstance(op, CircuitInstruction):  # If the operation is a CircuitInstruction
-                circuit.add_gate(op.gate_name, op.qudit_index, op.target_index)
+                circuit.append(op.gate_name, op.qudit_index, op.target_index)
             else:
                 raise ValueError(f"Unsupported operation type: {type(op)}")
         return circuit

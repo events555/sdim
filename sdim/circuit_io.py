@@ -74,15 +74,15 @@ def read_circuit(filename):
         if num_indices == 1:
             # Single-qubit gate
             if params_dict is None:
-                circuit.add_gate(gate_name, gate_qubits[0])
+                circuit.append(gate_name, gate_qubits[0])
             else:    
-                circuit.add_gate(gate_name, gate_qubits[0], **params_dict)
+                circuit.append(gate_name, gate_qubits[0], **params_dict)
         elif num_indices == 2:
             # Two-qubit gate
             if params_dict is None:
-                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1])
+                circuit.append(gate_name, gate_qubits[0], gate_qubits[1])
             else:
-                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1], **params_dict)
+                circuit.append(gate_name, gate_qubits[0], gate_qubits[1], **params_dict)
         else:
             raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
 
