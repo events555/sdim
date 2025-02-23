@@ -25,7 +25,7 @@ This submodule provides classes and functions for working with tableau represent
 - **WeylTableau**: Represents a Weyl tableau for qudit operations. It works with qudits of any dimension.
 - **MeasurementResult**: Represents the result of a quantum measurement.
 - **Tableau**: The base class for tableau representations.
-- **ExtendedTableau**: An extended tableau representation for quantum states. It works with qudits of prime dimension.
+- **ExtendedTableauSimulator**: An extended tableau representation for quantum states. It works with qudits of prime dimension.
 
 ## Purpose
 
@@ -40,7 +40,5 @@ This submodule is essential for working with quantum states in a structured and 
 
 """
 
-from .tableau_composite import WeylTableau
-from .dataclasses import MeasurementResult, Tableau
-from .tableau_prime import ExtendedTableau
-from .tableau_optimized import hadamard_optimized, phase_optimized, phase_inv_optimized, hadamard_inv_optimized
+from .tableau import Tableau
+from .extended_tableau_simulator import ExtendedTableauSimulator

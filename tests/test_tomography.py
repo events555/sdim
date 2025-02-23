@@ -1,5 +1,5 @@
 import pytest
-from sdim.program import Program
+
 from sdim.circuit_io import write_circuit, cirq_statevector_from_circuit
 from sdim.random_circuit import generate_random_clifford_circuit
 import numpy as np
@@ -22,8 +22,8 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
     measurement_counts = np.zeros(num_states, dtype=int)
 
     # Simulate all shots at once
-    program = Program(circuit)
-    measurements = program.simulate(shots=num_samples)
+    sampler = circuit.compile_sampler()
+    measurements = sampler.simulate(shots=num_samples)
 
 
     for shot_index in range(num_samples):

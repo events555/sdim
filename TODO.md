@@ -25,6 +25,9 @@
 ### Helper
 - [ ] Qudit labeling
 
+## Planned
+- [ ] Gate fusion (compilation)
+
 ## Not Planned (Future Ideas)
 
 - [ ] Tableau from unitary

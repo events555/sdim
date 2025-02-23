@@ -51,7 +51,7 @@ Measured qudit (3) as (1) and was deterministic
 - **WeylTableau**: Represents a Weyl tableau for a composite dimension stabilizer state.
 - **MeasurementResult**: Represents the result of a quantum measurement.
 - **Tableau**: Base class for tableau representations.
-- **ExtendedTableau**: Extended tableau representation for a prime dimension stabilizer state.
+- **ExtendedTableauSimulator**: Extended tableau representation for a prime dimension stabilizer state.
 
 ## Functions
 
@@ -65,10 +65,10 @@ Measured qudit (3) as (1) and was deterministic
 """
 
 from .circuit_io import read_circuit, write_circuit, circuit_to_cirq_circuit, cirq_statevector_from_circuit
-from .program import Program
 from .random_circuit import generate_random_clifford_circuit, generate_and_write_random_circuit
 from .circuit import Circuit
-from .tableau.tableau_composite import WeylTableau
-from .tableau.dataclasses import MeasurementResult, Tableau
-from .tableau.tableau_prime import ExtendedTableau
+from .sampler import CompiledDetectorSampler, CompiledMeasurementSampler
+from .gatedata import GATE_DATA, gate_name_to_id, gate_id_to_name, is_gate_noisy, is_gate_two_qubit, is_gate_pauli
+from .tableau.tableau import Tableau
+from .tableau.extended_tableau_simulator import ExtendedTableauSimulator
 
