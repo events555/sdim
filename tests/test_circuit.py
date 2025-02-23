@@ -2,9 +2,8 @@ import pytest
 import cirq as cirq
 import random
 from sdim.circuit import Circuit
-from sdim.program import Program
-from sdim.tableau.dataclasses import MeasurementResult
 from sdim.circuit_io import cirq_statevector_from_circuit
+import numpy as np
 
 def test_phase_kickback():
     circuit = Circuit(2, 2)
@@ -23,8 +22,8 @@ def test_phase_kickback():
     circuit.append("P", 1)
     circuit.append("H", 1)
     circuit.append("M", 1)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, 1), MeasurementResult(1, True, 1)]
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([1, 1]))
 
 def test_qubit_flip():
     circuit = Circuit(2, 2)
@@ -35,15 +34,15 @@ def test_qubit_flip():
     circuit.append("M", 0)
     circuit.append("X", 1)
     circuit.append("M", 1)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, 1), MeasurementResult(1, True, 1)]
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([1, 1]))
 
 def test_qutrit_flip():
     circuit = Circuit(2, 3)
     circuit.append("X", 0)
     circuit.append("M", 0)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, 1)]
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([1]))
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_computational_basis(dimension):
@@ -60,8 +59,8 @@ def test_qudit_swap_computational_basis(dimension):
     circuit.append("SWAP", 0, 1)
     circuit.append("M", 0)
     circuit.append("M", 1)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, x1), MeasurementResult(1, True, x0)]
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([x1, x0]))
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_self_inverse(dimension):
@@ -87,9 +86,9 @@ def test_qudit_swap_self_inverse(dimension):
     circuit.append("M", 0)
     circuit.append("M", 1)
     
-    program = Program(circuit)
-    expected = [MeasurementResult(0, True, x0), MeasurementResult(1, True, x1)]
-    assert program.simulate() == expected, (
+    sampler = circuit.compile_sampler()
+    expected = np.array([x0, x1])
+    assert np.array_equal(sampler.sample(shots=1), expected), (
         f"Double SWAP failed for dimension={dimension} with initial states x0={x0}, x1={x1}"
     )
 
@@ -123,14 +122,11 @@ def test_qutrit_swap_in_x_basis(a, b):
     circuit.append("MX", 0)
     circuit.append("MX", 1)
 
-    program = Program(circuit)
-    result = program.simulate()
+    sampler = circuit.compile_sampler()
+    result = sampler.sample(shots=1)
 
-    expected = [
-        MeasurementResult(0, True, b),
-        MeasurementResult(1, True, a)
-    ]
-    assert result == expected, (
+    expected = np.array([b, a])
+    assert np.array_equal(result, expected), (
         f"SWAP in X basis failed for preparation F|{a}> and F|{b}>: "
         f"expected {expected}, got {result}"
     )
@@ -157,14 +153,14 @@ def test_qubit_deutsch():
 
     circuit.append("M", 0)
 
-    program = Program(circuit)
+    sampler = circuit.compile_sampler()
 
     if secret_function[0] == secret_function[1]:
         expected_result = 0
     else:
         expected_result = 1
     
-    assert program.simulate() == [MeasurementResult(0, True, expected_result)]
+    assert np.array_equal(sampler.sample(shots=1), np.array([expected_result]))
 
 def test_z_stabilizer_extraction():
     """
@@ -190,8 +186,8 @@ def test_z_stabilizer_extraction():
     circuit.append("H_INV", 1)
     circuit.append("M", 0)
     circuit.append("M", 1)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, 1), MeasurementResult(1, True, 2)]
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([1, 2]))
 
 def test_x_stabilizer_extraction():
     """
@@ -218,8 +214,9 @@ def test_x_stabilizer_extraction():
     circuit.append("H_INV", 1)
     circuit.append("M", 0)
     circuit.append("M", 1)
-    program = Program(circuit)
-    assert program.simulate() == [MeasurementResult(0, True, 2), MeasurementResult(1, True, 1)]
+    sampler = circuit.compile_sampler()
+
+    assert np.array_equal(sampler.sample(shots=1), np.array([2, 1]))
 
 def test_deutsch():
     # input the dimension here
@@ -249,15 +246,12 @@ def test_deutsch():
 
     circuit.append("M", 0)
 
-    program = Program(circuit)
+    sampler = circuit.compile_sampler()
 
     if is_constant:
         expected_result = 0
     else:
         expected_result = 2
 
-    result = program.simulate(verbose=False)
-
-    program.stabilizer_tableau.print_tableau()
+    assert np.array_equal(sampler.sample(shots=1), np.array([expected_result]))
     
-    assert result == [MeasurementResult(0, True, expected_result)]

@@ -1,6 +1,8 @@
-from .gatedata import GateData
-from dataclasses import dataclass
+from .gatedata import *
+from .sampler import CompiledMeasurementSampler
+from dataclasses import dataclass, field
 from typing import List, Union, Optional, Iterable, overload
+import numpy as np
 
 @dataclass
 class CircuitInstruction:
@@ -22,22 +24,27 @@ class CircuitInstruction:
     Raises:
         ValueError: If the specified gate is not found in gate_data.
     """
-    gate_data: GateData
-    gate_name: str
-    qudit_index: int
-    target_index: int = None
-    gate_id: int = None
-    name: str = None
-    params: Optional[dict] = None
-
-    def __post_init__(self):
-        self.gate_id = self.gate_data.get_gate_id(self.gate_name)
-        if self.gate_id is None:
-            raise ValueError(f"Gate {self.gate_name} not found")
-        self.name = self.gate_data.get_gate_name(self.gate_id)
+    name: str
+    targets: List[GateTarget] = field(default_factory=list)
+    args: List[float] = field(default_factory=list)
 
     def __str__(self):
-        return f"{self.gate_id} {self.qudit_index} {self.target_index}"
+        result = self.name
+        if self.args:
+            result += "(" + ",".join(str(arg) for arg in self.args) + ")"
+        # Format for GateTargets
+        result += " " + " ".join(str(t) for t in self.targets)
+        return result
+    
+    def validate(self):
+        """
+        Validates the instruction by checking if the gate name is valid.
+
+        Raises:
+            ValueError: If the gate name is not found in the gate data.
+        """
+        if self.gate_id == -1:
+            raise ValueError(f"Invalid gate name: {self.name}")
 
 
 @dataclass
@@ -52,26 +59,13 @@ class Circuit:
         num_qudits (int): The number of qudits in the circuit.
         dimension (int): The dimension of each qudit (default is 2 for qubits).
         operations (list): A list of CircuitInstruction objects representing the circuit operations.
-        gate_data (GateData): Contains information about available gates.
 
     Raises:
         ValueError: If num_qudits is less than 1 or dimension is less than 2.
     """
     num_qudits: int
     dimension: int = 2
-    operations: List[CircuitInstruction] = None
-    gate_data: GateData = None
-
-    def __post_init__(self):
-        """
-        Performs post-initialization checks and setups.
-        """
-        if self.num_qudits < 1:
-            raise ValueError("Number of qudits must be greater than 0")
-        if self.dimension < 2:
-            raise ValueError("Dimension must be greater than 1")
-        self.operations = self.operations or []
-        self.gate_data = self.gate_data or GateData(self.dimension)
+    operations: List[CircuitInstruction] = field(default_factory=list)
     
     @overload
     def append(self, name: str, control: Union[int, Iterable[int]], 
@@ -82,16 +76,13 @@ class Circuit:
     @overload
     def append(self, op: CircuitInstruction) -> "Circuit":
         ...
-
+    
     def append(
         self,
         name_or_op: Union[str, CircuitInstruction],
         targets: Optional[Union[int, Iterable[int]]] = None,
         target: Optional[Union[int, Iterable[int]]] = None,
-        arg: Optional[Union[float, Iterable[float]]] = None,
-        *,
-        tag: str = "",
-        **kwargs
+        args: Optional[Union[float, Iterable[float]]] = None
     ) -> "Circuit":
         """
         Appends an operation to the circuit.
@@ -117,54 +108,77 @@ class Circuit:
         Returns:
             The Circuit object (self).
         """
-        # Case 3: Directly appending an existing instruction.
         if isinstance(name_or_op, CircuitInstruction):
             self.operations.append(name_or_op)
             return self
 
         gate_name = name_or_op.upper()
-        # Start building the parameters dict.
-        params = {}
-        if arg is not None:
-            params["arg"] = arg
-        if tag:
-            params["tag"] = tag
-        # Merge any additional keyword arguments.
-        params.update(kwargs)
-
-        # Case 1: Single-qudit or broadcast operation.
+        args_list = []
+        if args is not None:
+            if isinstance(args, float):
+                args_list = [args]
+            else:
+                args_list = list(args)
+        # Single Qubit
         if target is None:
             if isinstance(targets, int):
+                targets = [GateTarget.qudit(targets)]
+            elif isinstance(targets, GateTarget):
                 targets = [targets]
             else:
-                targets = list(targets) if targets is not None else []
-            for t in targets:
-                instr = CircuitInstruction(self.gate_data, gate_name, t, target_index=None, params=params)
-                self.operations.append(instr)
-            return self
+                targets = [GateTarget.qudit(t) if isinstance(t, int) else t
+                       for t in targets]
 
-        # Case 2: Paired control and target operation.
-        if isinstance(targets, int):
-            controls = [targets]
-        else:
-            controls = list(targets)
-        if isinstance(target, int):
-            targets_list = [target]
-        else:
-            targets_list = list(target)
-        
-        if len(controls) == 1:
-            qubit_pairs = [(controls[0], t) for t in targets_list]
-        elif len(targets_list) == 1:
-            qubit_pairs = [(c, targets_list[0]) for c in controls]
-        elif len(controls) == len(targets_list):
-            qubit_pairs = list(zip(controls, targets_list))
-        else:
-            raise ValueError("Invalid combination: control and target must be of equal length or one must be singular.")
-
-        for c, t in qubit_pairs:
-            instr = CircuitInstruction(self.gate_data, gate_name, c, target_index=t, params=params)
+            instr = CircuitInstruction(name=gate_name,
+                                        targets=targets,
+                                        args=args_list)
             self.operations.append(instr)
+        else:
+        # Two Qubit
+          # Process controls
+          if isinstance(targets, int):
+              controls = [GateTarget.qudit(targets)]
+          elif isinstance(targets, GateTarget):
+              controls = [targets]
+          else:
+              controls = [GateTarget.qudit(c) if isinstance(c, int) else c
+                          for c in targets]
+
+          # Process targets
+          if isinstance(target, int):
+              targets_list = [GateTarget.qudit(target)]
+          elif isinstance(target, GateTarget):
+              targets_list = [target]
+          else:
+              targets_list = [GateTarget.qudit(t) if isinstance(t, int) else t
+                          for t in target]
+
+          if len(controls) == 1:
+              all_targets = []
+              for t in targets_list:
+                  all_targets += [controls[0], t]
+              instr = CircuitInstruction(name=gate_name,
+                                      targets=all_targets,
+                                      args=args_list)
+              self.operations.append(instr)
+          elif len(targets_list) == 1:
+              all_targets = []
+              for c in controls:
+                  all_targets += [c, targets_list[0]]
+              instr = CircuitInstruction(name=gate_name,
+                                    targets=all_targets,
+                                    args=args_list)
+              self.operations.append(instr)
+          elif len(controls) == len(targets_list):
+              all_targets = []
+              for c,t in zip(controls, targets_list):
+                  all_targets += [c, t]
+              instr = CircuitInstruction(name=gate_name,
+                                        targets=all_targets,
+                                        args=args_list)
+              self.operations.append(instr)
+          else:
+                raise ValueError("Invalid combination: control and target must be of equal length or one must be singular.")
         return self
 
 
@@ -245,12 +259,108 @@ class Circuit:
         """
         return "\n".join(str(op) for op in self.operations)
     
-    def print_gateData(self):
+    def _build_ir(self, extra_shots: int) -> tuple[np.ndarray, np.ndarray]:
         """
-        Prints the gate data associated with this circuit.
+        Builds an intermediate representation (IR) for the given circuits and also precomputes
+        an array of sampled Pauli noise outcomes for noise gates (if applicable)
+        
+        Args:
+            circuits (list[Circuit]): A list of Circuit objects.
+            extra_shots (int): The number of extra shots for which noise outcomes
+                            will be sampled.
+        
+        Returns:
+            tuple:
+                - A NumPy array of IR instructions with each element as a tuple
+                (gate_id, qudit_index, target_index).
+                - A NumPy array of shape (num_noise_gates, extra_shots, [x_block, z_block]) containing
+                pre-sampled noise outcomes for each noise gate encountered.
+                If no noise gate is present, an empty array is returned.
         """
-        print(self.gate_data)
-    
+        ir_list  = []
+        noise_list = []
+        dimension = self.stabilizer_tableau.dimension
+        for instruction in self.operations:
+            if instruction.gate_id == 0:
+                continue
+            target_index = instruction.target_index if instruction.target_index is not None else -1
+            ir_list.append((gate_name_to_id(instruction.name), instruction.qudit_index, target_index))
+                            
+            if is_gate_noisy(instruction.gate_id):
+                # Always add a noise sample, but only actually sample non-identity with some probability.
+                channel = instruction.params['noise_channel']
+                if channel == 'd':
+                    # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
+                    r = np.random.randint(1, dimension**2, size=extra_shots)
+                    a = r % dimension
+                    b = r // dimension
+                elif channel == 'f':
+                    a = np.random.randint(1, dimension, size=extra_shots)
+                    b = np.zeros(extra_shots, dtype=np.int64)
+                elif channel == 'p':
+                    a = np.zeros(extra_shots, dtype=np.int64)
+                    b = np.random.randint(1, dimension, size=extra_shots)
+
+                # Roll to see if the channel applies on this each shot
+                shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)
+                # Mask that checks for failure to clear threshold, aka applying I = X^0 Z^0
+                probability = float(instruction.params['prob'])
+                mask = shot_dice_rolls < 1.0 - probability
+
+                # Apply mask to both Pauli exponents
+                a[mask] = 0
+                b[mask] = 0
+
+                pair = np.stack((a, b), axis=1)
+                noise_list.append(pair)
+
+        ir_dtype = np.dtype([
+            ('gate_id', np.int64),
+            ('qudit_index', np.int64),
+            ('target_index', np.int64)
+        ])
+
+        ir_array = np.array(ir_list, dtype=ir_dtype)
+
+        if noise_list:
+            noise_array = np.array(noise_list, dtype=np.int64)
+        else:
+            noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
+
+
+        return ir_array, noise_array
+
+    def reference_sample(self) -> np.ndarray:
+        """
+        Returns the reference sample for the circuit.
+
+        Returns:
+            np.ndarray: The reference sample for the circuit.
+        """
+
+    def compile_sampler(self,
+                        *,
+                        skip_reference_sample: bool = False,
+                        seed: Optional[int] = None,
+                        reference_sample: Optional[np.ndarray] = None
+                        ) -> "CompiledMeasurementSampler":
+        """
+        Compiles a measurement sampler that can be used to simulate the circuit.
+        
+        Returns:
+            CompiledMeasurementSampler: A compiled measurement sampler for the circuit.
+        """
+        return CompiledMeasurementSampler(self, skip_reference_sample=skip_reference_sample, seed=seed, reference_sample=reference_sample)
+
+    def compile_detector_sampler(self) -> "CompiledDetectorSampler":
+        """
+        Compiles a detector sampler that can be used to simulate the circuit.
+        
+        Returns:
+            CompiledDetectorSampler: A compiled detector sampler for the circuit.
+        """
+        ...
+
     @classmethod
     def from_operation_list(cls, operation_list, num_qudits, dimension):
         """

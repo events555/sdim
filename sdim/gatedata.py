@@ -1,122 +1,151 @@
 from dataclasses import dataclass
 import numpy as np
-from .tableau.dataclasses import Tableau
+from .tableau.tableau import Tableau
 from typing import Optional
 
-@dataclass
-class Gate:
+from dataclasses import dataclass, field
+from typing import Union
+
+@dataclass(frozen=True)
+class GateTarget:
+    _value: int
+    is_inverted: bool = field(default=False, compare=False)
+    is_pauli: bool = field(default=False, compare=False)
+    is_x_target: bool = field(default=False, compare=False)
+    is_y_target: bool = field(default=False, compare=False)
+    is_z_target: bool = field(default=False, compare=False)
+    is_sweep_bit: bool = field(default=False, compare=False)
+    is_combiner: bool = field(default=False, compare=False)
+
+    @staticmethod
+    def qudit(index: int, *, invert: bool = False) -> "GateTarget":
+        return GateTarget(index, is_inverted=invert)
+
+    @staticmethod
+    def x(index: int, *, invert: bool = False) -> "GateTarget":
+      return GateTarget(index, is_inverted=invert, is_pauli=True, is_x_target = True)
+
+    @staticmethod
+    def y(index: int, *, invert: bool = False) -> "GateTarget":
+      return GateTarget(index, is_inverted=invert, is_pauli=True, is_y_target = True)
+
+    @staticmethod
+    def z(index: int, *, invert: bool = False) -> "GateTarget":
+        return GateTarget(index, is_inverted=invert, is_pauli=True, is_z_target = True)
+
+    @staticmethod
+    def rec(lookback: int) -> "GateTarget":
+        if lookback >= 0:
+            raise ValueError("Lookback index for measurement record must be negative.")
+        return GateTarget(lookback)
+
+    @staticmethod
+    def sweep_bit(index: int) -> "GateTarget":
+      return GateTarget(index, is_sweep_bit = True)
+    
+    @staticmethod
+    def combiner() -> "GateTarget":
+        return GateTarget(-1, is_combiner=True)
+
+    @property
+    def value(self) -> int:
+        return self._value
+    
+    @property
+    def is_qudit_target(self) -> bool:
+        return not (self.is_measurement_record_target or self.is_pauli or self.is_sweep_bit or self.is_combiner)
+
+    @property
+    def is_measurement_record_target(self) -> bool:
+        return self._value < 0 and not self.is_combiner
+
+    
+def _pauli_gates():
+    return {
+        "I": {"arg_count": 1, "aliases": ["I"]},
+        "X": {"arg_count": 1, "aliases": ["X", "NOT"]},
+        "X_INV": {"arg_count": 1, "aliases": ["X_INV"]},
+        "Z": {"arg_count": 1, "aliases": ["Z"]},
+        "Z_INV": {"arg_count": 1, "aliases": ["Z_INV"]},
+    }
+def _hadamard_gates():
+    return {
+        "H": {"arg_count": 1, "aliases": ["H", "R", "DFT", "F"]},
+        "H_INV": {"arg_count": 1, "aliases": ["H_INV", "R_INV", "DFT_INV", "F_INV", "H_DAG", "R_DAG", "DFT_DAG", "F_DAG"]},
+        "P": {"arg_count": 1, "aliases": ["PHASE", "S"]},
+        "P_INV": {"arg_count": 1, "aliases": ["PHASE_INV", "S_INV", "S_DAG"]},
+    }
+def _controlled_gates():
+    return {
+        "CNOT": {"arg_count": 2, "aliases": ["CNOT", "CX", "C", "SUM"]},
+        "CNOT_INV": {"arg_count": 2, "aliases": ["CNOT_INV", "CX_INV", "C_INV", "CNOT_DAG", "CX_DAG", "C_DAG", "SUM_INV", "SUM_DAG"]},
+        "CZ": {"arg_count": 2, "aliases": ["CZ"]},
+        "CZ_INV": {"arg_count": 2, "aliases": ["CZ_INV"]},
+        "SWAP": {"arg_count": 2, "aliases": ["SWAP"]},
+        # "ISWAP": {"arg_count": 2, "aliases": ["ISWAP"]},
+        # "ISWAP_INV": {"arg_count": 2, "aliases": ["ISWAP_DAG", "ISWAP_INV"]},
+    }
+def _collapsing_gates():
+    return {
+        "M": {"arg_count": 1, "aliases": ["M", "MEASURE", "COLLAPSE", "MZ"]},
+        "M_X": {"arg_count": 1, "aliases": ["M_X", "MEASURE_X", "MX"]},
+        "RESET": {"arg_count": 1, "aliases": ["RESET", "MR", "MEASURE_RESET", "MEASURE_R"]},
+        # Add other collapsing gates here (MRX, MRY, etc.)
+    }
+def _noise_gates():
+  return {
+        "X_ERROR": {"arg_count": 1, "aliases": ["X_ERROR"]},
+        "Z_ERROR": {"arg_count": 1, "aliases": ["Z_ERROR"]},
+        "Y_ERROR": {"arg_count": 1, "aliases": ["Y_ERROR"]},
+        "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1"]},
+        "DEPOLARIZE2": {"arg_count": 2, "aliases": ["DEPOLARIZE2"]},
+  }
+def _annotation_gates():
+  return {
+          "REPEAT": {"arg_count": None, "aliases":[]},
+          "DETECTOR": {"arg_count": None, "aliases":[]},
+          "SHIFT_COORDS": {"arg_count": None, "aliases":[]},
+          "OBSERVABLE_INCLUDE": {"arg_count": None, "aliases":[]}
+        }
+
+GATE_DATA = {}
+GATE_DATA.update(_pauli_gates())
+GATE_DATA.update(_hadamard_gates())
+GATE_DATA.update(_controlled_gates())
+GATE_DATA.update(_collapsing_gates())
+GATE_DATA.update(_noise_gates())
+GATE_DATA.update(_annotation_gates())
+
+
+_GATE_NAME_TO_ID = {name: i for i, name in enumerate(GATE_DATA)}
+
+def gate_name_to_id(gate_name: str) -> str:
     """
-    Represents a quantum gate.
-
-    Attributes:
-        name (str): The name of the gate.
-        arg_count (int): The number of arguments (qudits) the gate operates on.
-        gate_id (int): A unique identifier for the gate.
+    Looks up the canonical gate name, then returns the id.
     """
-    name: str
-    arg_count: int
-    gate_id: int
-    defaults: Optional[dict] = None
-    def __str__(self):
-        return f"{self.name} {self.gate_id}"
+    gate_name = gate_name.upper()
+    for canonical_name, data in GATE_DATA.items():
+        if gate_name == canonical_name or gate_name in data["aliases"]:
+            return _GATE_NAME_TO_ID[canonical_name] 
+    raise ValueError(f"Gate name '{gate_name}' doesn't exist.")
 
-@dataclass
-class GateData:
-    """
-    Manages a collection of quantum gates and their aliases.
+def gate_id_to_name(gate_id: int) -> str:
+  """
+  Returns the canonical gate name given its ID.
+  """
+  for name, id in _GATE_NAME_TO_ID.items():
+        if id == gate_id:
+            return name
+  raise ValueError(f"Gate id '{gate_id}' doesn't exist.")
 
-    This class handles the creation, storage, and retrieval of quantum gates
-    and their associated data for a provided dimension.
+def is_gate_noisy(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["X_ERROR", "Y_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "N1", "MPP"]
 
-    Attributes:
-        gateMap (dict): A dictionary mapping gate names to Gate objects.
-        aliasMap (dict): A dictionary mapping gate aliases to their primary names.
-        num_gates (int): The total number of gates added.
-        dimension (int): The dimension of the quantum system (default is 2 for qubits).
-    """
-    gateMap: dict 
-    aliasMap: dict
-    num_gates: int = 0
-    dimension: int = 2
+def is_gate_two_qubit(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["CNOT", "CZ", "SWAP", "CNOT_INV", "CX_INV", "CZ_INV","ISWAP", "ISWAP_DAG", "XCZ", "XCY", "XCX", "YCZ", "YCY", "YCX", "DEPOLARIZE2","PAULI_CHANNEL_2"]
 
-    def __init__(self, dimension=2):
-        self.gateMap = {}
-        self.aliasMap = {}
-        self.dimension = dimension
-        self.append_data_pauli(dimension)
-        self.append_hada(dimension)
-        self.append_controlled(dimension)
-        self.append_collapsing(dimension)
-        self.append_noise(dimension)
-
-    def __str__(self):
-        return "\n".join(str(gate) for gate in self.gateMap.values())
-
-    def append(self, name, arg_count):
-        gate_id = self.num_gates
-        gate = Gate(name, arg_count, gate_id)
-        self.gateMap[name] = gate
-        self.num_gates += 1
-
-    def append_alias(self, name, list_alias):
-        for alias in list_alias:
-            self.aliasMap[alias] = name
-
-    def append_data_pauli(self, d):
-        self.append("I", 1)
-        self.append("X", 1)
-        self.append("X_INV", 1)
-        self.append("Z", 1)
-        self.append("Z_INV", 1)
-
-    def append_hada(self, d):
-        self.append("H", 1)
-        self.append_alias("H", ["R", "DFT"])
-        self.append("H_INV", 1)
-        self.append_alias("H_INV", ["R_INV", "DFT_INV", "H_DAG", "R_DAG", "DFT_DAG"])
-        self.append("P", 1)
-        self.append_alias("P", ["PHASE", "S"])
-        self.append("P_INV", 1)
-        self.append_alias("P_INV", ["PHASE_INV", "S_INV"])
-
-    def append_controlled(self, d):
-        self.append("CNOT", 2)
-        self.append_alias("CNOT", ["SUM", "CX", "C"])
-        self.append("CNOT_INV", 2)
-        self.append_alias("CNOT_INV", ["SUM_INV", "CX_INV", "C_INV"])
-        self.append("CZ", 2)
-        self.append("CZ_INV", 2)
-        self.append("SWAP", 2)
-
-    def append_collapsing(self, d):
-        self.append("M", 1)
-        self.append_alias("M", ["MEASURE", "COLLAPSE", "MZ"])
-        self.append("M_X", 1)
-        self.append_alias("M_X", ["MEASURE_X", "MX"])
-        self.append("RESET", 1)
-        self.append_alias("RESET", ["MR", "MEASURE_RESET", "MEASURE_R"])
-
-    def append_noise(self, d):
-        self.append("N1", 1)
-        self.append_alias("N1", ["NOISE1"])
-        self.gateMap["N1"].defaults = {"channel": "d", "prob": 0.01}
-
-    def get_gate_id(self, gate_name):
-        if gate_name in self.gateMap:
-            return self.gateMap[gate_name].gate_id
-        elif gate_name in self.aliasMap:
-            return self.gateMap[self.aliasMap[gate_name]].gate_id
-        else:
-            return None
-
-    def get_gate_name(self, gate_id):
-        for name, gate in self.gateMap.items():
-            if gate.gate_id == gate_id:
-                return name
-        raise ValueError(f"Gate ID {gate_id} not found")
-
-    def get_gate_matrix(self, gate_id):
-        for _, gate in self.gateMap.items():
-            if gate.gate_id == gate_id:
-                return gate.unitary_matrix
-        raise ValueError(f"Gate ID {gate_id} not found")
+def is_gate_pauli(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["X", "Z"]

@@ -3,7 +3,6 @@ import numpy as np
 from sdim.circuit import Circuit
 from sdim.circuit_io import write_circuit
 from sdim.circuit_io import read_circuit
-from sdim.program import Program
 import math
 import pytest
 
@@ -118,7 +117,7 @@ def generic_single_error_type(testing_X : bool = True):
 
     c.append("M", 0)
 
-    result = Program(c).simulate(shots=shots)
+    result = c.compile_sampler().sample(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):
@@ -150,7 +149,7 @@ def test_single_qudit_depolarizing():
     c.append("N1", 0, prob=p, noise_channel='d')
     c.append("M", 0)
 
-    result = Program(c).simulate(shots=shots)
+    result = c.compile_sampler().sample(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):
@@ -191,7 +190,7 @@ def test_deterministic_gates():
         c.append(g, 0)
     c.append("M", 0)
     # Run circuit
-    result = Program(c).simulate(shots=shots)
+    result = c.compile_sampler().sample(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):

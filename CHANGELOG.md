@@ -81,8 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2025-
 
 ### Added
+- Add `GateTarget` class for referential measurement control   
 
 ### Changed
 
 - **Change `append()` --> `append()` to match stim**
 - **Change `Program` --> `Sampler()` to match stim**
+- Decouple `GataData` from `CircuitInstruction` and `Circuit` classes
+- **Adjust backend to use `REPEAT_BLOCKS` and only flatten during the `_build_ir()` compilation step**

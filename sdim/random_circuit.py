@@ -4,7 +4,7 @@ import numpy as np
 from .circuit_io import write_circuit
 
 import random
-from sdim.circuit import Circuit, GateData
+from sdim.circuit import Circuit
 
 def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measurement_rounds=0, seed=None, gate_set=None):
     """
