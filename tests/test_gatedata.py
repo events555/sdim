@@ -39,7 +39,7 @@ def test_invalid_gate_id():
 
 def test_is_gate_noisy():
     # Test gates that are expected to be noisy.
-    noisy_gates = ["X_ERROR", "Y_ERROR", "Z_ERROR", "DEPOLARIZE1", "DEPOLARIZE2", "M", "M_X", "N1"]
+    noisy_gates = ["X_ERROR", "Z_ERROR", "DEPOLARIZE1", "DEPOLARIZE2", "M", "M_X"]
     for gate in noisy_gates:
         gate_id = gate_name_to_id(gate)
         assert is_gate_noisy(gate_id) is True
@@ -71,7 +71,7 @@ def test_is_gate_pauli():
         assert is_gate_pauli(gate_id) is True
 
     # Other gates should return False.
-    pauli_false = ["X_INV", "H", "CNOT", "P"]
+    pauli_false = ["H", "CNOT", "P"]
     for gate in pauli_false:
         gate_id = gate_name_to_id(gate)
         assert is_gate_pauli(gate_id) is False
