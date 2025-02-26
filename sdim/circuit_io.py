@@ -1,3 +1,4 @@
+from .gatedata import gate_id_to_name, is_gate_two_qubit
 from .circuit import Circuit
 from .unitary import *
 import cirq
@@ -108,17 +109,13 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
         chp_content += "Randomly-generated Clifford group quantum circuit\n#\n"
     chp_content += f"d {circuit.dimension}\n"
 
-    for gate in circuit.operations:
-        gate_str = gate.gate_name
-        print("Gate is " + gate_str)
-        if gate.target_index is not None:
-            gate_str += f" {gate.qudit_index} {gate.target_index}"
-        else:
-            gate_str += f" {gate.qudit_index}"
-        # Writing extra parameters
-        if not (gate.params is None):
-            for key, value in gate.params.items():
-                gate_str += f" {key}={value}"
+    for op in circuit.operations:
+        gate_str = gate_id_to_name(op.gate_type)
+        if op.args is not None:
+            for arg in op.args:
+                gate_str += f"({arg})"
+        for target in op.targets:
+            gate_str += f" {target._value}"
 
         chp_content += f"{gate_str}\n"
 
@@ -178,21 +175,25 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
     # Apply each gate in the circuit.
     for op in circuit.operations:
         # Choose the appropriate gate.
-        if op.name in gate_map:
-            gate = gate_map[op.name]
-            # Add the gate to the Cirq circuit.
-            if op.target_index is None:
-                # Single-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index]))
+        name = gate_id_to_name(op.gate_type)
+
+
+        if name in gate_map:
+            gate = gate_map[name]
+            if is_gate_two_qubit(op.gate_type):
+                for i in range(0, len(op.targets), 2):
+                    cirq_circuit.append(gate.on(qudits[op.targets[i]._value], 
+                                                qudits[op.targets[i+1]._value]))
             else:
-                # Two-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
-        elif op.name == "M":
+                for target in op.targets:
+                    cirq_circuit.append(gate.on(qudits[target._value]))
+        elif name == "M":
             if measurement:
-                cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
+                for target in op.targets:
+                    cirq_circuit.append(cirq.measure(qudits[target._value], key=f'm_{target._value}'))
             continue
         else:
-            raise NotImplementedError(f"Gate {op.name} not implemented")
+            raise NotImplementedError(f"Gate {name} not implemented")
     for qudit in qudits:
         if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
             # Append identity to qudits with no gates

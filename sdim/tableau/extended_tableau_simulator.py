@@ -3,6 +3,7 @@ import random
 from dataclasses import dataclass
 from typing import Optional
 from sdim.tableau.tableau import Tableau
+from sdim.gatedata import is_gate_noisy, gate_id_to_name
 
 @dataclass
 class ExtendedTableauSimulator(Tableau):
@@ -144,19 +145,19 @@ class ExtendedTableauSimulator(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
         """
-        new_z = -self.x_block[qudit_index, :].copy()
         new_x = self.z_block[qudit_index, :].copy()
+        new_z = -self.x_block[qudit_index, :].copy()
         self.z_block[qudit_index, :] = new_z
         self.x_block[qudit_index, :] = new_x
 
-        self.phase_vector -= self.phase_order * (self.x_block[qudit_index, :] * self.z_block[qudit_index, :])
-
-        new_destab_z = -self.destab_x_block[qudit_index, :].copy()
+        self.phase_vector += self.phase_order * (self.x_block[qudit_index, :] * self.z_block[qudit_index, :])
+        
         new_destab_x = self.destab_z_block[qudit_index, :].copy()
+        new_destab_z = -self.destab_x_block[qudit_index, :].copy()
         self.destab_z_block[qudit_index, :] = new_destab_z 
         self.destab_x_block[qudit_index, :] = new_destab_x
 
-        self.destab_phase_vector -= self.phase_order * (self.destab_x_block[qudit_index, :] * self.destab_z_block[qudit_index, :])
+        self.destab_phase_vector += self.phase_order * (self.destab_x_block[qudit_index, :] * self.destab_z_block[qudit_index, :])
 
     def phase(self, qudit_index: int):
         """
@@ -232,30 +233,30 @@ class ExtendedTableauSimulator(Tableau):
         self.z_block[qudit_index, :] -= self.x_block[qudit_index, :]
         self.destab_z_block[qudit_index, :] -= self.destab_x_block[qudit_index, :]
 
-    def x(self, qudit_index: int):
+    def x(self, qudit_index: int, multiplier: int = 1):
         """
         Applies the X gate to the qudit at the specified index.
         """
-        self.phase_vector -= self.z_block[qudit_index, :] * self.phase_order
-        self.destab_phase_vector -= self.destab_z_block[qudit_index, :] * self.phase_order
-    def x_inv(self, qudit_index: int):
+        self.phase_vector -= self.z_block[qudit_index, :] * self.phase_order * multiplier
+        self.destab_phase_vector -= self.destab_z_block[qudit_index, :] * self.phase_order * multiplier
+    def x_inv(self, qudit_index: int, multiplier: int = 1):
         """
         Applies the inverse X gate to the qudit at the specified index.
         """
-        self.phase_vector += self.z_block[qudit_index, :] * self.phase_order 
-        self.destab_phase_vector += self.destab_z_block[qudit_index, :] * self.phase_order
-    def z(self, qudit_index: int):
+        self.phase_vector += self.z_block[qudit_index, :] * self.phase_order * multiplier
+        self.destab_phase_vector += self.destab_z_block[qudit_index, :] * self.phase_order * multiplier
+    def z(self, qudit_index: int, multiplier: int = 1):
         """
         Applies the Z gate to the qudit at the specified index.
         """
-        self.phase_vector += self.x_block[qudit_index, :] * self.phase_order 
-        self.destab_phase_vector += self.destab_x_block[qudit_index, :] * self.phase_order
-    def z_inv(self, qudit_index: int):
+        self.phase_vector += self.x_block[qudit_index, :] * self.phase_order * multiplier
+        self.destab_phase_vector += self.destab_x_block[qudit_index, :] * self.phase_order * multiplier
+    def z_inv(self, qudit_index: int, multiplier: int = 1):
         """
         Applies the inverse Z gate to the qudit at the specified index.
         """
-        self.phase_vector -= self.x_block[qudit_index, :] * self.phase_order
-        self.destab_phase_vector -= self.destab_x_block[qudit_index, :] * self.phase_order
+        self.phase_vector -= self.x_block[qudit_index, :] * self.phase_order * multiplier
+        self.destab_phase_vector -= self.destab_x_block[qudit_index, :] * self.phase_order * multiplier
 
     def cnot(self, control: int, target: int):
         """
@@ -332,6 +333,31 @@ class ExtendedTableauSimulator(Tableau):
         
         self.destab_x_block[[qudit1, qudit2], :] = self.destab_x_block[[qudit2, qudit1], :].copy()
         self.destab_z_block[[qudit1, qudit2], :] = self.destab_z_block[[qudit2, qudit1], :].copy()
+
+    def apply_gate(self, gate_id: int, qudit_idx: int, target_idx: int):
+        if is_gate_noisy(gate_id):
+            return
+
+        gate_name = gate_id_to_name(gate_id)
+        gate_operations = {
+            "H": lambda: self.hadamard(qudit_idx),
+            "H_INV": lambda: self.hadamard_inv(qudit_idx),
+            "P": lambda: self.phase(qudit_idx),
+            "P_INV": lambda: self.phase_inv(qudit_idx),
+            "X": lambda: self.x(qudit_idx),
+            "X_INV": lambda: self.x_inv(qudit_idx),
+            "Z": lambda: self.z(qudit_idx),
+            "Z_INV": lambda: self.z_inv(qudit_idx),
+            "CNOT": lambda: self.cnot(qudit_idx, target_idx),
+            "CNOT_INV": lambda: self.cnot_inv(qudit_idx, target_idx),
+            "CZ": lambda: self.cz(qudit_idx, target_idx),
+            "CZ_INV": lambda: self.cz_inv(qudit_idx, target_idx),
+            "SWAP": lambda: self.swap(qudit_idx, target_idx),
+        }
+        try:
+            gate_operations[gate_name]()
+        except KeyError:
+            raise ValueError(f"Unknown gate: {gate_name}")
                 
     def measure(self, qudit_index: int) -> int:
         """

@@ -5,14 +5,15 @@ from sdim.random_circuit import generate_random_clifford_circuit
 import numpy as np
 
 def create_key(measurements, dimension):
-    sorted_measurements = sorted(measurements, key=lambda m: m.qudit_index)
     key = 0
-    for m in sorted_measurements:
-        key = key * dimension + m.measurement_value
+    for m in measurements:
+        key = key * dimension + m
     return key
 
 def generate_and_test_circuit(depth, dimension, num_qudits):
-    circuit = generate_random_clifford_circuit(num_qudits, depth, dimension, measurement_rounds=1)
+    circuit = generate_random_clifford_circuit(num_qudits, depth, dimension, measurement_rounds=1,
+                                               # gate_set=["X", "Z", "CNOT", "H", "P", "CNOT_INV", "P_INV"]
+                                               )
 
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector) ** 2
@@ -23,14 +24,14 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
 
     # Simulate all shots at once
     sampler = circuit.compile_sampler()
-    measurements = sampler.simulate(shots=num_samples)
+    measurements = sampler.sample(shots=num_samples)
 
 
     for shot_index in range(num_samples):
         shot_measurements = []
 
         for qudit_index in range(num_qudits):
-            measurement_result = measurements[qudit_index][0][shot_index]
+            measurement_result = measurements[qudit_index][shot_index]
             shot_measurements.append(measurement_result)
 
         key = create_key(shot_measurements, dimension)

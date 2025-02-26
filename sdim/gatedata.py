@@ -1,10 +1,4 @@
-from dataclasses import dataclass
-import numpy as np
-from .tableau.tableau import Tableau
-from typing import Optional
-
 from dataclasses import dataclass, field
-from typing import Union
 
 @dataclass(frozen=True)
 class GateTarget:
@@ -88,8 +82,10 @@ def _controlled_gates():
 def _collapsing_gates():
     return {
         "M": {"arg_count": 1, "aliases": ["M", "MEASURE", "COLLAPSE", "MZ"]},
+        "MR": {"arg_count": 1, "aliases": ["MR", "MEASURE_R"]},
         "M_X": {"arg_count": 1, "aliases": ["M_X", "MEASURE_X", "MX"]},
-        "RESET": {"arg_count": 1, "aliases": ["RESET", "MR", "MEASURE_RESET", "MEASURE_R"]},
+        "MR_X": {"arg_count": 1, "aliases": ["MR_X", "MEASURE_R_X", "MRX"]},
+        "RESET": {"arg_count": 1, "aliases": ["RESET", "R"]},
         # Add other collapsing gates here (MRX, MRY, etc.)
     }
 def _noise_gates():
@@ -97,7 +93,7 @@ def _noise_gates():
         "X_ERROR": {"arg_count": 1, "aliases": ["X_ERROR"]},
         "Z_ERROR": {"arg_count": 1, "aliases": ["Z_ERROR"]},
         "Y_ERROR": {"arg_count": 1, "aliases": ["Y_ERROR"]},
-        "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1"]},
+        "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1", "DEPOLARIZE"]},
         "DEPOLARIZE2": {"arg_count": 2, "aliases": ["DEPOLARIZE2"]},
   }
 def _annotation_gates():
@@ -138,9 +134,22 @@ def gate_id_to_name(gate_id: int) -> str:
             return name
   raise ValueError(f"Gate id '{gate_id}' doesn't exist.")
 
+
+def is_not_a_gate(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["REPEAT", "DETECTOR", "SHIFT_COORDS", "OBSERVABLE_INCLUDE"]
+
+def is_gate_collapsing_and_records(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["M", "M_X", "MR", "MR_X"]
+
+def is_gate_collapsing(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["M", "M_X", "MR", "MR_X", "RESET"]
+
 def is_gate_noisy(gate_id: int):
     name = gate_id_to_name(gate_id)
-    return name in ["X_ERROR", "Y_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "N1", "MPP"]
+    return name in ["X_ERROR", "Y_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "MPP"]
 
 def is_gate_two_qubit(gate_id: int):
     name = gate_id_to_name(gate_id)
@@ -148,4 +157,4 @@ def is_gate_two_qubit(gate_id: int):
 
 def is_gate_pauli(gate_id: int):
     name = gate_id_to_name(gate_id)
-    return name in ["X", "Z"]
+    return name in ["X", "Z", "X_INV", "Z_INV"]
