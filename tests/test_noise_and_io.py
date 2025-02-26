@@ -38,13 +38,7 @@ def random_multi_qudit_circuit(depth : int = 10, dimension : int = 3, num_qudits
             qudit_target = random.randint(0, num_qudits - 1)
             gate_set = single_qudit_gates_with_noise  if sample_with_noise_gates else single_qudit_non_noise_gates
             gate = random.choice(gate_set)
-
-            if gate == "N1":
-                p = random.uniform(0.0, 1.0)
-                channel = random.choice(['f', 'p', 'd'])
-                c.append(gate, qudit_target, prob=p, noise_channel=channel)
-            else:
-                c.append(gate, qudit_target)
+            c.append(gate, qudit_target)
         else:
             qudit_control = 0
             qudit_target = 0

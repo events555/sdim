@@ -81,11 +81,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2025-
 
 ### Added
-- Add `GateTarget` class for referential measurement control   
+- Add `GateTarget` class for referential measurement control and flags
+- Add more native gate implementations to `ExtendedTableau`, such as `cz()`, `cz_inv()`, and `swap()`
+- Add CompiledMeasurementSampler. 
+    - *Note: Changes workflow to `Circuit.compile_sampler()` --> `CompiledMeasurementSampler.sample(shots=shot)`*
+- Add CompiledDetectorSampler
+- **Add `detector` support**
+- Add `test_gatedata.py`, `test_tableau.py`, `test_sampler.py`
 
 ### Changed
-
-- **Change `append()` --> `append()` to match stim**
+- **Change `add_gate()` --> `append()` to match stim**
 - **Change `Program` --> `Sampler()` to match stim**
+- Separate `_build_noise()` from `_build_ir()`
+- Change `CircuitInstruction` to store only `gate_id`, `List[GateTarget]` and `args` (for noise gates)
 - Decouple `GataData` from `CircuitInstruction` and `Circuit` classes
 - **Adjust backend to use `REPEAT_BLOCKS` and only flatten during the `_build_ir()` compilation step**
+- Remove `SimulationOptions` to simplify use cases
+- Update `test_circuit.py` and added tests for helper functions inside `Circuit`
+- Simplify number of modules inside `sdim`
+
+### Removed
+- Remove `Program` class, replaced by `CompiledMeasurementSampler`
+- Remove `GateData` class and replaced by `GATE_DATA` dictionary
+- Remove `MeasurementResult` class
+- Remove ability to print out individual steps of `Tableau` simulation
+- Remove `WeylTableau` for composite dimensions (expected to return eventually)

@@ -2,11 +2,17 @@
 *
 
 # Whitelist specific files and directories
-!src/
+!sdim/
 !circuits/
 !docs/
 !examples/
 !tests/
+
+!sdim/**
+!circuits/**
+!docs/**
+!examples/**
+!tests/**
 
 !README.md
 !CHANGELOG.md

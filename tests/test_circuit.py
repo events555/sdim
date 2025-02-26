@@ -1,10 +1,76 @@
 import pytest
 import cirq as cirq
 import random
+from sdim.circuit import CircuitInstruction
 from sdim.circuit import Circuit
 from sdim.circuit_io import cirq_statevector_from_circuit
 import numpy as np
 
+def test_circuit_broadcasting():
+    circuit = Circuit(3, 2)
+    circuit.append("H", [0, 1])
+    assert circuit.operations[0] == CircuitInstruction("H", [0, 1])
+    circuit.append("H", 0)
+    assert circuit.operations[1] == CircuitInstruction("H", 0)
+    circuit.append("CNOT", 0, 1)
+    assert circuit.operations[2] == CircuitInstruction("CNOT", [0, 1])
+    circuit.append("CNOT", 0, [1, 2])
+    assert circuit.operations[3] == CircuitInstruction("CNOT", [0, 1, 0, 2])
+    circuit.append("CNOT", [0, 1], 2)
+    assert circuit.operations[4] == CircuitInstruction("CNOT", [0, 2, 1, 2])
+    circuit.append("X", 0)
+    assert circuit.operations[5] == CircuitInstruction("X", 0)  
+
+def test_build_ir():
+    circuit = Circuit(3, 2)
+    circuit.append("H", [0, 1])
+    circuit.append("CNOT", 0, [1, 2])
+    circuit.append("DEPOLARIZE1", 0, args=1)
+    circuit.append("DEPOLARIZE2", 0, 1, args=1)
+    ir = circuit._build_ir()
+    noise1, noise2 = circuit._build_noise(shots=1)
+    
+    hadamard_id = CircuitInstruction("H", 0).gate_type
+    cnot_id = CircuitInstruction("CNOT", [0, 1]).gate_type
+    depolarize1_id = CircuitInstruction("DEPOLARIZE1", 0).gate_type
+    depolarize2_id = CircuitInstruction("DEPOLARIZE2", 0).gate_type
+    NO_TARGET = np.iinfo(np.int64).max
+    expected_ir = np.array([
+        [hadamard_id, 0, NO_TARGET],
+        [hadamard_id, 1, NO_TARGET],
+        [cnot_id, 0, 1],
+        [cnot_id, 0, 2],
+        [depolarize1_id, 0, NO_TARGET],
+        [depolarize2_id, 0, 1]
+    ], dtype=np.int64)
+    
+    ir_plain = ir.view(np.int64).reshape(-1, 3)
+    assert np.array_equal(ir_plain, expected_ir), "IR instructions do not match expected values."
+
+    assert noise1.shape == (1, 1, 2), f"Expected noise1 shape (1, 1, 2), got {noise1.shape}"
+    noise_depol1 = noise1[0, 0]  
+    assert np.any(noise_depol1 != 0), "DEPOLARIZE1 noise should be nonzero."
+
+
+    assert noise2.shape == (1, 1, 4), f"Expected noise2 shape (1, 1, 4), got {noise2.shape}"
+    noise_depol2 = noise2[0, 0]
+    first_qudit = noise_depol2[:2]
+    second_qudit = noise_depol2[2:]
+    assert (np.any(first_qudit != 0) or np.any(second_qudit != 0)), \
+        "DEPOLARIZE2 noise should have at least one non-identity operator."
+
+def test_reference_sample():
+    circuit = Circuit(2, 2)
+    circuit.append("X", 0)
+    circuit.append("CNOT", 0, 1)
+    circuit.append("M", [0,1])
+    reference = circuit.reference_sample()
+    assert np.array_equal(reference, np.array([1, 1]))
+    circuit.append("CNOT", -1, 1)
+    circuit.append("M", [0,1])
+    reference = circuit.reference_sample()
+    assert np.array_equal(reference, np.array([1, 1, 1, 0]))
+    
 def test_phase_kickback():
     circuit = Circuit(2, 2)
     circuit.append("H", 1)
@@ -23,7 +89,7 @@ def test_phase_kickback():
     circuit.append("H", 1)
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
-    assert np.array_equal(sampler.sample(shots=1), np.array([1, 1]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[1], [1]]))
 
 def test_qubit_flip():
     circuit = Circuit(2, 2)
@@ -35,14 +101,14 @@ def test_qubit_flip():
     circuit.append("X", 1)
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
-    assert np.array_equal(sampler.sample(shots=1), np.array([1, 1]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[1], [1]]))
 
 def test_qutrit_flip():
     circuit = Circuit(2, 3)
     circuit.append("X", 0)
     circuit.append("M", 0)
     sampler = circuit.compile_sampler()
-    assert np.array_equal(sampler.sample(shots=1), np.array([1]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[1]]))
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_computational_basis(dimension):
@@ -60,7 +126,7 @@ def test_qudit_swap_computational_basis(dimension):
     circuit.append("M", 0)
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
-    assert np.array_equal(sampler.sample(shots=1), np.array([x1, x0]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[x1], [x0]]))
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_self_inverse(dimension):
@@ -87,7 +153,7 @@ def test_qudit_swap_self_inverse(dimension):
     circuit.append("M", 1)
     
     sampler = circuit.compile_sampler()
-    expected = np.array([x0, x1])
+    expected = np.array([[x0], [x1]])
     assert np.array_equal(sampler.sample(shots=1), expected), (
         f"Double SWAP failed for dimension={dimension} with initial states x0={x0}, x1={x1}"
     )
@@ -125,7 +191,7 @@ def test_qutrit_swap_in_x_basis(a, b):
     sampler = circuit.compile_sampler()
     result = sampler.sample(shots=1)
 
-    expected = np.array([b, a])
+    expected = np.array([[b], [a]])
     assert np.array_equal(result, expected), (
         f"SWAP in X basis failed for preparation F|{a}> and F|{b}>: "
         f"expected {expected}, got {result}"
@@ -160,7 +226,7 @@ def test_qubit_deutsch():
     else:
         expected_result = 1
     
-    assert np.array_equal(sampler.sample(shots=1), np.array([expected_result]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[expected_result]]))
 
 def test_z_stabilizer_extraction():
     """
@@ -187,7 +253,7 @@ def test_z_stabilizer_extraction():
     circuit.append("M", 0)
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
-    assert np.array_equal(sampler.sample(shots=1), np.array([1, 2]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[1], [2]]))
 
 def test_x_stabilizer_extraction():
     """
@@ -216,7 +282,7 @@ def test_x_stabilizer_extraction():
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
 
-    assert np.array_equal(sampler.sample(shots=1), np.array([2, 1]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[2], [1]]))
 
 def test_deutsch():
     # input the dimension here
@@ -253,5 +319,5 @@ def test_deutsch():
     else:
         expected_result = 2
 
-    assert np.array_equal(sampler.sample(shots=1), np.array([expected_result]))
+    assert np.array_equal(sampler.sample(shots=1), np.array([[expected_result]]))
     
