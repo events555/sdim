@@ -149,7 +149,7 @@ def is_gate_collapsing(gate_id: int):
 
 def is_gate_noisy(gate_id: int):
     name = gate_id_to_name(gate_id)
-    return name in ["X_ERROR", "Y_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "MPP"]
+    return name in ["X_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "MPP"]
 
 def is_gate_two_qubit(gate_id: int):
     name = gate_id_to_name(gate_id)

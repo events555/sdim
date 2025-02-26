@@ -266,8 +266,8 @@ class Circuit:
             str: A string representation of all operations in the circuit.
         """
         return "\n".join(str(op) for op in self.operations)
-    
-    def get_measurement_count(self) -> int:
+    @property
+    def num_measurements(self) -> int:
         """
         Returns the number of measurements in the circuit.
 
