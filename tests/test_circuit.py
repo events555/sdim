@@ -109,6 +109,12 @@ def test_qutrit_flip():
     circuit.append("M", 0)
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[1]]))
+    circuit = Circuit(2, 3)
+    circuit.append("X", 0)
+    circuit.append("X", 0)
+    circuit.append("M", 0)
+    sampler = circuit.compile_sampler()
+    assert np.array_equal(sampler.sample(shots=1), np.array([[2]]))
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_computational_basis(dimension):

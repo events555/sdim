@@ -48,7 +48,7 @@ class CompiledMeasurementSampler():
         noise_counter2 = 0
         gate_count = 1
         # Initialize results array
-        frame_results = np.empty((self.circuit.get_measurement_count(), shots), 
+        frame_results = np.empty((self.circuit.num_measurements, shots), 
                             dtype=np.int64)
         # Initialize noise arrays
         noise1, noise2 = self.circuit._build_noise(shots)
