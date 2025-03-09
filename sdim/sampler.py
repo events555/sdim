@@ -118,7 +118,7 @@ class CompiledMeasurementSampler():
             gate_id = inst['gate_id']
             qudit_index = inst['qudit_index']
             target_index = inst['target_index']
-            if gate_count % 64 == 0:
+            if gate_count % 128 == 0:
                 x_frame %= dimension
                 z_frame %= dimension
             
@@ -156,7 +156,27 @@ class CompiledMeasurementSampler():
 
             else:
                 if not is_gate_pauli(gate_id):
-                    id_to_op[gate_id](qudit_index, target_index)
+                        # Handle the case when one of the indices refers to a measurement record.
+                        if qudit_index < 0:
+                            gate_name = gate_id_to_name(gate_id)
+                            measurement_index = -qudit_index - 1
+                            if gate_name == "CNOT":
+                                x_frame[target_index] += frame_results[measurement_index, :]
+                            elif gate_name == "CZ":
+                                z_frame[target_index] += frame_results[measurement_index, :]
+                            else:
+                                raise ValueError(f"Unsupported gate {gate_name} for negative qudit_index.")
+                        elif target_index < 0:
+                            gate_name = gate_id_to_name(gate_id)
+                            measurement_index = -target_index - 1
+                            if gate_name == "CNOT":
+                                raise ValueError("CNOT gate cannot be applied to measurement record target.")
+                            elif gate_name == "CZ":
+                                z_frame[qudit_index] += frame_results[measurement_index, :]
+                            else:
+                                raise ValueError(f"Unsupported gate {gate_name} for negative target_index.")
+                        else:
+                            id_to_op[gate_id](qudit_index, target_index)
             gate_count += 1
         return frame_results
 
