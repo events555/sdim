@@ -140,7 +140,7 @@ def test_single_qudit_depolarizing():
     shots = 100000
 
     c = Circuit(dimension=dimension, num_qudits=1)
-    c.append("N1", 0, prob=p, noise_channel='d')
+    c.append("DEPOLARIZE1", 0, prob=p)
     c.append("M", 0)
 
     result = c.compile_sampler().sample(shots=shots)
