@@ -57,51 +57,51 @@ class GateTarget:
 def _pauli_gates():
     return {
         "I": {"arg_count": 1, "aliases": ["I"]},
-        "X": {"arg_count": 1, "aliases": ["X", "NOT"]},
-        "X_INV": {"arg_count": 1, "aliases": ["X_INV"]},
-        "Z": {"arg_count": 1, "aliases": ["Z"]},
-        "Z_INV": {"arg_count": 1, "aliases": ["Z_INV"]},
+        "X": {"arg_count": 1, "aliases": ["X", "NOT"], "inverse": "X_INV"},
+        "X_INV": {"arg_count": 1, "aliases": ["X_INV"], "inverse": "X"},
+        "Z": {"arg_count": 1, "aliases": ["Z"], "inverse": "Z_INV"},
+        "Z_INV": {"arg_count": 1, "aliases": ["Z_INV"], "inverse": "Z"},
     }
 def _hadamard_gates():
     return {
-        "H": {"arg_count": 1, "aliases": ["H", "R", "DFT", "F"]},
-        "H_INV": {"arg_count": 1, "aliases": ["H_INV", "R_INV", "DFT_INV", "F_INV", "H_DAG", "R_DAG", "DFT_DAG", "F_DAG"]},
-        "P": {"arg_count": 1, "aliases": ["PHASE", "S"]},
-        "P_INV": {"arg_count": 1, "aliases": ["PHASE_INV", "S_INV", "S_DAG"]},
+        "H": {"arg_count": 1, "aliases": ["H", "R", "DFT", "F"], "inverse": "H_INV"},
+        "H_INV": {"arg_count": 1, "aliases": ["H_INV", "R_INV", "DFT_INV", "F_INV", "H_DAG", "R_DAG", "DFT_DAG", "F_DAG"], "inverse": "H"},
+        "P": {"arg_count": 1, "aliases": ["PHASE", "S"], "inverse": "P_INV"},
+        "P_INV": {"arg_count": 1, "aliases": ["PHASE_INV", "S_INV", "S_DAG"], "inverse": "P"},
     }
 def _controlled_gates():
     return {
-        "CNOT": {"arg_count": 2, "aliases": ["CNOT", "CX", "C", "SUM"]},
-        "CNOT_INV": {"arg_count": 2, "aliases": ["CNOT_INV", "CX_INV", "C_INV", "CNOT_DAG", "CX_DAG", "C_DAG", "SUM_INV", "SUM_DAG"]},
-        "CZ": {"arg_count": 2, "aliases": ["CZ"]},
-        "CZ_INV": {"arg_count": 2, "aliases": ["CZ_INV"]},
-        "SWAP": {"arg_count": 2, "aliases": ["SWAP"]},
+        "CNOT": {"arg_count": 2, "aliases": ["CNOT", "CX", "C", "SUM"], "inverse": "CNOT_INV"},
+        "CNOT_INV": {"arg_count": 2, "aliases": ["CNOT_INV", "CX_INV", "C_INV", "CNOT_DAG", "CX_DAG", "C_DAG", "SUM_INV", "SUM_DAG"], "inverse": "CNOT"},
+        "CZ": {"arg_count": 2, "aliases": ["CZ"], "inverse": "CZ_INV"},
+        "CZ_INV": {"arg_count": 2, "aliases": ["CZ_INV"], "inverse": "CZ"},
+        "SWAP": {"arg_count": 2, "aliases": ["SWAP"], "inverse": "SWAP"},
         # "ISWAP": {"arg_count": 2, "aliases": ["ISWAP"]},
         # "ISWAP_INV": {"arg_count": 2, "aliases": ["ISWAP_DAG", "ISWAP_INV"]},
     }
 def _collapsing_gates():
     return {
-        "M": {"arg_count": 1, "aliases": ["M", "MEASURE", "COLLAPSE", "MZ"]},
-        "MR": {"arg_count": 1, "aliases": ["MR", "MEASURE_R"]},
-        "M_X": {"arg_count": 1, "aliases": ["M_X", "MEASURE_X", "MX"]},
-        "MR_X": {"arg_count": 1, "aliases": ["MR_X", "MEASURE_R_X", "MRX"]},
+        "M": {"arg_count": 1, "aliases": ["M", "MEASURE", "COLLAPSE", "MZ"], "inverse": None},
+        "MR": {"arg_count": 1, "aliases": ["MR", "MEASURE_R"], "inverse": None},
+        "M_X": {"arg_count": 1, "aliases": ["M_X", "MEASURE_X", "MX"], "inverse": None},
+        "MR_X": {"arg_count": 1, "aliases": ["MR_X", "MEASURE_R_X", "MRX"], "inverse": None},
         "RESET": {"arg_count": 1, "aliases": ["RESET", "R"]},
         # Add other collapsing gates here (MRX, MRY, etc.)
     }
 def _noise_gates():
   return {
-        "X_ERROR": {"arg_count": 1, "aliases": ["X_ERROR"]},
-        "Z_ERROR": {"arg_count": 1, "aliases": ["Z_ERROR"]},
-        "Y_ERROR": {"arg_count": 1, "aliases": ["Y_ERROR"]},
-        "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1", "DEPOLARIZE"]},
-        "DEPOLARIZE2": {"arg_count": 2, "aliases": ["DEPOLARIZE2"]},
+        "X_ERROR": {"arg_count": 1, "aliases": ["X_ERROR"], "inverse": None},
+        "Z_ERROR": {"arg_count": 1, "aliases": ["Z_ERROR"], "inverse": None},
+        "Y_ERROR": {"arg_count": 1, "aliases": ["Y_ERROR"], "inverse": None},
+        "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1", "DEPOLARIZE"], "inverse": None},
+        "DEPOLARIZE2": {"arg_count": 2, "aliases": ["DEPOLARIZE2"], "inverse": None},
   }
 def _annotation_gates():
   return {
-          "REPEAT": {"arg_count": None, "aliases":[]},
-          "DETECTOR": {"arg_count": None, "aliases":[]},
-          "SHIFT_COORDS": {"arg_count": None, "aliases":[]},
-          "OBSERVABLE_INCLUDE": {"arg_count": None, "aliases":[]}
+          "REPEAT": {"arg_count": None, "aliases":[], "inverse": None},
+          "DETECTOR": {"arg_count": None, "aliases":[], "inverse": None},
+          "SHIFT_COORDS": {"arg_count": None, "aliases":[], "inverse": None},
+          "OBSERVABLE_INCLUDE": {"arg_count": None, "aliases":[], "inverse": None},
         }
 
 GATE_DATA = {}

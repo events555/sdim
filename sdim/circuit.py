@@ -68,6 +68,9 @@ class CircuitInstruction:
         if is_gate_two_qubit(self.gate_type):
             if len(self.targets) % 2 != 0:
                 raise ValueError("Two-qubit gate requires an even number of targets.")
+            
+    def copy(self) -> "CircuitInstruction":
+        return CircuitInstruction(self.gate_type, self.targets.copy(), self.args.copy())
 
 
 @dataclass
@@ -189,7 +192,6 @@ class Circuit:
             
         return [t if isinstance(t, GateTarget) else GateTarget.qudit(t) for t in targets]
 
-
     def __mul__(self, repetitions:int):
         """
         Replicates the circuit by the specified number of times.
@@ -266,6 +268,31 @@ class Circuit:
             str: A string representation of all operations in the circuit.
         """
         return "\n".join(str(op) for op in self.operations)
+    
+    def inverse(self):
+        """
+        Returns the inverse of the circuit by reversing the order of operations
+        and substituting each gate with its inverse. Raises ValueError if any
+        gate in the circuit is not invertible.
+        
+        Returns:
+            Circuit: A new Circuit object representing the inverse circuit.
+        """
+        new_circuit = Circuit(self.num_qudits, self.dimension)
+        new_ops = []
+        for op in reversed(self.operations):
+            gate_name = gate_id_to_name(op.gate_type)
+            gate_data = GATE_DATA.get(gate_name)
+            if gate_data is None or gate_data.get("inverse") is None:
+                raise ValueError(f"Gate {gate_name} is not invertible, cannot create inverse circuit.")
+            inverse_name = gate_data["inverse"]
+            new_gate_id = gate_name_to_id(inverse_name)
+            new_op = op.copy()
+            new_op.gate_type = new_gate_id
+            new_ops.append(new_op)
+        new_circuit.operations = new_ops
+        return new_circuit
+
     @property
     def num_measurements(self) -> int:
         """
@@ -366,7 +393,6 @@ class Circuit:
 
         return noise1_array, noise2_array
         
-
     def _sample_x_error(self, shots: int, error_prob: float) -> np.ndarray:
         """
         Samples a single-qudit X error.
