@@ -17,6 +17,8 @@
 
 !LICENSE
 
+!CITATION.cff
+
 # Ignore specific files and directories
 circuits/random*.chp
 circuits/failed*.chp
