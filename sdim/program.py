@@ -144,8 +144,17 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             z_frame[qudit_index] = np.random.randint(0, dimension, size=extra_shots)
             
         elif gate_id == 16:  # Reset
-            x_frame[qudit_index] = 0
-            z_frame[qudit_index] = np.random.randint(0, dimension, size=extra_shots)
+            q = int(qudit_index)
+            m = int(measurement_counts[q])
+            ref_val = reference_results[q, m]['measurement_value']
+            deterministic = reference_results[q, m]['deterministic']
+
+            for shot in range(extra_shots):
+                frame_results[q, m, shot] = (q, m, shot, deterministic, ref_val)
+
+            x_frame[q] = 0
+            z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
+            measurement_counts[q] += 1
             
         elif gate_id == 17:  # Noise
             x_frame[qudit_index] += noise_array[noise_counter, :, 0]
