@@ -24,15 +24,14 @@ class CompiledMeasurementSampler():
     ) -> None:
         self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
-        # The PauliFrameSimulator now takes the static parts of the circuit
+        self.ir_array = ir_array
+        self.seed: Optional[int] = seed 
         self.engine = PauliFrameSimulator(
             ir_array=ir_array,
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements
         )
-        if seed is not None:
-            np.random.seed(seed)
 
     def sample(
             self,
@@ -41,6 +40,10 @@ class CompiledMeasurementSampler():
         """
         Samples the measurement results of the circuit.
         """
+        if self.seed is not None:
+            np.random.seed(self.seed)
+            import random
+            random.seed(self.seed)
         noise1_bank, noise2_bank, erased_bank, measurement_bank = self.circuit._build_noise(shots)
 
         # Get raw noisy measurements from the engine
@@ -80,15 +83,14 @@ class CompiledDetectorSampler():
     ) -> None:
         self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
+        self.ir_array = ir_array
+        self.seed: Optional[int] = seed
         self.engine = PauliFrameSimulator(
             ir_array=ir_array,
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements
         )
-
-        if seed is not None:
-            np.random.seed(seed)
         self._parse_annotations()
         self._calculate_reference_annotations()
 
@@ -191,6 +193,10 @@ class CompiledDetectorSampler():
             dets_out: Optional[np.ndarray] = None,
             obs_out: Optional[np.ndarray] = None,
     ) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
+        if self.seed is not None:
+            np.random.seed(self.seed)
+            import random
+            random.seed(self.seed)
         # Generate noise
         noise1_bank, noise2_bank, erased_bank, measurement_bank = self.circuit._build_noise(shots)
 

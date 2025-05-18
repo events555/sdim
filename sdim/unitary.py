@@ -124,6 +124,23 @@ def generate_cnot_matrix(d):
     CNOT = CNOT.transpose()
     return CNOT
 
+def generate_multiply_matrix(d, a):
+    """
+    Generates the multiplication gate for dimension d and integer a.
+    Args:
+        d: The dimension of the multiplication gate
+        a: The integer coprime to d
+    Returns:
+        The multiplication gate of dimension d and integer a
+    """
+    if np.gcd(a, d) != 1:
+        raise ValueError("a and d must be coprime")
+    
+    M = np.zeros((d, d), dtype=np.complex128)
+    for i in range(d):
+        M[i, (a * i) % d] = 1
+    return M
+
 
 class GeneralizedHadamardGate(cirq.Gate):
     def __init__(self, d):
@@ -311,6 +328,42 @@ class GeneralizedZPauliGateInverse(cirq.Gate):
 
     def _circuit_diagram_info_(self, args):
         return f"Z_{self.d}†"
+    
+class GeneralizedMultiplyGate(cirq.Gate):
+    """MUL(a): |x⟩ → |a·x mod d⟩,  gcd(a,d)=1."""
+    def __init__(self, d: int, a: int):
+        super().__init__()
+        if np.gcd(a, d) != 1:
+            raise ValueError("a and d must be coprime")
+        self.d = d
+        self.a = a % d
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return generate_multiply_matrix(self.d, self.a)
+
+    # its inverse is MUL(a_inv)  with  a_inv ≡ a^{-1} (mod d)
+    def __pow__(self, exponent):
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedMultiplyGate(self.d, pow(self.a, -1, self.d))
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"MUL_{self.a}"
+
+# convenience alias
+class GeneralizedMultiplyGateInverse(GeneralizedMultiplyGate):
+    """Explicit dagger class (optional)."""
+    def __init__(self, d: int, a: int):
+        a_inv = pow(a, -1, d)
+        super().__init__(d, a_inv)
+
+    def _circuit_diagram_info_(self, args):
+        return f"MUL_{pow(self.a, -1, self.d)}†"
     
 class GeneralizedCNOTGate(cirq.Gate):
     def __init__(self, d):

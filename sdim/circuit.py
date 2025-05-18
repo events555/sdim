@@ -395,7 +395,7 @@ class Circuit:
 
         return ir_array
     
-    def _build_noise(self, shots: int) -> tuple[np.ndarray, np.ndarray]:
+    def _build_noise(self, shots: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         noise1_list = []
         noise2_list = []
         erasure_list = []
@@ -765,7 +765,7 @@ class Circuit:
             
         return CompiledDetectorSampler(
             circuit_object=self,
-            reference_sample=current_ref_sample, # type: ignore
+            reference_sample=current_ref_sample,
             ir_array=current_ir,
             seed=seed
         )

@@ -137,67 +137,68 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
 
 
 def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
-    """
-    Converts a Circuit object to a Cirq Circuit object.
+    import cirq
 
-    Args:
-        circuit (Circuit): The Circuit object to convert.
-        measurement (bool): Whether to include measurement gates. Defaults to False.
-        print_circuit (bool): Whether to print the Cirq circuit. Defaults to False.
+    qudits = [cirq.LineQid(i, dimension=circuit.dimension)
+              for i in range(circuit.num_qudits)]
 
-    Returns:
-        cirq.Circuit: The equivalent Cirq Circuit object.
-    """
-    # Create a list of qudits.
-    qudits = [cirq.LineQid(i, dimension=circuit.dimension) for i in range(circuit.num_qudits)]
-
-    # Create the generalized gates.
-    gate_map = {
-        "I": IdentityGate(circuit.dimension),
-        "H": GeneralizedHadamardGate(circuit.dimension),
-        "P": GeneralizedPhaseShiftGate(circuit.dimension),
-        "CNOT": GeneralizedCNOTGate(circuit.dimension),
-        "X": GeneralizedXPauliGate(circuit.dimension),
-        "Z": GeneralizedZPauliGate(circuit.dimension),
-        "H_INV": GeneralizedHadamardGateInverse(circuit.dimension),
-        "P_INV": GeneralizedPhaseShiftGateInverse(circuit.dimension),
+    # constant, parameter-free gates -----------------------------------
+    CONST = {
+        "I":        IdentityGate(circuit.dimension),
+        "H":        GeneralizedHadamardGate(circuit.dimension),
+        "P":        GeneralizedPhaseShiftGate(circuit.dimension),
+        "CNOT":     GeneralizedCNOTGate(circuit.dimension),
+        "X":        GeneralizedXPauliGate(circuit.dimension),
+        "Z":        GeneralizedZPauliGate(circuit.dimension),
+        "H_INV":    GeneralizedHadamardGateInverse(circuit.dimension),
+        "P_INV":    GeneralizedPhaseShiftGateInverse(circuit.dimension),
         "CNOT_INV": GeneralizedCNOTGateInverse(circuit.dimension),
-        "X_INV": GeneralizedXPauliGateInverse(circuit.dimension),
-        "Z_INV": GeneralizedZPauliGateInverse(circuit.dimension),
-        "CZ": GeneralizedCZGate(circuit.dimension),
-        "CZ_INV": GeneralizedCZGateInverse(circuit.dimension),
-        "N1" : IdentityGate(circuit.dimension) # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
+        "X_INV":    GeneralizedXPauliGateInverse(circuit.dimension),
+        "Z_INV":    GeneralizedZPauliGateInverse(circuit.dimension),
+        "CZ":       GeneralizedCZGate(circuit.dimension),
+        "CZ_INV":   GeneralizedCZGateInverse(circuit.dimension),
     }
 
-    # Create a Cirq circuit.
     cirq_circuit = cirq.Circuit()
 
-    # Apply each gate in the circuit.
-    for op in circuit.operations:
-        # Choose the appropriate gate.
-        name = gate_id_to_name(op.gate_type)
+    for inst in circuit.operations:
+        name = gate_id_to_name(inst.gate_type)
 
-
-        if name in gate_map:
-            gate = gate_map[name]
-            if is_gate_two_qubit(op.gate_type):
-                for i in range(0, len(op.targets), 2):
-                    cirq_circuit.append(gate.on(qudits[op.targets[i]._value], 
-                                                qudits[op.targets[i+1]._value]))
+        # ---------- parameter-dependent multiply -----------------------
+        if name in ("MULTIPLY", "MULTIPLY_INV"):
+            if not inst.args:
+                raise ValueError(f"{name} requires a multiplier argument")
+            a = int(inst.args[0]) % circuit.dimension
+            gate = (GeneralizedMultiplyGate(circuit.dimension, a)
+                    if name == "MULTIPLY"
+                    else GeneralizedMultiplyGateInverse(circuit.dimension, a))
+            for t in inst.targets:
+                cirq_circuit.append(gate.on(qudits[t._value]))
+            continue
+        # ---------- ordinary map --------------------------------------
+        if name in CONST:
+            gate = CONST[name]
+            if is_gate_two_qubit(inst.gate_type):
+                for c, t in zip(inst.targets[::2], inst.targets[1::2]):
+                    cirq_circuit.append(gate.on(qudits[c._value],
+                                                qudits[t._value]))
             else:
-                for target in op.targets:
-                    cirq_circuit.append(gate.on(qudits[target._value]))
+                for t in inst.targets:
+                    cirq_circuit.append(gate.on(qudits[t._value]))
         elif name == "M":
             if measurement:
-                for target in op.targets:
-                    cirq_circuit.append(cirq.measure(qudits[target._value], key=f'm_{target._value}'))
-            continue
+                for t in inst.targets:
+                    cirq_circuit.append(
+                        cirq.measure(qudits[t._value], key=f"m_{t._value}")
+                    )
         else:
             raise NotImplementedError(f"Gate {name} not implemented")
-    for qudit in qudits:
-        if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
-            # Append identity to qudits with no gates
-            cirq_circuit.append(IdentityGate(circuit.dimension).on(qudit))
+
+    # pad unused lines with identity
+    for q in qudits:
+        if not any(op.qubits[0] == q for op in cirq_circuit.all_operations()):
+            cirq_circuit.append(IdentityGate(circuit.dimension).on(q))
+
     if print_circuit:
         print(cirq_circuit)
     return cirq_circuit
