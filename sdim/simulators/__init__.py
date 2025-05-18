@@ -1,5 +1,5 @@
 """
-# Tableau Submodule
+# Simulators Submodule
 
 This submodule provides classes and functions for working with tableau representations of quantum states, particularly for Pauli and Weyl operators.
 
@@ -9,12 +9,6 @@ This submodule provides classes and functions for working with tableau represent
 - **Phases**: The phases of the generators are tracked in the `phase_vector` attribute.
 - **Qudits**: A tableau must know the number of qudits it represents (`num_qudits`) and the dimension of each qudit (`dimension`).
 
-### Weyl Tableau Specifics
-
-- The number of generators for a Weyl tableau is bound by `2 * num_qudits`.
-- Initially, only `num_qudits` generators are required.
-- Every Weyl operator has an inherent phase tracked by the symplectic inner product. Refer to [de Beaudrap (2013)](#1) for more details.
-
 ### Extended Tableau Specifics
 
 - The number of generators is guaranteed to be exactly `num_qudits`.
@@ -22,10 +16,9 @@ This submodule provides classes and functions for working with tableau represent
 
 ## Classes
 
-- **WeylTableau**: Represents a Weyl tableau for qudit operations. It works with qudits of any dimension.
-- **MeasurementResult**: Represents the result of a quantum measurement.
 - **Tableau**: The base class for tableau representations.
 - **ExtendedTableauSimulator**: An extended tableau representation for quantum states. It works with qudits of prime dimension.
+- **PauliFrameSimulator**: A simulator that uses a reference frame to efficiently simulate Pauli errors.
 
 ## Purpose
 
@@ -42,3 +35,4 @@ This submodule is essential for working with quantum states in a structured and 
 
 from .tableau import Tableau
 from .extended_tableau_simulator import ExtendedTableauSimulator
+from .frame_simulator import PauliFrameSimulator

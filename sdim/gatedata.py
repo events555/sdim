@@ -95,13 +95,14 @@ def _noise_gates():
         "Y_ERROR": {"arg_count": 1, "aliases": ["Y_ERROR"], "inverse": None},
         "DEPOLARIZE1": {"arg_count": 1, "aliases": ["DEPOLARIZE1", "DEPOLARIZE"], "inverse": None},
         "DEPOLARIZE2": {"arg_count": 2, "aliases": ["DEPOLARIZE2"], "inverse": None},
+        "HERALDED_ERASURE": {"arg_count": 1, "aliases": ["ERASURE"], "inverse": None},
   }
 def _annotation_gates():
   return {
           "REPEAT": {"arg_count": None, "aliases":[], "inverse": None},
-          "DETECTOR": {"arg_count": None, "aliases":[], "inverse": None},
+          "DETECTOR": {"arg_count": 1, "aliases":[], "inverse": None},
           "SHIFT_COORDS": {"arg_count": None, "aliases":[], "inverse": None},
-          "OBSERVABLE_INCLUDE": {"arg_count": None, "aliases":[], "inverse": None},
+          "OBSERVABLE_INCLUDE": {"arg_count": 1, "aliases":[], "inverse": None},
         }
 
 GATE_DATA = {}
@@ -111,7 +112,6 @@ GATE_DATA.update(_controlled_gates())
 GATE_DATA.update(_collapsing_gates())
 GATE_DATA.update(_noise_gates())
 GATE_DATA.update(_annotation_gates())
-
 
 _GATE_NAME_TO_ID = {name: i for i, name in enumerate(GATE_DATA)}
 
@@ -134,14 +134,35 @@ def gate_id_to_name(gate_id: int) -> str:
             return name
   raise ValueError(f"Gate id '{gate_id}' doesn't exist.")
 
-
-def is_not_a_gate(gate_id: int):
+def is_gate_annotating(gate_id: int):
+    """
+    Checks if the gate is an annotation gate, which is the case for REPEAT, DETECTOR, SHIFT_COORDS, and OBSERVABLE_INCLUDE.
+    """
     name = gate_id_to_name(gate_id)
     return name in ["REPEAT", "DETECTOR", "SHIFT_COORDS", "OBSERVABLE_INCLUDE"]
 
+def is_gate_has_no_targets(gate_id: int):
+    """
+    Checks if the gate has no targets, which is the case for REPEAT, DETECTOR, SHIFT_COORDS, and OBSERVABLE_INCLUDE.
+    """
+    name = gate_id_to_name(gate_id)
+    return name in ["REPEAT", "SHIFT_COORDS"]
+
+def is_not_a_gate(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    if is_gate_annotating(gate_id) or is_gate_noisy(gate_id):
+        return name
+    return None
+
+def is_gate_records(gate_id: int):
+    name = gate_id_to_name(gate_id)
+    return name in ["M", "M_X", "MR", "MR_X", "HERALDED_ERASURE"]
+
 def is_gate_collapsing_and_records(gate_id: int):
     name = gate_id_to_name(gate_id)
-    return name in ["M", "M_X", "MR", "MR_X"]
+    if is_gate_records(gate_id) and is_gate_collapsing(gate_id):
+        return name
+    return None
 
 def is_gate_collapsing(gate_id: int):
     name = gate_id_to_name(gate_id)
@@ -149,7 +170,7 @@ def is_gate_collapsing(gate_id: int):
 
 def is_gate_noisy(gate_id: int):
     name = gate_id_to_name(gate_id)
-    return name in ["X_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "MPP"]
+    return name in ["X_ERROR", "Z_ERROR","DEPOLARIZE1", "DEPOLARIZE2", "PAULI_CHANNEL_1", "PAULI_CHANNEL_2","M", "M_X", "MPP", "HERALDED_ERASURE", "MR", "MR_X"]
 
 def is_gate_two_qubit(gate_id: int):
     name = gate_id_to_name(gate_id)

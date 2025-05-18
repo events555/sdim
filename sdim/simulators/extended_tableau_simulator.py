@@ -2,7 +2,7 @@ import numpy as np
 import random
 from dataclasses import dataclass
 from typing import Optional
-from sdim.tableau.tableau import Tableau
+from sdim.simulators.tableau import Tableau
 from sdim.gatedata import is_gate_noisy, gate_id_to_name
 
 @dataclass

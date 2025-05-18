@@ -1,26 +1,38 @@
-from typing import Optional, Tuple
-from sdim.gatedata import is_gate_pauli, is_gate_collapsing, is_gate_noisy, is_gate_two_qubit, gate_name_to_id, gate_id_to_name
+# sdim/sampler.py
+from typing import Optional, Tuple, Dict, Callable, Any, TYPE_CHECKING
 import numpy as np
+
+from .simulators.frame_simulator import PauliFrameSimulator
+
+from .gatedata import (
+    is_gate_pauli, is_gate_collapsing, is_gate_noisy,
+    is_gate_two_qubit, gate_name_to_id, gate_id_to_name,
+    is_gate_records, is_not_a_gate
+)
+
+if TYPE_CHECKING:
+    from .circuit import Circuit # Only for type hinting
 
 class CompiledMeasurementSampler():
     def __init__(self,
-                 circuit: object,
+                 circuit_object: "Circuit", # Keep the original Circuit object
                  *,
-                 skip_reference_sample: bool = False,
+                 # skip_reference_sample: bool = False, # This is now implicitly handled by requiring ref_sample
                  seed: Optional[int] = None,
-                 reference_sample: np.ndarray = None,
-                 ir_array: Optional[object] = None,
+                 reference_sample: np.ndarray, # Make these required from the compile step
+                 ir_array: np.ndarray,
     ) -> None:
-        if ir_array is None:
-            ir_array = circuit._build_ir()
-        if reference_sample is None:
-            reference_sample = circuit.reference_sample()
-
-        self.circuit = circuit
-        self.skip_reference_sample = skip_reference_sample
-        self.seed = seed
+        self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
-        self.ir_array = ir_array
+        # The PauliFrameSimulator now takes the static parts of the circuit
+        self.engine = PauliFrameSimulator(
+            ir_array=ir_array,
+            dimension=circuit_object.dimension,
+            num_qudits=circuit_object.num_qudits,
+            num_total_measurements=circuit_object.num_measurements
+        )
+        if seed is not None:
+            np.random.seed(seed)
 
     def sample(
             self,
@@ -28,181 +40,150 @@ class CompiledMeasurementSampler():
     ) -> np.ndarray:
         """
         Samples the measurement results of the circuit.
-
-        Args:
-            shots (int): Number of shots.
-
-        Returns:
-            np.ndarray: Measurement results.
         """
-        # Get circuit parameters
-        n_qudits = self.circuit.num_qudits
-        dimension = self.circuit.dimension
-        # Initialize frame arrays
-        x_frame = np.zeros((n_qudits, shots), dtype=np.int64)
-        z_frame = np.random.randint(0, dimension, size=(n_qudits, shots))
-        
-        # Initialize measurement tracking
-        measurement_count = 0
-        noise_counter1 = 0
-        noise_counter2 = 0
-        gate_count = 1
-        # Initialize results array
-        frame_results = np.empty((self.circuit.num_measurements, shots), 
-                            dtype=np.int64)
-        # Initialize noise arrays
-        noise1, noise2 = self.circuit._build_noise(shots)
+        noise1_bank, noise2_bank, erased_bank, measurement_bank = self.circuit._build_noise(shots)
 
+        # Get raw noisy measurements from the engine
+        raw_noisy_measurements = self.engine.run_simulation_for_raw_measurements(
+            shots=shots,
+            reference_sample=self.reference_sample,
+            noise1_bank=noise1_bank,
+            noise2_bank=noise2_bank,
+            erased_bank=erased_bank,
+            measurement_bank=measurement_bank
+        )
+        return raw_noisy_measurements
 
-        def op_H(qi, ti):
-            # Hadamard: swap x and -z.
-            tmp = x_frame[qi].copy()
-            x_frame[qi] = -z_frame[qi]
-            z_frame[qi] = tmp
-
-        def op_H_INV(qi, ti):
-            # Inverse Hadamard: swap z and -x.
-            tmp = x_frame[qi].copy()
-            x_frame[qi] = z_frame[qi]
-            z_frame[qi] = -tmp
-
-        def op_P(qi, ti):
-            # Phase (P) gate: add x to z.
-            z_frame[qi] += x_frame[qi]
-
-        def op_P_INV(qi, ti):
-            # Inverse Phase: subtract x from z.
-            z_frame[qi] -= x_frame[qi]
-
-        def op_CNOT(qi, ti):
-            # qi is control, ti is target.
-            x_frame[ti] += x_frame[qi]
-            z_frame[qi] -= z_frame[ti]
-
-        def op_CNOT_INV(qi, ti):
-            x_frame[ti] -= x_frame[qi]
-            z_frame[qi] += z_frame[ti]
-
-        def op_CZ(qi, ti):
-            # Apply CZ: add x from control to z of target and vice versa.
-            z_frame[ti] += x_frame[qi]
-            z_frame[qi] += x_frame[ti]
-
-        def op_CZ_INV(qi, ti):
-            z_frame[ti] -= x_frame[qi]
-            z_frame[qi] -= x_frame[ti]
-
-        def op_SWAP(qi, ti):
-            # Swap both x and z.
-            tmp = x_frame[qi].copy()
-            x_frame[qi] = x_frame[ti]
-            x_frame[ti] = tmp
-            tmp = z_frame[qi].copy()
-            z_frame[qi] = z_frame[ti]
-            z_frame[ti] = tmp
-
-        # Create an op_map dictionary.
-        id_to_op = {
-            gate_name_to_id("H"): op_H,
-            gate_name_to_id("H_INV"): op_H_INV,
-            gate_name_to_id("P"): op_P,
-            gate_name_to_id("P_INV"): op_P_INV,
-            gate_name_to_id("CNOT"): op_CNOT,
-            gate_name_to_id("CNOT_INV"): op_CNOT_INV,
-            gate_name_to_id("CZ"): op_CZ,
-            gate_name_to_id("CZ_INV"): op_CZ_INV,
-            gate_name_to_id("SWAP"): op_SWAP,
-        }
-
-        for inst in self.ir_array:
-            gate_id = inst['gate_id']
-            qudit_index = inst['qudit_index']
-            target_index = inst['target_index']
-            if gate_count % 128 == 0:
-                x_frame %= dimension
-                z_frame %= dimension
-            
-            if is_gate_collapsing(gate_id):
-                gate_name = gate_id_to_name(gate_id)
-                ref_value = self.reference_sample[qudit_index]
-                if gate_name in ("M_X", "MR_X"):
-                    op_H_INV(qudit_index, target_index)
-
-                for shot in range(shots):
-                    new_val = (ref_value + x_frame[qudit_index, shot]) % dimension
-                    frame_results[measurement_count, shot] = new_val
-
-                if gate_name != "RESET":
-                    measurement_count += 1
-
-                if gate_name in ("MR", "MR_X", "RESET"):
-                    x_frame[qudit_index] = 0
-                    z_frame[qudit_index] = np.random.randint(0, dimension, size=shots)
-
-                if gate_name in ("M_X", "MR_X"):
-                    op_H(qudit_index, target_index)
-
-            elif is_gate_noisy(gate_id):
-                if not is_gate_two_qubit(gate_id):
-                    x_frame[qudit_index] += noise1[noise_counter1, :, 0]
-                    z_frame[qudit_index] += noise1[noise_counter1, :, 1]
-                    noise_counter1 += 1
-                else:
-                    x_frame[qudit_index] += noise2[noise_counter2, :, 0]
-                    z_frame[qudit_index] += noise2[noise_counter2, :, 1]
-                    x_frame[target_index] += noise2[noise_counter2, :, 2]
-                    z_frame[target_index] += noise2[noise_counter2, :, 3]
-                    noise_counter2 += 1
-
-            else:
-                if not is_gate_pauli(gate_id):
-                        # Handle the case when one of the indices refers to a measurement record.
-                        if qudit_index < 0:
-                            gate_name = gate_id_to_name(gate_id)
-                            measurement_index = -qudit_index - 1
-                            if gate_name == "CNOT":
-                                x_frame[target_index] += frame_results[measurement_index, :]
-                            elif gate_name == "CZ":
-                                z_frame[target_index] += frame_results[measurement_index, :]
-                            else:
-                                raise ValueError(f"Unsupported gate {gate_name} for negative qudit_index.")
-                        elif target_index < 0:
-                            gate_name = gate_id_to_name(gate_id)
-                            measurement_index = -target_index - 1
-                            if gate_name == "CNOT":
-                                raise ValueError("CNOT gate cannot be applied to measurement record target.")
-                            elif gate_name == "CZ":
-                                z_frame[qudit_index] += frame_results[measurement_index, :]
-                            else:
-                                raise ValueError(f"Unsupported gate {gate_name} for negative target_index.")
-                        else:
-                            id_to_op[gate_id](qudit_index, target_index)
-            gate_count += 1
-        return frame_results
-
-    
     def sample_write(
             self,
             shots: int,
             filepath: str,
-            format: str = '01',
+            format: str = '01', # TODO: Implement
     ) -> None:
-        """
-        Samples the measurement results of the circuit and writes them to a file.
+        samples = self.sample(shots)
+        # Basic 01 format for now
+        if format == '01':
+            with open(filepath, 'w') as f:
+                for shot_idx in range(shots):
+                    f.write("".join(map(str, samples[shot_idx, :])) + "\n")
+        else:
+            raise NotImplementedError(f"Format '{format}' not implemented for sample_write.")
 
-        Args:
-            shots (int): Number of shots.
-            filename (str): File name.
-        """
-        ...
-    
+
 class CompiledDetectorSampler():
     def __init__(self,
-                 circuit: object,
+                 circuit_object: "Circuit",
                  *,
                  seed: Optional[int] = None,
+                 reference_sample: np.ndarray,
+                 ir_array: np.ndarray,
     ) -> None:
-        ...
+        self.circuit: "Circuit" = circuit_object
+        self.reference_sample = reference_sample
+        self.engine = PauliFrameSimulator(
+            ir_array=ir_array,
+            dimension=circuit_object.dimension,
+            num_qudits=circuit_object.num_qudits,
+            num_total_measurements=circuit_object.num_measurements
+        )
+
+        if seed is not None:
+            np.random.seed(seed)
+        self._parse_annotations()
+        self._calculate_reference_annotations()
+
+    def _parse_annotations(self):
+        self.detectors_meas_indices: list[list[int]] = []
+        self.observables_meas_indices: list[list[int]] = [] # Assuming observables are indexed 0 to N-1
+        self.num_total_physical_measurements = 0 # Count of M, MR, MX, MRX, HERALDED_ERASURE outputs
+
+        measurement_op_indices_in_ir = []
+        abs_meas_idx_counter = 0
+        for op_ir_idx, op_inst_ir in enumerate(self.engine.ir_array): # Use engine's IR
+            gate_id = op_inst_ir['gate_id']
+            if is_gate_records(gate_id):
+                pass
+
+        # --- Simpler parsing based on original Circuit.operations for annotations ---
+        self.detectors_meas_indices = []
+        observables_map_temp: Dict[int, list[int]] = {}
+
+        abs_meas_output_idx_so_far = 0
+        
+        op_idx_to_abs_meas_count_before_it = []
+
+        for op_circuit in self.circuit.operations:
+            op_idx_to_abs_meas_count_before_it.append(abs_meas_output_idx_so_far)
+            if is_gate_records(op_circuit.gate_type):
+                abs_meas_output_idx_so_far += len(op_circuit.targets)
+
+        self.num_total_measurements_from_ops = abs_meas_output_idx_so_far
+        if self.num_total_measurements_from_ops != self.engine.num_total_measurements:
+             raise ValueError("Mismatch in total measurement count between engine and annotation parsing.")
+
+
+        for op_idx, op_circuit in enumerate(self.circuit.operations):
+            gate_name = gate_id_to_name(op_circuit.gate_type)
+            num_meas_before_this_op = op_idx_to_abs_meas_count_before_it[op_idx]
+
+            if gate_name == "DETECTOR":
+                target_abs_indices = []
+                for target in op_circuit.targets: # These are GateTarget objects
+                    if target.is_measurement_record_target:
+                        abs_idx = num_meas_before_this_op + target.value
+                        if not (0 <= abs_idx < self.engine.num_total_measurements):
+                            raise ValueError(f"DETECTOR target rec[{target.value}] resolves to "
+                                             f"invalid absolute index {abs_idx} at op index {op_idx}.")
+                        target_abs_indices.append(abs_idx)
+                    # TODO: Handle other target types for DETECTOR if necessary
+                self.detectors_meas_indices.append(sorted(list(set(target_abs_indices))))
+
+            elif gate_name == "OBSERVABLE_INCLUDE":
+                if not op_circuit.args:
+                    raise ValueError("OBSERVABLE_INCLUDE requires a logical index argument.")
+                logical_idx = int(op_circuit.args[0])
+                
+                target_abs_indices = []
+                for target in op_circuit.targets:
+                    if target.is_measurement_record_target:
+                        abs_idx = num_meas_before_this_op + target.value
+                        if not (0 <= abs_idx < self.engine.num_total_measurements):
+                            raise ValueError(f"OBSERVABLE_INCLUDE target rec[{target.value}] resolves to "
+                                             f"invalid absolute index {abs_idx} at op index {op_idx}.")
+                        target_abs_indices.append(abs_idx)
+                
+                if logical_idx not in observables_map_temp:
+                    observables_map_temp[logical_idx] = []
+                observables_map_temp[logical_idx].extend(target_abs_indices)
+
+        self.num_detectors = len(self.detectors_meas_indices)
+        max_obs_idx = -1
+        if observables_map_temp:
+            max_obs_idx = max(observables_map_temp.keys())
+        self.num_observables = max_obs_idx + 1
+        
+        self.observables_meas_indices = [[] for _ in range(self.num_observables)]
+        for idx, targets_for_obs in observables_map_temp.items():
+            self.observables_meas_indices[idx] = sorted(list(set(targets_for_obs)))
+        # --- End of _parse_annotations sketch ---
+
+
+    def _calculate_reference_annotations(self):
+        # (Implementation from previous responses, using self.reference_sample,
+        #  self.detectors_meas_indices, self.observables_meas_indices)
+        self.ref_detector_values = np.zeros(self.num_detectors, dtype=np.int64)
+        for i, indices in enumerate(self.detectors_meas_indices):
+            if not indices: continue # Skip empty detectors
+            val = sum(self.reference_sample[m_idx] for m_idx in indices) % self.circuit.dimension
+            self.ref_detector_values[i] = val
+
+        self.ref_observable_values = np.zeros(self.num_observables, dtype=np.int64)
+        for i, indices in enumerate(self.observables_meas_indices):
+            if not indices: continue # Skip empty observables
+            val = sum(self.reference_sample[m_idx] for m_idx in indices) % self.circuit.dimension
+            self.ref_observable_values[i] = val
+
+
     def sample(
             self,
             shots: int,
@@ -210,11 +191,84 @@ class CompiledDetectorSampler():
             dets_out: Optional[np.ndarray] = None,
             obs_out: Optional[np.ndarray] = None,
     ) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
-        ...
-    def sample_write( # TODO: Fix arguments to match Stim
+        # Generate noise
+        noise1_bank, noise2_bank, erased_bank, measurement_bank = self.circuit._build_noise(shots)
+
+        # Get raw noisy measurements from the engine
+        raw_noisy_measurements_all_shots = self.engine.run_simulation_for_raw_measurements(
+            shots=shots,
+            reference_sample=self.reference_sample,
+            noise1_bank=noise1_bank,
+            noise2_bank=noise2_bank,
+            erased_bank=erased_bank,
+            measurement_bank=measurement_bank
+        ) # Shape: (shots, num_total_measurements)
+
+        # --- Post-process raw measurements into detection events ---
+        if dets_out is None and self.num_detectors > 0 :
+            dets_out = np.empty((shots, self.num_detectors), dtype=np.uint8)
+        elif self.num_detectors == 0:
+             dets_out = np.empty((shots, 0), dtype=np.uint8) # Handle case with no detectors
+
+
+        process_obs = self.num_observables > 0
+        if process_obs and obs_out is None:
+            obs_out = np.empty((shots, self.num_observables), dtype=np.uint8)
+        elif not process_obs: # Ensure obs_out is None or empty if no observables
+            if obs_out is not None and obs_out.shape[1] > 0:
+                raise ValueError("obs_out provided but num_observables is 0")
+            obs_out = np.empty((shots,0), dtype=np.uint8)
+
+
+        for s_idx in range(shots):
+            current_shot_raw_measurements = raw_noisy_measurements_all_shots[s_idx, :]
+            
+            if self.num_detectors > 0:
+                for d_idx in range(self.num_detectors):
+                    if not self.detectors_meas_indices[d_idx]: # Empty detector definition
+                        dets_out[s_idx, d_idx] = 0 # Or based on convention if args define value
+                        continue
+                    noisy_det_val = sum(current_shot_raw_measurements[m_idx] 
+                                        for m_idx in self.detectors_meas_indices[d_idx]
+                                       ) % self.engine.dimension # Use engine's dimension
+                    ref_det_val = self.ref_detector_values[d_idx]
+                    dets_out[s_idx, d_idx] = 1 if noisy_det_val != ref_det_val else 0
+            
+            if process_obs and obs_out is not None:
+                for o_idx in range(self.num_observables):
+                    if not self.observables_meas_indices[o_idx]:
+                        obs_out[s_idx, o_idx] = 0
+                        continue
+                    noisy_obs_val = sum(current_shot_raw_measurements[m_idx] 
+                                        for m_idx in self.observables_meas_indices[o_idx]
+                                       ) % self.engine.dimension
+                    ref_obs_val = self.ref_observable_values[o_idx]
+                    obs_out[s_idx, o_idx] = 1 if noisy_obs_val != ref_obs_val else 0
+        
+        if process_obs: # obs_out will be defined or empty here
+            return dets_out, obs_out # type: ignore
+        return dets_out # type: ignore
+
+
+    def sample_write(
             self,
             shots: int,
             filepath: str,
             format: str = '01',
+            *,
+            obs_out_filepath: Optional[str] = None,
+            obs_out_format: str = '01'
     ) -> None:
-        ...
+        # (Implementation from previous responses using self.sample())
+        if self.num_observables > 0:
+            dets, obs = self.sample(shots) # type: ignore
+            if obs_out_filepath:
+                 with open(obs_out_filepath, 'w') as f_obs: # Use different file var
+                    for s_idx in range(shots):
+                        f_obs.write("".join(map(str, obs[s_idx, :])) + "\n")
+        else:
+            dets = self.sample(shots) # type: ignore
+
+        with open(filepath, 'w') as f_det: # Use different file var
+            for s_idx in range(shots):
+                f_det.write("".join(map(str, dets[s_idx, :])) + "\n")
