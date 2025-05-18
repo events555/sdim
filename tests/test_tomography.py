@@ -31,7 +31,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
         shot_measurements = []
 
         for qudit_index in range(num_qudits):
-            measurement_result = measurements[qudit_index][shot_index]
+            measurement_result = measurements[shot_index][qudit_index]
             shot_measurements.append(measurement_result)
 
         key = create_key(shot_measurements, dimension)
