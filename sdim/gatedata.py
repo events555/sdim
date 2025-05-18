@@ -68,6 +68,8 @@ def _hadamard_gates():
         "H_INV": {"arg_count": 1, "aliases": ["H_INV", "R_INV", "DFT_INV", "F_INV", "H_DAG", "R_DAG", "DFT_DAG", "F_DAG"], "inverse": "H"},
         "P": {"arg_count": 1, "aliases": ["PHASE", "S"], "inverse": "P_INV"},
         "P_INV": {"arg_count": 1, "aliases": ["PHASE_INV", "S_INV", "S_DAG"], "inverse": "P"},
+        "MULTIPLY": {"arg_count": 1, "aliases": ["MULTIPLY", "MUL"], "inverse": "MULTIPLY_INV"},
+        "MULTIPLY_INV": {"arg_count": 1, "aliases": ["MULTIPLY_INV", "MUL_INV", "MULTIPLY_DAG", "MUL_DAG"], "inverse": "MULTIPLY"},
     }
 def _controlled_gates():
     return {

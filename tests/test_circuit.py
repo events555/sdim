@@ -22,43 +22,48 @@ def test_circuit_broadcasting():
     assert circuit.operations[5] == CircuitInstruction("X", 0)  
 
 def test_build_ir():
+
     circuit = Circuit(3, 2)
     circuit.append("H", [0, 1])
     circuit.append("CNOT", 0, [1, 2])
     circuit.append("DEPOLARIZE1", 0, args=1)
     circuit.append("DEPOLARIZE2", 0, 1, args=1)
+
     ir = circuit._build_ir()
     noise1, noise2, erased, measurement = circuit._build_noise(shots=1)
+
+    NO_TARGET      = np.iinfo(np.int64).max
+    had_id         = CircuitInstruction("H",0).gate_type
+    cnot_id        = CircuitInstruction("CNOT", [0, 1]).gate_type
+    depol1_id      = gate_name_to_id("DEPOLARIZE1")
+    depol2_id      = gate_name_to_id("DEPOLARIZE2")
+
+    exp = np.empty(6, dtype=ir.dtype)
+    exp[0] = (had_id,    0,  NO_TARGET, np.nan)
+    exp[1] = (had_id,    1,  NO_TARGET, np.nan)
+    exp[2] = (cnot_id,   0,          1, np.nan)
+    exp[3] = (cnot_id,   0,          2, np.nan)
+    exp[4] = (depol1_id,    0,  NO_TARGET, 1.0)
+    exp[5] = (depol2_id,    0,          1, 1.0)
+
+    assert np.array_equal(ir[['gate_id','qudit_index','target_index']],
+                          exp[['gate_id','qudit_index','target_index']]), \
+           "gate ids / targets differ"
+
+    arg0 = ir['arg0']
+    assert np.all(np.isnan(arg0[:4])),            f"Expected nan for no-arg gates, got {arg0[:4]}"
+    assert np.allclose(arg0[4:], [1.0, 1.0]),       f"Expected 1.0 for DEPOLARIZE args, got {arg0[4:]}"
+
+
+
+    assert noise1.shape == (1, 1, 2)
+    assert np.any(noise1[0, 0] != 0), "DEPOLARIZE1 noise should be non-zero"
+
+    assert noise2.shape == (1, 1, 4)
+    n2 = noise2[0, 0]
+    assert np.any(n2[:2] != 0) or np.any(n2[2:] != 0), \
+           "DEPOLARIZE2 noise should affect at least one qudit"
     
-    hadamard_id = CircuitInstruction("H", 0).gate_type
-    cnot_id = CircuitInstruction("CNOT", [0, 1]).gate_type
-    depolarize1_id = gate_name_to_id("DEPOLARIZE1")
-    depolarize2_id = gate_name_to_id("DEPOLARIZE2")
-    NO_TARGET = np.iinfo(np.int64).max
-    expected_ir = np.array([
-        [hadamard_id, 0, NO_TARGET],
-        [hadamard_id, 1, NO_TARGET],
-        [cnot_id, 0, 1],
-        [cnot_id, 0, 2],
-        [depolarize1_id, 0, NO_TARGET],
-        [depolarize2_id, 0, 1]
-    ], dtype=np.int64)
-    
-    ir_plain = ir.view(np.int64).reshape(-1, 3)
-    assert np.array_equal(ir_plain, expected_ir), "IR instructions do not match expected values."
-
-    assert noise1.shape == (1, 1, 2), f"Expected noise1 shape (1, 1, 2), got {noise1.shape}"
-    noise_depol1 = noise1[0, 0]  
-    assert np.any(noise_depol1 != 0), "DEPOLARIZE1 noise should be nonzero."
-
-
-    assert noise2.shape == (1, 1, 4), f"Expected noise2 shape (1, 1, 4), got {noise2.shape}"
-    noise_depol2 = noise2[0, 0]
-    first_qudit = noise_depol2[:2]
-    second_qudit = noise_depol2[2:]
-    assert (np.any(first_qudit != 0) or np.any(second_qudit != 0)), \
-        "DEPOLARIZE2 noise should have at least one non-identity operator."
-
 def test_reference_sample():
     circuit = Circuit(2, 2)
     circuit.append("X", 0)

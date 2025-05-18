@@ -48,6 +48,8 @@ class PauliFrameSimulator:
             gate_name_to_id("CZ"): self._op_CZ,
             gate_name_to_id("CZ_INV"): self._op_CZ_INV,
             gate_name_to_id("SWAP"): self._op_SWAP,
+            gate_name_to_id("MULTIPLY"): self._op_MUL,
+            gate_name_to_id("MULTIPLY_INV"): self._op_MUL,
         }
 
     # qi is the primary/control qudit index, ti is the target qudit index (or None)
@@ -88,6 +90,9 @@ class PauliFrameSimulator:
         x_frame[ti] = tmp
         tmp = z_frame[qi].copy()
         z_frame[qi] = z_frame[ti]; z_frame[ti] = tmp
+    def _op_MUL(self, x, z, qi, ti, a, a_inv):
+        x[qi] = (a      * x[qi]) % self.dimension
+        z[qi] = (a_inv  * z[qi]) % self.dimension
 
     def run_simulation_for_raw_measurements(
         self,
@@ -132,6 +137,7 @@ class PauliFrameSimulator:
             gate_id = inst['gate_id']
             q_idx = inst['qudit_index'] 
             t_idx = inst['target_index']
+            arg0 = inst['arg0']
             gate_name = gate_id_to_name(gate_id)
 
             if gate_counter % 128 == 0: # Periodic modulo
@@ -204,7 +210,16 @@ class PauliFrameSimulator:
                             raise ValueError(f"Gate {gate_name} with quantum control q({q_idx}) cannot target measurement record rec({t_idx}).")
                         else: # A standard gate from map, but t_idx is rec. Invalid.
                             raise ValueError(f"Gate {gate_name} expects quantum target but got measurement record rec({t_idx}).")
-
+                    elif gate_name == "MULTIPLY":
+                        a = int(arg0)
+                        a_inv = pow(a, -1, self.dimension)
+                        self._op_MUL(x_frame, z_frame, q_idx, t_idx, a, a_inv)
+                        is_std_quantum_op = True
+                    elif gate_name == "MULTIPLY_INV":
+                        a = int(arg0)
+                        a_inv = pow(a, -1, self.dimension)
+                        self._op_MUL(x_frame, z_frame, q_idx, t_idx, a_inv, a)
+                        is_std_quantum_op = True
                     else:
                         self.id_to_pauli_frame_op_map[gate_id](x_frame, z_frame, q_idx, t_idx)
                         is_std_quantum_op = True

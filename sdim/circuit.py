@@ -1,7 +1,7 @@
 from .gatedata import *
 from .simulators.extended_tableau_simulator import ExtendedTableauSimulator
 from dataclasses import dataclass, field
-from typing import List, Union, Optional, Iterable, overload, TYPE_CHECKING 
+from typing import List, Optional, Iterable, overload, TYPE_CHECKING 
 import numpy as np
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class CircuitInstruction:
 
     def __init__(
         self,
-        gate_type_or_name: Union[str, int],
+        gate_type_or_name: str | int,
         targets: int | GateTarget | Iterable[int | GateTarget],
         args: Optional[float | Iterable[float]] = None,
     ):
@@ -120,7 +120,7 @@ class Circuit:
     
     def append(
         self,
-        name_or_op: Union[str, CircuitInstruction],
+        name_or_op: str | CircuitInstruction,
         targets: Optional[int 
                           | GateTarget 
                           | Iterable[int | GateTarget]] = None,
@@ -367,7 +367,7 @@ class Circuit:
 
         for instruction in self.operations:
             gate_id = instruction.gate_type
-                  
+            arg0 = float(instruction.args[0]) if instruction.args else np.nan
             if is_gate_two_qubit(gate_id):
                 # Process targets in pairs for two-qubit gates
                 for i in range(0, len(instruction.targets), 2):
@@ -378,17 +378,18 @@ class Circuit:
                         control_idx = control.value
                         target_idx = target.value
                         
-                        ir_list.append((gate_id, control_idx, target_idx))
+                        ir_list.append((gate_id, control_idx, target_idx, arg0))
                         
             else:
                 for target in instruction.targets:
                     qudit_idx = target.value
-                    ir_list.append((gate_id, qudit_idx, np.iinfo(np.int64).max))
+                    ir_list.append((gate_id, qudit_idx, np.iinfo(np.int64).max, arg0))
 
         ir_dtype = np.dtype([
             ('gate_id', np.int64),
             ('qudit_index', np.int64),
-            ('target_index', np.int64)
+            ('target_index', np.int64),
+            ('arg0', np.float64),
         ])
         ir_array = np.array(ir_list, dtype=ir_dtype)
 
@@ -662,6 +663,7 @@ class Circuit:
             gate_id = inst['gate_id']
             qudit_index = inst['qudit_index']
             target_index = inst['target_index']
+            arg0 = inst['arg0']
             gate_name = gate_id_to_name(gate_id)
 
             if gate_name == "HERALDED_ERASURE":
@@ -698,7 +700,7 @@ class Circuit:
                     elif gate_name == "CZ":
                         tableau.z(qudit_index, measurements[target_index])
                 else:
-                    tableau.apply_gate(gate_id, qudit_index, target_index)
+                    tableau.apply_gate(gate_id, qudit_index, target_index, arg0)
             gate_count += 1
             if gate_count % 128 == 0:
                 tableau.modulo()

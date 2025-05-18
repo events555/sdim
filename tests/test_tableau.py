@@ -169,3 +169,46 @@ def test_inverse():
     assert np.array_equal(tab1.phase_vector, np.array([0, 0]))
     assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab1.z_block, np.array([[1, 0], [0, 1]]))
+
+    tab2 = ExtendedTableauSimulator(num_qudits=2, dimension=5)
+    tab2.hadamard(0)
+    tab2.x(1)
+    tab2.cz(0, 1)
+    tab2.hadamard(0)
+    tab2.cnot(1,0)
+    tab2.multiply_inv(1, 2)
+    tab2.z_inv(1)
+    tab2.z(1)
+    tab2.multiply(1, 2)
+    tab2.cnot_inv(1,0)
+    tab2.hadamard_inv(0)
+    tab2.cz_inv(0, 1)
+    tab2.x_inv(1)
+    tab2.hadamard_inv(0)
+    tab2.modulo()
+    assert np.array_equal(tab2.phase_vector, np.array([0, 0]))
+    assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
+    assert np.array_equal(tab2.z_block, np.array([[1, 0], [0, 1]]))
+
+
+@pytest.mark.parametrize("d, a", [
+    (3, 2),     # qutrit, a = 2
+    (4, 3),     # even dimension, gcd(3,4)=1
+    (5, 3),     # prime 5
+    (6, 5),     # composite even 6
+])
+def test_multiply(d, a):
+    a_inv = pow(a, -1, d)
+
+    tab = ExtendedTableauSimulator(num_qudits=1, dimension=d)
+    z0, x0, p0 = tab.z_block.copy(), tab.x_block.copy(), tab.phase_vector.copy()
+
+    tab.multiply(0, a)
+    assert np.array_equal(tab.x_block, (a * x0) % d)
+    assert np.array_equal(tab.z_block, (a_inv * z0) % d)
+
+    # now undo it
+    tab.multiply(0, a_inv)              # multiply by a^{-1}
+    assert np.array_equal(tab.z_block, z0) # tableau back to identity
+    assert np.array_equal(tab.x_block, x0)
+    assert np.array_equal(tab.phase_vector % tab.order, p0 % tab.order)

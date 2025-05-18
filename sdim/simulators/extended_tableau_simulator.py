@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import math
 from dataclasses import dataclass
 from typing import Optional
 from sdim.simulators.tableau import Tableau
@@ -257,6 +258,35 @@ class ExtendedTableauSimulator(Tableau):
         """
         self.phase_vector -= self.x_block[qudit_index, :] * self.phase_order * multiplier
         self.destab_phase_vector -= self.destab_x_block[qudit_index, :] * self.phase_order * multiplier
+    
+    def multiply(self, q: int, a: int):
+        """Apply M_a on qudit q."""
+        if math.gcd(a, self.dimension) != 1:
+            raise ValueError("gcd(a,d) must be 1")
+        a_inv = pow(a, -1, self.dimension)
+        self._multiply_internal(q, a, a_inv)
+
+    def multiply_inv(self, q: int, a: int):
+        """Apply M_a† ≡ M_{a^{-1}} on qudit q."""
+        if math.gcd(a, self.dimension) != 1:
+            raise ValueError("gcd(a,d) must be 1")
+        a_inv = pow(a, -1, self.dimension)
+        self._multiply_internal(q, a_inv, a)
+
+    def _multiply_internal(self, q: int, a: int, a_inv: int):
+        d = self.dimension
+        self.x_block[q]        = (a     * self.x_block[q])        % d
+        self.destab_x_block[q] = (a     * self.destab_x_block[q]) % d
+        self.z_block[q]        = (a_inv * self.z_block[q])        % d
+        self.destab_z_block[q] = (a_inv * self.destab_z_block[q]) % d
+
+        if self.even:
+            kappa = ((a + a_inv) % d) // 2
+            delta = kappa * (self.x_block[q] * self.z_block[q])
+            self.phase_vector        = (self.phase_vector        + delta) % self.order
+            self.destab_phase_vector = (self.destab_phase_vector + delta) % self.order
+
+        self.modulo()
 
     def cnot(self, control: int, target: int):
         """
@@ -334,9 +364,13 @@ class ExtendedTableauSimulator(Tableau):
         self.destab_x_block[[qudit1, qudit2], :] = self.destab_x_block[[qudit2, qudit1], :].copy()
         self.destab_z_block[[qudit1, qudit2], :] = self.destab_z_block[[qudit2, qudit1], :].copy()
 
-    def apply_gate(self, gate_id: int, qudit_idx: int, target_idx: int):
+    def apply_gate(self, gate_id: int, qudit_idx: int, target_idx: int, arg0: Optional[int | float] = None):
         if is_gate_noisy(gate_id):
             return
+        if arg0 is None or (isinstance(arg0, float) and math.isnan(arg0)):
+            power = 1
+        else:
+            power = int(arg0) % self.dimension
 
         gate_name = gate_id_to_name(gate_id)
         gate_operations = {
@@ -344,15 +378,17 @@ class ExtendedTableauSimulator(Tableau):
             "H_INV": lambda: self.hadamard_inv(qudit_idx),
             "P": lambda: self.phase(qudit_idx),
             "P_INV": lambda: self.phase_inv(qudit_idx),
-            "X": lambda: self.x(qudit_idx),
-            "X_INV": lambda: self.x_inv(qudit_idx),
-            "Z": lambda: self.z(qudit_idx),
-            "Z_INV": lambda: self.z_inv(qudit_idx),
+            "X": lambda: self.x(qudit_idx, power),
+            "X_INV": lambda: self.x_inv(qudit_idx, power),
+            "Z": lambda: self.z(qudit_idx, power),
+            "Z_INV": lambda: self.z_inv(qudit_idx, power),
             "CNOT": lambda: self.cnot(qudit_idx, target_idx),
             "CNOT_INV": lambda: self.cnot_inv(qudit_idx, target_idx),
             "CZ": lambda: self.cz(qudit_idx, target_idx),
             "CZ_INV": lambda: self.cz_inv(qudit_idx, target_idx),
             "SWAP": lambda: self.swap(qudit_idx, target_idx),
+            "MULTIPLY": lambda: self.multiply(qudit_idx, power),
+            "MULTIPLY_INV": lambda: self.multiply_inv(qudit_idx, power),
         }
         try:
             gate_operations[gate_name]()
