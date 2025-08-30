@@ -27,6 +27,7 @@
 
 ## Planned
 - [ ] Gate fusion (compilation)
+- [ ] Update DOCS website
 
 ## Not Planned (Future Ideas)
 

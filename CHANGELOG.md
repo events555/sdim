@@ -105,4 +105,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove `GateData` class and replaced by `GATE_DATA` dictionary
 - Remove `MeasurementResult` class
 - Remove ability to print out individual steps of `Tableau` simulation
-- Remove `WeylTableau` for composite dimensions (expected to return eventually)
+- **Remove `WeylTableau` for composite dimensions (expected to return eventually)**
