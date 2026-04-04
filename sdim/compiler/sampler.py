@@ -314,8 +314,8 @@ class CompiledDetectorSampler:
                     )
 
         if process_obs:  # obs_out will be defined or empty here
-            return dets_out, obs_out  # type: ignore
-        return dets_out  # type: ignore
+            return dets_out, obs_out
+        return dets_out
 
     def sample_write(
         self,
