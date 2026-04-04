@@ -1,0 +1,15 @@
+[package]
+name = "sdim-py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_sdim_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+sdim-core = { path = "../sdim-core" }
+modularsnf = "0.4"
+pyo3 = { version = "0.24", features = ["extension-module"] }
+numpy = "0.24"
+ndarray = "0.16"

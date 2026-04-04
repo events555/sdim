@@ -15,10 +15,20 @@ from ..gates.registry import gate_id_to_name, is_gate_noisy
 
 
 def _snf_mod(matrix: list[list[int]], d: int):
-    """Lazy-import wrapper around modularsnf."""
-    from modularsnf import smith_normal_form_mod
+    """Lazy-import wrapper around modularsnf.
 
-    return smith_normal_form_mod(matrix, d)
+    Tries the Python modularsnf package first, then falls back to
+    calling the Rust crate via _sdim_rs if available.
+    """
+    try:
+        from modularsnf import smith_normal_form_mod
+        return smith_normal_form_mod(matrix, d)
+    except ImportError:
+        pass
+
+    # Fallback: use the Rust crate via our compiled extension
+    from .._sdim_rs import snf_mod as _rust_snf_mod
+    return _rust_snf_mod(matrix, d)
 
 
 class TableauSimulator:

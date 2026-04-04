@@ -1,0 +1,9 @@
+[package]
+name = "sdim-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+modularsnf = "0.4"
+ndarray = "0.16"
+rand = "0.8"

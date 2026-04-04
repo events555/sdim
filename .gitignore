@@ -17,6 +17,11 @@
 !.github/
 !.github/**
 
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+
 !pyproject.toml
 !uv.lock
 !README.md
@@ -26,9 +31,16 @@
 !CITATION.cff
 !Justfile
 
+!.gitignore
+
+# Rust build artifacts
+target/
+crates/*/target/
+
 circuits/random*.chp
 circuits/failed*.chp
 circuits/test*.chp
 **/__pycache__/
 **/*.py[cod]
 **/*.egg-info/
+**/*.so

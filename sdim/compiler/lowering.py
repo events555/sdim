@@ -52,7 +52,35 @@ def reference_sample(
     num_qudits: int,
     dimension: int,
 ) -> np.ndarray:
-    """Run a noiseless tableau simulation over the IR to produce reference measurements."""
+    """Run a noiseless tableau simulation over the IR to produce reference measurements.
+
+    Attempts to use the Rust backend (_sdim_rs) for performance.
+    Falls back to the Python TableauSimulator if the extension is unavailable.
+    """
+    try:
+        from .._sdim_rs import run_ir as _rust_run_ir
+
+        arg0_raw = ir['arg0']
+        arg0_int = np.where(np.isnan(arg0_raw), -1, arg0_raw).astype(np.int64)
+        plain = np.column_stack([
+            ir['gate_id'].astype(np.int64),
+            ir['qudit_index'].astype(np.int64),
+            ir['target_index'].astype(np.int64),
+            arg0_int,
+        ])
+        return _rust_run_ir(plain, num_qudits, dimension)
+    except ImportError:
+        pass
+
+    return _reference_sample_python(ir, num_qudits, dimension)
+
+
+def _reference_sample_python(
+    ir: np.ndarray,
+    num_qudits: int,
+    dimension: int,
+) -> np.ndarray:
+    """Pure-Python fallback for reference_sample."""
     from ..simulators.tableau_simulator import TableauSimulator
 
     tableau = TableauSimulator(num_qudits, dimension)

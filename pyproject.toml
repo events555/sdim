@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "sdim"
@@ -16,12 +16,12 @@ authors = [
 keywords = ["quantum computing", "Clifford simulator", "qudits"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
 dependencies = [
     "numpy>=1.25.0",
-    "modularsnf",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +32,11 @@ interop = ["cirq"]
 Homepage = "https://events555.github.io/sdim/sdim.html"
 Repository = "https://github.com/events555/sdim"
 Documentation = "https://events555.github.io/sdim/sdim.html"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "sdim._sdim_rs"
+manifest-path = "crates/sdim-py/Cargo.toml"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
