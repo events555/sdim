@@ -1,29 +1,29 @@
 import pytest
 import numpy as np
-from sdim import ExtendedTableauSimulator
+from sdim import TableauSimulator
 
 
 def test_hadamard():
-    tab1 = ExtendedTableauSimulator()
+    tab1 = TableauSimulator()
     tab1.hadamard(0)
     tab1.modulo()
     assert np.array_equal(tab1.x_block, np.array([[1]]))
     assert np.array_equal(tab1.z_block, np.array([[0]]))
 
-    tab2 = ExtendedTableauSimulator(num_qudits=2)
+    tab2 = TableauSimulator(num_qudits=2)
     tab2.hadamard(0)
     tab2.modulo()
     assert np.array_equal(tab2.x_block, np.array([[1, 0], [0, 0]]))
     assert np.array_equal(tab2.z_block, np.array([[0, 0], [0, 1]]))
     
-    tab3 = ExtendedTableauSimulator(num_qudits=2)
+    tab3 = TableauSimulator(num_qudits=2)
     tab3.hadamard(0)
     tab3.hadamard(1)
     tab3.modulo()
     assert np.array_equal(tab3.x_block, np.array([[1, 0], [0, 1]]))
     assert np.array_equal(tab3.z_block, np.array([[0, 0], [0, 0]]))
 
-    tab4 = ExtendedTableauSimulator()
+    tab4 = TableauSimulator()
     tab4.hadamard(0)
     tab4.hadamard_inv(0)
     tab4.modulo()
@@ -31,7 +31,7 @@ def test_hadamard():
     assert np.array_equal(tab4.z_block, np.array([[1]]))
 
 def test_phase():
-    tab1 = ExtendedTableauSimulator()
+    tab1 = TableauSimulator()
     tab1.hadamard(0)
     tab1.phase(0)
     tab1.phase(0)
@@ -42,14 +42,14 @@ def test_phase():
     assert np.array_equal(tab1.z_block, np.array([[1]]))
 
 def test_pauli():
-    tab1 = ExtendedTableauSimulator()
+    tab1 = TableauSimulator()
     tab1.x(0)
     tab1.modulo()
     assert np.array_equal(tab1.phase_vector, np.array([2]))
     assert np.array_equal(tab1.x_block, np.array([[0]]))
     assert np.array_equal(tab1.z_block, np.array([[1]]))
 
-    tab2 = ExtendedTableauSimulator()
+    tab2 = TableauSimulator()
     tab2.x(0)
     tab2.x_inv(0)
     tab2.modulo()
@@ -57,14 +57,14 @@ def test_pauli():
     assert np.array_equal(tab2.x_block, np.array([[0]]))
     assert np.array_equal(tab2.z_block, np.array([[1]]))
 
-    tab3 = ExtendedTableauSimulator(dimension=3)
+    tab3 = TableauSimulator(dimension=3)
     tab3.x(0)
     tab3.modulo()
     assert np.array_equal(tab3.phase_vector, np.array([2]))
     assert np.array_equal(tab3.x_block, np.array([[0]]))
     assert np.array_equal(tab3.z_block, np.array([[1]]))
 
-    tab4 = ExtendedTableauSimulator()
+    tab4 = TableauSimulator()
     tab4.hadamard(0)
     tab4.z(0)
     tab4.modulo()
@@ -72,7 +72,7 @@ def test_pauli():
     assert np.array_equal(tab4.x_block, np.array([[1]]))
     assert np.array_equal(tab4.z_block, np.array([[0]]))
 
-    tab5 = ExtendedTableauSimulator(dimension=3)
+    tab5 = TableauSimulator(dimension=3)
     tab5.hadamard(0)
     tab5.z(0)
     tab5.modulo()
@@ -80,7 +80,7 @@ def test_pauli():
     assert np.array_equal(tab5.x_block, np.array([[2]]))
     assert np.array_equal(tab5.z_block, np.array([[0]]))
 
-    tab6 = ExtendedTableauSimulator()
+    tab6 = TableauSimulator()
     tab6.hadamard(0)
     tab6.z(0)
     tab6.z_inv(0)
@@ -90,14 +90,14 @@ def test_pauli():
     assert np.array_equal(tab6.z_block, np.array([[0]]))
 
 def test_cnot():
-    tab1 = ExtendedTableauSimulator(num_qudits=2)
+    tab1 = TableauSimulator(num_qudits=2)
     tab1.x(0)
     tab1.cnot(0, 1)
     tab1.modulo()
     assert np.array_equal(tab1.phase_vector, np.array([2, 0]))
     assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab1.z_block, np.array([[1, 1], [0, 1]]))
-    tab2 = ExtendedTableauSimulator(num_qudits=2, dimension=3)
+    tab2 = TableauSimulator(num_qudits=2, dimension=3)
     tab2.x(0)
     tab2.x(0)
     tab2.cnot(0, 1)
@@ -107,14 +107,14 @@ def test_cnot():
     assert np.array_equal(tab2.z_block, np.array([[1, 2], [0, 1]]))
 
 def test_swap():
-    tab1 = ExtendedTableauSimulator(num_qudits=2)
+    tab1 = TableauSimulator(num_qudits=2)
     tab1.x(0)
     tab1.swap(0, 1)
     tab1.modulo()
     assert np.array_equal(tab1.phase_vector, np.array([2, 0]))
     assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab1.z_block, np.array([[0, 1], [1, 0]]))
-    tab2 = ExtendedTableauSimulator(num_qudits=2, dimension=3)
+    tab2 = TableauSimulator(num_qudits=2, dimension=3)
     tab2.x(0)
     tab2.x(0)
     tab2.swap(0, 1)
@@ -122,7 +122,7 @@ def test_swap():
     assert np.array_equal(tab2.phase_vector, np.array([1, 0]))
     assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab2.z_block, np.array([[0, 1], [1, 0]]))
-    tab3 = ExtendedTableauSimulator(num_qudits=2)
+    tab3 = TableauSimulator(num_qudits=2)
     tab3.x(0)
     tab3.swap(0, 1)
     tab3.swap(0, 1)
@@ -132,7 +132,7 @@ def test_swap():
     assert np.array_equal(tab3.z_block, np.array([[1, 0], [0, 1]]))
 
 def test_cz():
-    tab1 = ExtendedTableauSimulator(num_qudits=2)
+    tab1 = TableauSimulator(num_qudits=2)
     tab1.hadamard(0)
     tab1.x(1)
     tab1.cz(0, 1)
@@ -141,7 +141,7 @@ def test_cz():
     assert np.array_equal(tab1.phase_vector, np.array([0, 2]))
     assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab1.z_block, np.array([[1, 0], [1, 1]]))
-    tab2 = ExtendedTableauSimulator(num_qudits=2, dimension=3)
+    tab2 = TableauSimulator(num_qudits=2, dimension=3)
     tab2.hadamard(0)
     tab2.x(1)
     tab2.cz(0, 1)
@@ -152,7 +152,7 @@ def test_cz():
     assert np.array_equal(tab2.z_block, np.array([[1, 0], [2, 1]]))
 
 def test_inverse():
-    tab1 = ExtendedTableauSimulator(num_qudits=2)
+    tab1 = TableauSimulator(num_qudits=2)
     tab1.hadamard(0)
     tab1.x(1)
     tab1.cz(0, 1)
@@ -170,7 +170,7 @@ def test_inverse():
     assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
     assert np.array_equal(tab1.z_block, np.array([[1, 0], [0, 1]]))
 
-    tab2 = ExtendedTableauSimulator(num_qudits=2, dimension=5)
+    tab2 = TableauSimulator(num_qudits=2, dimension=5)
     tab2.hadamard(0)
     tab2.x(1)
     tab2.cz(0, 1)
@@ -200,7 +200,7 @@ def test_inverse():
 def test_multiply(d, a):
     a_inv = pow(a, -1, d)
 
-    tab = ExtendedTableauSimulator(num_qudits=1, dimension=d)
+    tab = TableauSimulator(num_qudits=1, dimension=d)
     z0, x0, p0 = tab.z_block.copy(), tab.x_block.copy(), tab.phase_vector.copy()
 
     tab.multiply(0, a)

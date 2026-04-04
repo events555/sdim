@@ -72,13 +72,16 @@ Internal modules providing core functionality:
 from .circuit import Circuit
 from .sampler import CompiledMeasurementSampler, CompiledDetectorSampler
 
-# Circuit I/O and generation
-from .circuit_io import (
-    read_circuit,
-    write_circuit,
-    circuit_to_cirq_circuit,
-    cirq_statevector_from_circuit
-)
+# Circuit I/O (cirq interop is lazy — requires sdim[interop])
+from .circuit_io import read_circuit, write_circuit
+
+def circuit_to_cirq_circuit(*args, **kwargs):
+    from .circuit_io import circuit_to_cirq_circuit as _f
+    return _f(*args, **kwargs)
+
+def cirq_statevector_from_circuit(*args, **kwargs):
+    from .circuit_io import cirq_statevector_from_circuit as _f
+    return _f(*args, **kwargs)
 from .random_circuit import (
     generate_random_clifford_circuit,
     generate_and_write_random_circuit
@@ -99,8 +102,7 @@ from .gatedata import (
     is_not_a_gate
 )
 
-from .simulators.tableau import Tableau
-from .simulators.extended_tableau_simulator import ExtendedTableauSimulator
+from .simulators.tableau_simulator import TableauSimulator
 
 
 # --- Module-level target creation functions (like stim.target_xxx) ---
@@ -216,8 +218,7 @@ __all__ = [
     "is_not_a_gate",
 
     # Tableau (for advanced users or if they need direct access)
-    "Tableau",
-    "ExtendedTableauSimulator",
+    "TableauSimulator",
 
     # Potentially other high-level functions or classes you add
     # "Program", # If you re-introduce or complete the Program class

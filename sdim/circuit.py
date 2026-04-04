@@ -1,5 +1,5 @@
 from .gatedata import *
-from .simulators.extended_tableau_simulator import ExtendedTableauSimulator
+from .simulators.tableau_simulator import TableauSimulator
 from dataclasses import dataclass, field
 from typing import List, Optional, Iterable, overload, TYPE_CHECKING 
 import numpy as np
@@ -656,7 +656,7 @@ class Circuit:
         """
         if ir is None:
             ir = self._build_ir()
-        tableau = ExtendedTableauSimulator(self.num_qudits, self.dimension)
+        tableau = TableauSimulator(self.num_qudits, self.dimension)
         measurements  = []
         gate_count = 0
         for inst in ir:
