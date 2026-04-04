@@ -45,3 +45,8 @@ extend-exclude = ["examples/"]
 
 [tool.ruff.lint]
 select = ["F", "E9"]
+
+[dependency-groups]
+dev = [
+    "pytest-benchmark>=5.2.3",
+]

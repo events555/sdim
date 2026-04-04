@@ -14,6 +14,10 @@ test:
 test-all:
     uv run pytest tests/ -x
 
+# Run benchmarks (saves JSON baseline for Rust comparison)
+bench:
+    uv run pytest benchmarks/ --benchmark-only --benchmark-save=baseline -q
+
 # Compile typst documents to PDF in docs/
 pdf:
     for f in docs/typst/*.typ; do typst compile "$f" "docs/pdf/$(basename "${f%.typ}.pdf")"; done
