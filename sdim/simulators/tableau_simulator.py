@@ -1,10 +1,12 @@
+"""Qudit stabilizer tableau over the Weyl-Heisenberg group.
+
+Reference: de Beaudrap, QIC 13.1-2 (2013), arXiv:1102.3354v4.
+See docs/markdown/algorithm.md for the full protocol.
+"""
+
 from __future__ import annotations
 
 import math
-import random
-from dataclasses import dataclass
-from functools import cached_property
-from math import gcd
 from typing import Optional
 
 import numpy as np
@@ -12,367 +14,398 @@ import numpy as np
 from ..gatedata import gate_id_to_name, is_gate_noisy
 
 
-@dataclass
+def _snf_mod(matrix: list[list[int]], d: int):
+    """Lazy-import wrapper around modularsnf."""
+    from modularsnf import smith_normal_form_mod
+
+    return smith_normal_form_mod(matrix, d)
+
+
 class TableauSimulator:
-    """
-    Represents a stabilizer tableau simulator for quantum circuit simulation.
+    """Stabilizer tableau for qudits of dimension d.
 
-    This class combines stabilizer and destabilizer information for efficient
-    simulation of Clifford operations on qudits of prime dimension.
-
-    This follows as a generalization to prime dimensions from
-    "Improved Simulation of Stabilizer Circuits" by Aaronson and Gottesman.
-
-    **Note that we are assuming conjugation of Z all the way to the front of the Pauli string**.
+    Generators are stored in rows ``0 .. l-1``.  Arrays are
+    pre-allocated to ``2n`` rows (the maximum after composite-d
+    measurements); only the first ``l`` rows are active.
 
     Attributes:
-        num_qudits (int): The number of qudits in the system.
-        dimension (int): The dimension of each qudit (default is 2 for qubits).
-        phase_vector (np.ndarray): The phase vector of the stabilizer tableau.
-        z_block (np.ndarray): The Z block of the stabilizer tableau.
-        x_block (np.ndarray): The X block of the stabilizer tableau.
-        destab_phase_vector (np.ndarray): The phase vector for destabilizers.
-        destab_z_block (np.ndarray): The Z block for destabilizers.
-        destab_x_block (np.ndarray): The X block for destabilizers.
+        n: Number of qudits.
+        d: Local dimension.
+        l: Current number of generators (<= 2n).
+        X: ``(2n, n)`` array, entries mod d.
+        Z: ``(2n, n)`` array, entries mod d.
+        tau_exp: ``(2n,)`` array, entries mod 2d.
     """
 
-    num_qudits: int = 1
-    dimension: int = 2
-    phase_vector: Optional[np.ndarray] = None
-    z_block: Optional[np.ndarray] = None
-    x_block: Optional[np.ndarray] = None
-    destab_phase_vector: Optional[np.ndarray] = None
-    destab_z_block: Optional[np.ndarray] = None
-    destab_x_block: Optional[np.ndarray] = None
+    __slots__ = ("n", "d", "l", "X", "Z", "tau_exp")
 
-    def __post_init__(self):
-        if self.phase_vector is None:
-            self.phase_vector = np.zeros(self.num_qudits, dtype=np.int64)
-        if self.z_block is None:
-            self.z_block = np.eye(self.num_qudits, dtype=np.int64)
-        if self.x_block is None:
-            self.x_block = np.zeros((self.num_qudits, self.num_qudits), dtype=np.int64)
-        if self.destab_phase_vector is None:
-            self.destab_phase_vector = np.zeros(self.num_qudits, dtype=np.int64)
-        if self.destab_z_block is None:
-            self.destab_z_block = np.zeros((self.num_qudits, self.num_qudits), dtype=np.int64)
-        if self.destab_x_block is None:
-            self.destab_x_block = np.eye(self.num_qudits, dtype=np.int64)
-
-    # ── Properties ──────────────────────────────────────────────────────
-
-    @cached_property
-    def coprime_order(self) -> set:
-        return {i for i in range(1, self.order) if gcd(i, self.order) == 1}
-
-    @cached_property
-    def coprime_dimension(self) -> set:
-        return {i for i in range(1, self.dimension) if gcd(i, self.dimension) == 1}
-
-    @cached_property
-    def prime(self) -> bool:
-        return not any(self.dimension % i == 0 for i in range(2, self.dimension))
+    def __init__(self, n: int = 1, d: int = 2) -> None:
+        self.n = n
+        self.d = d
+        self.l = n
+        self.X = np.zeros((2 * n, n), dtype=np.int64)
+        self.Z = np.zeros((2 * n, n), dtype=np.int64)
+        self.tau_exp = np.zeros(2 * n, dtype=np.int64)
+        np.fill_diagonal(self.Z[:n], 1)
 
     @property
     def even(self) -> bool:
-        return self.dimension % 2 == 0
+        return self.d % 2 == 0
 
-    @property
-    def order(self) -> int:
-        return self.dimension * 2 if self.even else self.dimension
+    def modulo(self) -> None:
+        self.X %= self.d
+        self.Z %= self.d
+        self.tau_exp %= 2 * self.d
 
-    @property
-    def phase_order(self) -> int:
-        return 2 if self.even else 1
+    def _product(
+        self,
+        X1: np.ndarray,
+        Z1: np.ndarray,
+        t1: int,
+        X2: np.ndarray,
+        Z2: np.ndarray,
+        t2: int,
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        """Ordered product of two Weyl vectors."""
+        d, D = self.d, 2 * self.d
+        return (
+            (X1 + X2) % d,
+            (Z1 + Z2) % d,
+            (t1 + t2 + 2 * int(np.sum(Z1 * X2))) % D,
+        )
 
-    @property
-    def pauli_size(self) -> int:
-        return 2 * self.num_qudits + 1
+    def _power(
+        self,
+        base_X: np.ndarray,
+        base_Z: np.ndarray,
+        base_t: int,
+        c: int,
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        """Closed-form power rule: ``(tau^{-t} Z^z X^x)^c``."""
+        d, D = self.d, 2 * self.d
+        return (
+            (c * base_X) % d,
+            (c * base_Z) % d,
+            (c * base_t + c * (c - 1) * int(np.sum(base_Z * base_X))) % D,
+        )
 
-    @property
-    def num_generators(self) -> int:
-        return self.z_block.shape[1]
+    def _row_add_mult(self, k: int, p: int, m: int) -> None:
+        """Row k <- row k * (row p)^m."""
+        if m == 0:
+            return
+        pX, pZ, pt = self._power(
+            self.X[p],
+            self.Z[p],
+            int(self.tau_exp[p]),
+            m,
+        )
+        self.X[k], self.Z[k], self.tau_exp[k] = self._product(
+            self.X[k],
+            self.Z[k],
+            int(self.tau_exp[k]),
+            pX,
+            pZ,
+            pt,
+        )
 
-    @property
-    def stab_tableau(self) -> np.ndarray:
-        return np.vstack((self.phase_vector, self.z_block, self.x_block))
+    def _apply_column_transform(self, V: np.ndarray) -> None:
+        """Apply unimodular V to generator rows ``0 .. l-1``."""
+        d, D = self.d, 2 * self.d
+        l = self.l
+        V = np.asarray(V, dtype=np.int64)
 
-    @property
-    def destab_tableau(self) -> np.ndarray:
-        return np.vstack((self.destab_phase_vector, self.destab_z_block, self.destab_x_block))
+        Z_old = self.Z[:l].copy()
+        X_old = self.X[:l].copy()
+        tau_old = self.tau_exp[:l].copy()
 
-    @property
-    def tableau(self) -> np.ndarray:
-        return np.hstack((self.stab_tableau, self.destab_tableau))
+        G = Z_old @ X_old.T
 
-    # ── Tableau utilities ───────────────────────────────────────────────
+        self.Z[:l] = (V.T @ Z_old) % d
+        self.X[:l] = (V.T @ X_old) % d
 
-    def modulo(self):
-        self.z_block %= self.dimension
-        self.x_block %= self.dimension
-        self.phase_vector %= self.order
-        self.destab_z_block %= self.dimension
-        self.destab_x_block %= self.dimension
-        self.destab_phase_vector %= self.order
+        t1 = V.T @ tau_old
+        t2 = (V * (V - 1)).T @ np.diag(G)
+        t3 = 2 * np.diag(V.T @ np.triu(G, 1) @ V)
+        self.tau_exp[:l] = (t1 + t2 + t3) % D
 
-    def _print_labeled_matrix(self, label: str, matrix: np.ndarray):
-        print(f"{label}:")
-        print(matrix)
+    def _rows(self) -> slice:
+        return slice(0, self.l)
 
-    def print_phase_vector(self):
-        self._print_labeled_matrix("Phase Vector", self.phase_vector)
+    def hadamard(self, q: int, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        x_old = self.X[r, q].copy()
+        z_old = self.Z[r, q].copy()
+        self.tau_exp[r] = (self.tau_exp[r] - 2 * z_old * x_old) % (2 * self.d)
+        self.X[r, q] = (-dir_ * z_old) % self.d
+        self.Z[r, q] = (dir_ * x_old) % self.d
 
-    def print_z_block(self):
-        self._print_labeled_matrix("Z Block", self.z_block)
-
-    def print_x_block(self):
-        self._print_labeled_matrix("X Block", self.x_block)
-
-    def print_destab_phase_vector(self):
-        self._print_labeled_matrix("Destabilizer Phase Vector", self.destab_phase_vector)
-
-    def print_destab_z_block(self):
-        self._print_labeled_matrix("Destabilizer Z Block", self.destab_z_block)
-
-    def print_destab_x_block(self):
-        self._print_labeled_matrix("Destabilizer X Block", self.destab_x_block)
-
-    def print_tableau(self):
-        self.print_phase_vector()
-        self.print_z_block()
-        self.print_x_block()
-        self.print_destab_phase_vector()
-        self.print_destab_z_block()
-        self.print_destab_x_block()
-
-    # ── Gate operations ─────────────────────────────────────────────────
-
-    def hadamard(self, qudit_index: int):
-        new_x = -self.z_block[qudit_index, :].copy()
-        new_z = self.x_block[qudit_index, :].copy()
-        self.x_block[qudit_index, :] = new_x
-        self.z_block[qudit_index, :] = new_z
-        self.phase_vector += self.phase_order * (self.x_block[qudit_index, :] * self.z_block[qudit_index, :])
-
-        new_destab_x = -self.destab_z_block[qudit_index, :].copy()
-        new_destab_z = self.destab_x_block[qudit_index, :].copy()
-        self.destab_x_block[qudit_index, :] = new_destab_x
-        self.destab_z_block[qudit_index, :] = new_destab_z
-        self.destab_phase_vector += self.phase_order * (self.destab_x_block[qudit_index, :] * self.destab_z_block[qudit_index, :])
-
-    def hadamard_inv(self, qudit_index: int):
-        new_x = self.z_block[qudit_index, :].copy()
-        new_z = -self.x_block[qudit_index, :].copy()
-        self.z_block[qudit_index, :] = new_z
-        self.x_block[qudit_index, :] = new_x
-        self.phase_vector += self.phase_order * (self.x_block[qudit_index, :] * self.z_block[qudit_index, :])
-
-        new_destab_x = self.destab_z_block[qudit_index, :].copy()
-        new_destab_z = -self.destab_x_block[qudit_index, :].copy()
-        self.destab_z_block[qudit_index, :] = new_destab_z
-        self.destab_x_block[qudit_index, :] = new_destab_x
-        self.destab_phase_vector += self.phase_order * (self.destab_x_block[qudit_index, :] * self.destab_z_block[qudit_index, :])
-
-    def phase(self, qudit_index: int):
+    def phase_gate(self, q: int, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        xj = self.X[r, q]
+        self.Z[r, q] = (self.Z[r, q] + dir_ * xj) % self.d
         if self.even:
-            self.phase_vector += self.x_block[qudit_index, :] ** 2
-            self.destab_phase_vector += self.destab_x_block[qudit_index, :] ** 2
+            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * xj)) % (2 * self.d)
         else:
-            self.phase_vector += self.x_block[qudit_index, :] * (self.x_block[qudit_index, :] - 1) // 2
-            self.destab_phase_vector += self.destab_x_block[qudit_index, :] * (self.destab_x_block[qudit_index, :] - 1) // 2
-        self.z_block[qudit_index, :] += self.x_block[qudit_index, :]
-        self.destab_z_block[qudit_index, :] += self.destab_x_block[qudit_index, :]
+            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * (xj + 1))) % (2 * self.d)
 
-    def phase_inv(self, qudit_index: int):
-        if self.even:
-            self.phase_vector -= self.x_block[qudit_index, :] ** 2
-            self.destab_phase_vector -= self.destab_x_block[qudit_index, :] ** 2
-        else:
-            self.phase_vector -= self.x_block[qudit_index, :] * (self.x_block[qudit_index, :] - 1) // 2
-            self.destab_phase_vector -= self.destab_x_block[qudit_index, :] * (self.destab_x_block[qudit_index, :] - 1) // 2
-        self.z_block[qudit_index, :] -= self.x_block[qudit_index, :]
-        self.destab_z_block[qudit_index, :] -= self.destab_x_block[qudit_index, :]
+    def pauli_x(self, q: int, power: int = 1, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        self.tau_exp[r] = (self.tau_exp[r] + dir_ * 2 * power * self.Z[r, q]) % (
+            2 * self.d
+        )
 
-    def x(self, qudit_index: int, multiplier: int = 1):
-        self.phase_vector -= self.z_block[qudit_index, :] * self.phase_order * multiplier
-        self.destab_phase_vector -= self.destab_z_block[qudit_index, :] * self.phase_order * multiplier
+    def pauli_z(self, q: int, power: int = 1, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        self.tau_exp[r] = (self.tau_exp[r] - dir_ * 2 * power * self.X[r, q]) % (
+            2 * self.d
+        )
 
-    def x_inv(self, qudit_index: int, multiplier: int = 1):
-        self.phase_vector += self.z_block[qudit_index, :] * self.phase_order * multiplier
-        self.destab_phase_vector += self.destab_z_block[qudit_index, :] * self.phase_order * multiplier
+    def cnot(self, c: int, t: int, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        self.X[r, t] = (self.X[r, t] + dir_ * self.X[r, c]) % self.d
+        self.Z[r, c] = (self.Z[r, c] - dir_ * self.Z[r, t]) % self.d
 
-    def z(self, qudit_index: int, multiplier: int = 1):
-        self.phase_vector += self.x_block[qudit_index, :] * self.phase_order * multiplier
-        self.destab_phase_vector += self.destab_x_block[qudit_index, :] * self.phase_order * multiplier
+    def cz(self, q1: int, q2: int, dagger: bool = False) -> None:
+        r = self._rows()
+        dir_ = -1 if dagger else 1
+        x1 = self.X[r, q1].copy()
+        x2 = self.X[r, q2].copy()
+        self.Z[r, q1] = (self.Z[r, q1] + dir_ * x2) % self.d
+        self.Z[r, q2] = (self.Z[r, q2] + dir_ * x1) % self.d
+        self.tau_exp[r] = (self.tau_exp[r] + 2 * dir_ * (x1 * x2)) % (2 * self.d)
 
-    def z_inv(self, qudit_index: int, multiplier: int = 1):
-        self.phase_vector -= self.x_block[qudit_index, :] * self.phase_order * multiplier
-        self.destab_phase_vector -= self.destab_x_block[qudit_index, :] * self.phase_order * multiplier
+    def swap(self, q1: int, q2: int) -> None:
+        if q1 != q2:
+            r = self._rows()
+            self.X[r, q1], self.X[r, q2] = (
+                self.X[r, q2].copy(),
+                self.X[r, q1].copy(),
+            )
+            self.Z[r, q1], self.Z[r, q2] = (
+                self.Z[r, q2].copy(),
+                self.Z[r, q1].copy(),
+            )
 
-    def multiply(self, q: int, a: int):
-        """Apply M_a on qudit q."""
-        if math.gcd(a, self.dimension) != 1:
-            raise ValueError("gcd(a,d) must be 1")
-        a_inv = pow(a, -1, self.dimension)
-        self._multiply_internal(q, a, a_inv)
+    def multiply(self, q: int, a: int, dagger: bool = False) -> None:
+        """Multiplier gate M_a on qudit q."""
+        if math.gcd(a, self.d) != 1:
+            raise ValueError("gcd(a, d) must be 1")
+        a_inv = pow(a, -1, self.d)
+        if dagger:
+            a, a_inv = a_inv, a
+        r = self._rows()
+        self.X[r, q] = (a * self.X[r, q]) % self.d
+        self.Z[r, q] = (a_inv * self.Z[r, q]) % self.d
 
-    def multiply_inv(self, q: int, a: int):
-        """Apply M_a† ≡ M_{a^{-1}} on qudit q."""
-        if math.gcd(a, self.dimension) != 1:
-            raise ValueError("gcd(a,d) must be 1")
-        a_inv = pow(a, -1, self.dimension)
-        self._multiply_internal(q, a_inv, a)
-
-    def _multiply_internal(self, q: int, a: int, a_inv: int):
-        d = self.dimension
-        self.x_block[q]        = (a     * self.x_block[q])        % d
-        self.destab_x_block[q] = (a     * self.destab_x_block[q]) % d
-        self.z_block[q]        = (a_inv * self.z_block[q])        % d
-        self.destab_z_block[q] = (a_inv * self.destab_z_block[q]) % d
-
-        if self.even:
-            kappa = ((a + a_inv) % d) // 2
-            delta = kappa * (self.x_block[q] * self.z_block[q])
-            self.phase_vector        = (self.phase_vector        + delta) % self.order
-            self.destab_phase_vector = (self.destab_phase_vector + delta) % self.order
-
-        self.modulo()
-
-    def cnot(self, control: int, target: int):
-        self.x_block[target, :] += self.x_block[control, :]
-        self.z_block[control, :] -= self.z_block[target, :]
-        self.destab_x_block[target, :] += self.destab_x_block[control, :]
-        self.destab_z_block[control, :] -= self.destab_z_block[target, :]
-
-    def cnot_inv(self, control: int, target: int):
-        self.x_block[target, :] -= self.x_block[control, :]
-        self.z_block[control, :] += self.z_block[target, :]
-        self.destab_x_block[target, :] -= self.destab_x_block[control, :]
-        self.destab_z_block[control, :] += self.destab_z_block[target, :]
-
-    def cz(self, qudit1: int, qudit2: int):
-        self.z_block[qudit1, :] += self.x_block[qudit2, :]
-        self.z_block[qudit2, :] += self.x_block[qudit1, :]
-        self.destab_z_block[qudit1, :] += self.destab_x_block[qudit2, :]
-        self.destab_z_block[qudit2, :] += self.destab_x_block[qudit1, :]
-        self.phase_vector += self.phase_order * (self.x_block[qudit1, :] * self.x_block[qudit2, :])
-        self.destab_phase_vector += self.phase_order * (self.destab_x_block[qudit1, :] * self.destab_x_block[qudit2, :])
-
-    def cz_inv(self, qudit1: int, qudit2: int):
-        self.z_block[qudit1, :] -= self.x_block[qudit2, :]
-        self.z_block[qudit2, :] -= self.x_block[qudit1, :]
-        self.destab_z_block[qudit1, :] -= self.destab_x_block[qudit2, :]
-        self.destab_z_block[qudit2, :] -= self.destab_x_block[qudit1, :]
-        self.phase_vector -= self.phase_order * (self.x_block[qudit1, :] * self.x_block[qudit2, :])
-        self.destab_phase_vector -= self.phase_order * (self.destab_x_block[qudit1, :] * self.destab_x_block[qudit2, :])
-
-    def swap(self, qudit1: int, qudit2: int):
-        self.x_block[[qudit1, qudit2], :] = self.x_block[[qudit2, qudit1], :].copy()
-        self.z_block[[qudit1, qudit2], :] = self.z_block[[qudit2, qudit1], :].copy()
-        self.destab_x_block[[qudit1, qudit2], :] = self.destab_x_block[[qudit2, qudit1], :].copy()
-        self.destab_z_block[[qudit1, qudit2], :] = self.destab_z_block[[qudit2, qudit1], :].copy()
-
-    def apply_gate(self, gate_id: int, qudit_idx: int, target_idx: int, arg0: Optional[int | float] = None):
+    def apply_gate(
+        self,
+        gate_id: int,
+        qudit_idx: int,
+        target_idx: int,
+        arg0: Optional[int | float] = None,
+    ) -> None:
         if is_gate_noisy(gate_id):
             return
         if arg0 is None or (isinstance(arg0, float) and math.isnan(arg0)):
             power = 1
         else:
-            power = int(arg0) % self.dimension
+            power = int(arg0) % self.d
 
-        gate_name = gate_id_to_name(gate_id)
-        gate_operations = {
-            "H": lambda: self.hadamard(qudit_idx),
-            "H_INV": lambda: self.hadamard_inv(qudit_idx),
-            "P": lambda: self.phase(qudit_idx),
-            "P_INV": lambda: self.phase_inv(qudit_idx),
-            "X": lambda: self.x(qudit_idx, power),
-            "X_INV": lambda: self.x_inv(qudit_idx, power),
-            "Z": lambda: self.z(qudit_idx, power),
-            "Z_INV": lambda: self.z_inv(qudit_idx, power),
-            "CNOT": lambda: self.cnot(qudit_idx, target_idx),
-            "CNOT_INV": lambda: self.cnot_inv(qudit_idx, target_idx),
-            "CZ": lambda: self.cz(qudit_idx, target_idx),
-            "CZ_INV": lambda: self.cz_inv(qudit_idx, target_idx),
-            "SWAP": lambda: self.swap(qudit_idx, target_idx),
-            "MULTIPLY": lambda: self.multiply(qudit_idx, power),
-            "MULTIPLY_INV": lambda: self.multiply_inv(qudit_idx, power),
-        }
-        try:
-            gate_operations[gate_name]()
-        except KeyError:
-            raise ValueError(f"Unknown gate: {gate_name}")
+        name = gate_id_to_name(gate_id)
+        match name:
+            case "H":
+                self.hadamard(qudit_idx)
+            case "H_INV":
+                self.hadamard(qudit_idx, dagger=True)
+            case "P":
+                self.phase_gate(qudit_idx)
+            case "P_INV":
+                self.phase_gate(qudit_idx, dagger=True)
+            case "X":
+                self.pauli_x(qudit_idx, power)
+            case "X_INV":
+                self.pauli_x(qudit_idx, power, dagger=True)
+            case "Z":
+                self.pauli_z(qudit_idx, power)
+            case "Z_INV":
+                self.pauli_z(qudit_idx, power, dagger=True)
+            case "CNOT":
+                self.cnot(qudit_idx, target_idx)
+            case "CNOT_INV":
+                self.cnot(qudit_idx, target_idx, dagger=True)
+            case "CZ":
+                self.cz(qudit_idx, target_idx)
+            case "CZ_INV":
+                self.cz(qudit_idx, target_idx, dagger=True)
+            case "SWAP":
+                self.swap(qudit_idx, target_idx)
+            case "MULTIPLY":
+                self.multiply(qudit_idx, power)
+            case "MULTIPLY_INV":
+                self.multiply(qudit_idx, power, dagger=True)
+            case _:
+                raise ValueError(f"Unknown gate: {name}")
 
-    # ── Measurement ─────────────────────────────────────────────────────
+    def measure(self, q: int) -> int:
+        """Measure qudit q in the Z basis. Returns outcome in [0, d)."""
+        a = np.zeros(self.n, dtype=np.int64)
+        b = np.zeros(self.n, dtype=np.int64)
+        a[q] = 1
+        return self.measure_pauli(a, b, 0)
 
-    def measure(self, qudit_index: int) -> int:
-        first_xpow = None
-        for i in range(self.num_qudits):
-            xpow = self.x_block[qudit_index, i] % self.dimension
-            if xpow > 0:
-                first_xpow = i
-                if xpow != 1:
-                    inverse = pow(int(xpow), -1, self.dimension)
-                    self.exponentiate(first_xpow, inverse)
-                break
-        self.x_block %= self.dimension
-        self.z_block %= self.dimension
-        self.phase_vector %= self.order
-        self.destab_x_block %= self.dimension
-        self.destab_z_block %= self.dimension
-        self.destab_phase_vector %= self.order
-        if first_xpow is not None:
-            return self._random_measurement(qudit_index, first_xpow)
-        return self._det_measurement(qudit_index)
+    def measure_pauli(
+        self,
+        a: np.ndarray,
+        b: np.ndarray,
+        delta: int,
+    ) -> int:
+        """Measure Pauli ``P = tau^{-delta} Z^a X^b``.
 
-    def _random_measurement(self, qudit_index: int, first_xpow: int) -> int:
-        for i in range(self.num_qudits):
-            if self.destab_x_block[qudit_index, i] != 0:
-                destab_factor = -self.destab_x_block[qudit_index, i] % self.dimension
-                commute_phase = np.dot(self.destab_z_block[:, i], self.x_block[:, first_xpow]*destab_factor)
-                commute_phase += np.dot(self.x_block[:, first_xpow], self.z_block[:, first_xpow]) * destab_factor*(destab_factor-1)//2 * self.phase_order
-                self.destab_x_block[:, i] = (self.destab_x_block[:, i] + self.x_block[:, first_xpow] * destab_factor) % self.dimension
-                self.destab_z_block[:, i] = (self.destab_z_block[:, i] + self.z_block[:, first_xpow] * destab_factor) % self.dimension
-                self.destab_phase_vector[i] = (self.destab_phase_vector[i] + self.phase_vector[first_xpow]*destab_factor + self.phase_order * commute_phase) % self.order
-            if self.x_block[qudit_index, i] != 0 and i != first_xpow:
-                stab_factor = -self.x_block[qudit_index, i] % self.dimension
-                commute_phase = np.dot(self.z_block[:, i], self.x_block[:, first_xpow]*stab_factor)
-                commute_phase += np.dot(self.x_block[:, first_xpow], self.z_block[:, first_xpow]) * stab_factor*(stab_factor-1)//2 * self.phase_order
-                self.x_block[:, i] = (self.x_block[:, i] + self.x_block[:, first_xpow] * stab_factor) % self.dimension
-                self.z_block[:, i] = (self.z_block[:, i] + self.z_block[:, first_xpow] * stab_factor) % self.dimension
-                self.phase_vector[i] = (self.phase_vector[i] + self.phase_vector[first_xpow]*stab_factor + self.phase_order * commute_phase) % self.order
+        Returns outcome h in ``[0, d)``.  Follows the unified
+        Steps 1-5 from algorithm.md (deterministic when eta = d).
+        """
+        n, d, D = self.n, self.d, 2 * self.d
+        l = self.l
 
-        self.destab_x_block[:, first_xpow] = self.x_block[:, first_xpow]
-        self.destab_z_block[:, first_xpow] = self.z_block[:, first_xpow]
-        self.destab_phase_vector[first_xpow] = self.phase_vector[first_xpow]
-        self.z_block[:, first_xpow] = 0
-        self.z_block[qudit_index, first_xpow] = 1
-        self.x_block[:, first_xpow] = 0
-        measurement_outcome = random.choice(range(self.dimension))
-        self.phase_vector[first_xpow] = (-measurement_outcome * self.phase_order) % self.order
-        return measurement_outcome
+        c = (a @ self.X[:l].T - b @ self.Z[:l].T) % d
+        eta = math.gcd(d, *c.tolist())
+        s = d // eta
 
-    def _det_measurement(self, qudit_index: int) -> int:
-        ancilla_x = np.zeros(self.num_qudits, dtype=np.int64)
-        ancilla_z = np.zeros(self.num_qudits, dtype=np.int64)
-        ancilla_phase = 0
-        for i in range(self.num_qudits):
-            factor = self.destab_x_block[qudit_index, i] % self.dimension
-            if factor != 0:
-                commute_phase = np.dot(ancilla_z, factor * self.x_block[:, i])
-                commute_phase += np.dot(self.x_block[:, i], self.z_block[:, i]) * factor*(factor-1)//2 * self.phase_order
-                ancilla_x += self.x_block[:, i] * factor
-                ancilla_z += self.z_block[:, i] * factor
-                ancilla_phase += (factor * self.phase_vector[i] + self.phase_order * commute_phase)
-        ancilla_x %= self.dimension
-        ancilla_z %= self.dimension
-        ancilla_phase %= self.order
-        measurement_outcome = (-ancilla_phase // self.phase_order) % self.dimension
-        return measurement_outcome
+        if eta < d:
+            _S, _U, V = _snf_mod(c.reshape(1, -1).tolist(), d)
+            self._apply_column_transform(np.array(V, dtype=np.int64))
 
-    def exponentiate(self, col: int, exponent: int):
-        self.phase_vector[col] *= exponent
-        self.phase_vector[col] += np.dot(self.x_block[:, col], self.z_block[:, col]) * exponent*(exponent-1)//2 * self.phase_order
-        self.x_block[:, col] *= exponent
-        self.z_block[:, col] *= exponent
-        self.phase_vector[col] %= self.order
+        t, f1 = self._eigenvalue_Ps(a, b, delta, s)
+        h = self._sample_outcome(t, s, eta)
+
+        if eta < d:
+            self._collapse(a, b, delta, h, s, f1)
+
+        return h
+
+    def _eigenvalue_Ps(
+        self,
+        a: np.ndarray,
+        b: np.ndarray,
+        delta: int,
+        s: int,
+    ) -> tuple[int, int]:
+        """Step 3: find the eigenvalue of P^s by decomposing it over
+        the current generators via direct linear solve.
+
+        Returns ``(t, f1)`` where ``2 s h ≡ t (mod D)`` gives the
+        measurement outcome, and ``f1`` is the first invariant factor
+        of the generator Weyl block (used in the collapse decision).
+        """
+        n, d, D = self.n, self.d, 2 * self.d
+        l = self.l
+
+        ps_Z = (s * a) % d
+        ps_X = (s * b) % d
+        ps_t = (s * delta + s * (s - 1) * int(np.sum(a * b))) % D
+
+        gen_Z = self.Z[:l].T
+        gen_X = self.X[:l].T
+        G = np.vstack([gen_Z, gen_X])
+        ps = np.concatenate([ps_Z, ps_X])
+
+        S_list, U_list, V_list = _snf_mod(G.tolist(), d)
+        S_np = np.array(S_list, dtype=np.int64)
+        U_np = np.array(U_list, dtype=np.int64)
+        V_np = np.array(V_list, dtype=np.int64)
+
+        f1 = int(S_np[0, 0]) if S_np.size else 1
+
+        rhs = (U_np @ ps) % d
+        y = np.zeros(l, dtype=np.int64)
+        for i in range(min(S_np.shape)):
+            dii = int(S_np[i, i]) % d
+            bi = int(rhs[i]) % d
+            if dii == 0:
+                continue
+            g = math.gcd(dii, d)
+            y[i] = (bi // g * pow(dii // g, -1, d // g)) % (d // g)
+
+        coeffs = (V_np @ y) % d
+
+        acc_X = np.zeros(n, dtype=np.int64)
+        acc_Z = np.zeros(n, dtype=np.int64)
+        acc_t = 0
+        for k in range(l):
+            ck = int(coeffs[k]) % d
+            if ck == 0:
+                continue
+            pX, pZ, pt = self._power(
+                self.X[k],
+                self.Z[k],
+                int(self.tau_exp[k]),
+                ck,
+            )
+            acc_X, acc_Z, acc_t = self._product(
+                acc_X,
+                acc_Z,
+                acc_t,
+                pX,
+                pZ,
+                pt,
+            )
+
+        t = (acc_t - ps_t) % D
+        return t, f1
+
+    def _sample_outcome(self, t: int, s: int, eta: int) -> int:
+        """Step 4: solve ``2 s h ≡ t (mod D)``, sample uniformly."""
+        d, D = self.d, 2 * self.d
+        g = math.gcd(2 * s, D)
+        h0 = (t // g * pow(2 * s // g, -1, D // g)) % (D // g)
+        k = int(np.random.randint(0, d // eta))
+        return int((h0 + eta * k) % d)
+
+    def _collapse(
+        self,
+        a: np.ndarray,
+        b: np.ndarray,
+        delta: int,
+        h: int,
+        s: int,
+        f1: int,
+    ) -> None:
+        """Step 5: scale generator 0, insert measurement result R."""
+        d, D = self.d, 2 * self.d
+        l = self.l
+
+        scaled_X, scaled_Z, scaled_t = self._power(
+            self.X[0],
+            self.Z[0],
+            int(self.tau_exp[0]),
+            s,
+        )
+
+        trivial = (
+            np.all(scaled_X % d == 0)
+            and np.all(scaled_Z % d == 0)
+            and scaled_t % D == 0
+        )
+        keep = not trivial and f1 % s != 0
+
+        if keep:
+            self.X[l] = scaled_X % d
+            self.Z[l] = scaled_Z % d
+            self.tau_exp[l] = scaled_t % D
+            self.l = l + 1
+
+        self.X[0] = b % d
+        self.Z[0] = a % d
+        self.tau_exp[0] = (delta + 2 * h) % D
+
+    def print_tableau(self) -> None:
+        l = self.l
+        print(f"l={l}, d={self.d}")
+        print(f"X:\n{self.X[:l]}")
+        print(f"Z:\n{self.Z[:l]}")
+        print(f"tau_exp: {self.tau_exp[:l]}")

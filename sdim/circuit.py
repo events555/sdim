@@ -672,7 +672,7 @@ class Circuit:
                 gate_name = gate_id_to_name(gate_id)
                 # Rotate to Z basis
                 if gate_name in ("M_X", "MR_X"):
-                    tableau.hadamard_inv(qudit_index)
+                    tableau.hadamard(qudit_index, dagger=True)
 
                 # Measure in Z basis
                 measurement = tableau.measure(qudit_index)
@@ -680,7 +680,7 @@ class Circuit:
                 # Apply Reset Gate
                 if gate_name in ("MR", "MR_X", "RESET"):
                     correction = (-measurement) % self.dimension
-                    tableau.x(qudit_index, correction)
+                    tableau.pauli_x(qudit_index, correction)
                     if gate_name == "MR_X":
                         tableau.hadamard(qudit_index)
 
@@ -690,15 +690,15 @@ class Circuit:
                 if qudit_index < 0:
                     gate_name = gate_id_to_name(gate_id)
                     if gate_name == "CNOT":
-                        tableau.x(target_index, measurements[qudit_index])
+                        tableau.pauli_x(target_index, measurements[qudit_index])
                     elif gate_name == "CZ":
-                        tableau.z(target_index, measurements[qudit_index])
+                        tableau.pauli_z(target_index, measurements[qudit_index])
                 elif target_index < 0:
                     gate_name = gate_id_to_name(gate_id)
                     if gate_name == "CNOT":
                         raise ValueError("CNOT gate cannot be applied to measurement record target.")
                     elif gate_name == "CZ":
-                        tableau.z(qudit_index, measurements[target_index])
+                        tableau.pauli_z(qudit_index, measurements[target_index])
                 else:
                     tableau.apply_gate(gate_id, qudit_index, target_index, arg0)
             gate_count += 1
