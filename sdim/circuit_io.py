@@ -1,7 +1,5 @@
 from .gatedata import gate_id_to_name, is_gate_two_qubit
 from .circuit import Circuit
-from .unitary import *
-import cirq
 import os
 
 def read_circuit(filename):
@@ -138,6 +136,16 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
 
 def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
     import cirq
+    from .unitary import (
+        IdentityGate,
+        GeneralizedHadamardGate, GeneralizedHadamardGateInverse,
+        GeneralizedPhaseShiftGate, GeneralizedPhaseShiftGateInverse,
+        GeneralizedCNOTGate, GeneralizedCNOTGateInverse,
+        GeneralizedXPauliGate, GeneralizedXPauliGateInverse,
+        GeneralizedZPauliGate, GeneralizedZPauliGateInverse,
+        GeneralizedCZGate, GeneralizedCZGateInverse,
+        GeneralizedMultiplyGate, GeneralizedMultiplyGateInverse,
+    )
 
     qudits = [cirq.LineQid(i, dimension=circuit.dimension)
               for i in range(circuit.num_qudits)]
@@ -215,8 +223,8 @@ def cirq_statevector_from_circuit(circuit, print_circuit=False):
         np.ndarray: The final state vector given by the Cirq simulator.
     """
     # Start with an initial state. For a quantum computer, this is usually the state |0...0>.
+    import cirq
     cirq_circuit = circuit_to_cirq_circuit(circuit, print_circuit=print_circuit)
-    # Simulate the Cirq circuit.
     simulator = cirq.Simulator()
     result = simulator.simulate(cirq_circuit)
     
