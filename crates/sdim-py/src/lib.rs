@@ -200,17 +200,12 @@ fn run_frame<'py>(
         meas,
     );
 
-    // flat_results is (num_measurements * shots) row-major: results[m][s]
-    // Python expects (shots, num_measurements), so we need to transpose
+    // flat_results is already (shots, num_measurements) row-major from run_frame
     let num_measurements = ref_sample.len();
-    let mut out = Array2::<i64>::zeros((shots, num_measurements));
-    for m in 0..num_measurements {
-        for s in 0..shots {
-            out[[s, m]] = flat_results[m * shots + s];
-        }
-    }
+    let arr = ndarray::Array2::from_shape_vec((shots, num_measurements), flat_results)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
 
-    Ok(out.into_pyarray(py))
+    Ok(arr.into_pyarray(py))
 }
 
 /// Python module: sdim._sdim_rs

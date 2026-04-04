@@ -115,6 +115,20 @@ class PauliFrameSimulator:
             noise1_bank, noise2_bank, erased_bank, measurement_bank,
         )
 
+    def _get_plain_ir(self) -> np.ndarray:
+        """Convert structured IR to plain (N, 4) int64 array, cached."""
+        if not hasattr(self, '_plain_ir_cache'):
+            ir = self.ir_array
+            arg0_raw = ir['arg0']
+            arg0_int = np.where(np.isnan(arg0_raw), -1, arg0_raw).astype(np.int64)
+            self._plain_ir_cache = np.ascontiguousarray(np.column_stack([
+                ir['gate_id'].astype(np.int64),
+                ir['qudit_index'].astype(np.int64),
+                ir['target_index'].astype(np.int64),
+                arg0_int,
+            ]))
+        return self._plain_ir_cache
+
     def _run_rust(
         self,
         shots: int,
@@ -126,26 +140,17 @@ class PauliFrameSimulator:
     ) -> np.ndarray:
         from .._sdim_rs import run_frame as _rust_run_frame
 
-        # Convert structured IR to plain (N, 4) int64
-        ir = self.ir_array
-        arg0_raw = ir['arg0']
-        arg0_int = np.where(np.isnan(arg0_raw), -1, arg0_raw).astype(np.int64)
-        plain_ir = np.column_stack([
-            ir['gate_id'].astype(np.int64),
-            ir['qudit_index'].astype(np.int64),
-            ir['target_index'].astype(np.int64),
-            arg0_int,
-        ])
+        plain_ir = self._get_plain_ir()
 
-        # Flatten noise banks to 1D contiguous int64 arrays
-        n1_flat = noise1_bank.ravel().astype(np.int64) if noise1_bank.size > 0 else np.array([], dtype=np.int64)
-        n2_flat = noise2_bank.ravel().astype(np.int64) if noise2_bank.size > 0 else np.array([], dtype=np.int64)
-        erased_flat = erased_bank.ravel().astype(np.int64) if erased_bank is not None and erased_bank.size > 0 else np.array([], dtype=np.int64)
-        meas_flat = measurement_bank.ravel().astype(np.int64) if measurement_bank is not None and measurement_bank.size > 0 else np.array([], dtype=np.int64)
+        _empty = np.array([], dtype=np.int64)
+        n1_flat = np.ascontiguousarray(noise1_bank.ravel(), dtype=np.int64) if noise1_bank.size > 0 else _empty
+        n2_flat = np.ascontiguousarray(noise2_bank.ravel(), dtype=np.int64) if noise2_bank.size > 0 else _empty
+        erased_flat = np.ascontiguousarray(erased_bank.ravel(), dtype=np.int64) if erased_bank is not None and erased_bank.size > 0 else _empty
+        meas_flat = np.ascontiguousarray(measurement_bank.ravel(), dtype=np.int64) if measurement_bank is not None and measurement_bank.size > 0 else _empty
 
         return _rust_run_frame(
             plain_ir,
-            reference_sample.astype(np.int64),
+            np.ascontiguousarray(reference_sample, dtype=np.int64),
             self.num_qudits,
             self.dimension,
             shots,
