@@ -1,7 +1,7 @@
 import numpy as np
 import cirq
 from itertools import product
-from sympy import isprime
+
 
 def generate_tau(d):
     """
@@ -57,16 +57,11 @@ def generate_h_matrix(d):
     Returns:
         The Hadamard matrix of dimension d
     """
+    omega = np.exp(2j * np.pi / d)
     H = np.zeros((d, d), dtype=np.complex128)
-    if isprime(d):
-        for m in range(d):
-            for n in range(d):
-                H[m, n] = 1 / np.sqrt(d) * np.exp(2 * np.pi * 1j * m * n / d)
-    else:
-        tau = generate_tau(d)
-        for m in range(d):
-            for n in range(d):
-                H[m, n] = 1 / np.sqrt(d) * tau**(2 * m * n)
+    for m in range(d):
+        for n in range(d):
+            H[m, n] = omega ** (m * n) / np.sqrt(d)
     return H
 
 def generate_m_matrix(d, a):
@@ -96,17 +91,14 @@ def generate_p_matrix(d):
         The phase shift matrix of dimension d
     """
     P = np.eye(d, dtype=np.complex128)
-    if isprime(d):
-        omega = np.exp(2j * np.pi / d)
+    tau = generate_tau(d)
+    omega = tau * tau  # omega = tau^2 = e^{2 pi i / d}
+    if d % 2 == 0:
         for j in range(d):
-            if d % 2 == 1:  # For odd d
-                P[j, j] = omega ** (j * (j - 1) / 2)
-            else:  # For even d
-                P[j, j] = omega ** (j ** 2 / 2)
+            P[j, j] = tau ** (j * j)
     else:
-        tau = generate_tau(d)
         for j in range(d):
-            P[j, j] = tau ** (j ** 2)
+            P[j, j] = omega ** (j * (j - 1) // 2)
     return P
 
 def generate_cnot_matrix(d):
