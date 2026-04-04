@@ -1,21 +1,25 @@
-import pytest
 import numpy as np
+import pytest
+
 from sdim import TableauSimulator
 
 
 def stab_X(tab):
-    return tab.X[:tab.l] % tab.d
+    return tab.X[: tab.l] % tab.d
+
 
 def stab_Z(tab):
-    return tab.Z[:tab.l] % tab.d
+    return tab.Z[: tab.l] % tab.d
+
 
 def stab_tau(tab):
-    return tab.tau_exp[:tab.l] % (2 * tab.d)
+    return tab.tau_exp[: tab.l] % (2 * tab.d)
+
 
 def check_symplectic(tab):
     d = tab.d
-    Z = tab.Z[:tab.l] % d
-    X = tab.X[:tab.l] % d
+    Z = tab.Z[: tab.l] % d
+    X = tab.X[: tab.l] % d
     SS = (Z @ X.T - X @ Z.T) % d
     assert np.all(SS == 0), f"stabilizer commutation violated:\n{SS}"
 
@@ -67,7 +71,9 @@ def test_gate_roundtrips(d):
         t.modulo()
         assert np.array_equal(stab_Z(t), ref_Z), f"{gate} roundtrip Z (d={d})"
         assert np.array_equal(stab_X(t), ref_X), f"{gate} roundtrip X (d={d})"
-        assert np.array_equal(stab_tau(t), ref_tau), f"{gate} roundtrip tau (d={d})"
+        assert np.array_equal(stab_tau(t), ref_tau), (
+            f"{gate} roundtrip tau (d={d})"
+        )
 
 
 def test_hadamard_values():
@@ -162,6 +168,7 @@ def test_measure_composite_deterministic(d):
 @pytest.mark.parametrize("d", [4, 6])
 def test_measure_composite_random(d):
     from collections import Counter
+
     counts = Counter()
     for _ in range(500):
         t = TableauSimulator(1, d)

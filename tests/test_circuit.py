@@ -1,10 +1,12 @@
-import pytest
-import cirq as cirq
 import random
-from sdim.gatedata import gate_name_to_id
-from sdim.circuit import CircuitInstruction, Circuit
-from sdim.circuit_io import cirq_statevector_from_circuit
+
+import cirq as cirq
 import numpy as np
+import pytest
+
+from sdim.circuit import Circuit, CircuitInstruction
+from sdim.gates.registry import gate_name_to_id
+
 
 def test_circuit_broadcasting():
     circuit = Circuit(3, 2)
@@ -19,7 +21,8 @@ def test_circuit_broadcasting():
     circuit.append("CNOT", [0, 1], 2)
     assert circuit.operations[4] == CircuitInstruction("CNOT", [0, 2, 1, 2])
     circuit.append("X", 0)
-    assert circuit.operations[5] == CircuitInstruction("X", 0)  
+    assert circuit.operations[5] == CircuitInstruction("X", 0)
+
 
 def test_build_ir():
 
@@ -32,50 +35,56 @@ def test_build_ir():
     ir = circuit._build_ir()
     noise1, noise2, erased, measurement = circuit._build_noise(shots=1)
 
-    NO_TARGET      = np.iinfo(np.int64).max
-    had_id         = CircuitInstruction("H",0).gate_type
-    cnot_id        = CircuitInstruction("CNOT", [0, 1]).gate_type
-    depol1_id      = gate_name_to_id("DEPOLARIZE1")
-    depol2_id      = gate_name_to_id("DEPOLARIZE2")
+    NO_TARGET = np.iinfo(np.int64).max
+    had_id = CircuitInstruction("H", 0).gate_type
+    cnot_id = CircuitInstruction("CNOT", [0, 1]).gate_type
+    depol1_id = gate_name_to_id("DEPOLARIZE1")
+    depol2_id = gate_name_to_id("DEPOLARIZE2")
 
     exp = np.empty(6, dtype=ir.dtype)
-    exp[0] = (had_id,    0,  NO_TARGET, np.nan)
-    exp[1] = (had_id,    1,  NO_TARGET, np.nan)
-    exp[2] = (cnot_id,   0,          1, np.nan)
-    exp[3] = (cnot_id,   0,          2, np.nan)
-    exp[4] = (depol1_id,    0,  NO_TARGET, 1.0)
-    exp[5] = (depol2_id,    0,          1, 1.0)
+    exp[0] = (had_id, 0, NO_TARGET, np.nan)
+    exp[1] = (had_id, 1, NO_TARGET, np.nan)
+    exp[2] = (cnot_id, 0, 1, np.nan)
+    exp[3] = (cnot_id, 0, 2, np.nan)
+    exp[4] = (depol1_id, 0, NO_TARGET, 1.0)
+    exp[5] = (depol2_id, 0, 1, 1.0)
 
-    assert np.array_equal(ir[['gate_id','qudit_index','target_index']],
-                          exp[['gate_id','qudit_index','target_index']]), \
-           "gate ids / targets differ"
+    assert np.array_equal(
+        ir[["gate_id", "qudit_index", "target_index"]],
+        exp[["gate_id", "qudit_index", "target_index"]],
+    ), "gate ids / targets differ"
 
-    arg0 = ir['arg0']
-    assert np.all(np.isnan(arg0[:4])),            f"Expected nan for no-arg gates, got {arg0[:4]}"
-    assert np.allclose(arg0[4:], [1.0, 1.0]),       f"Expected 1.0 for DEPOLARIZE args, got {arg0[4:]}"
-
-
+    arg0 = ir["arg0"]
+    assert np.all(np.isnan(arg0[:4])), (
+        f"Expected nan for no-arg gates, got {arg0[:4]}"
+    )
+    assert np.allclose(arg0[4:], [1.0, 1.0]), (
+        f"Expected 1.0 for DEPOLARIZE args, got {arg0[4:]}"
+    )
 
     assert noise1.shape == (1, 1, 2)
     assert np.any(noise1[0, 0] != 0), "DEPOLARIZE1 noise should be non-zero"
 
     assert noise2.shape == (1, 1, 4)
     n2 = noise2[0, 0]
-    assert np.any(n2[:2] != 0) or np.any(n2[2:] != 0), \
-           "DEPOLARIZE2 noise should affect at least one qudit"
-    
+    assert np.any(n2[:2] != 0) or np.any(n2[2:] != 0), (
+        "DEPOLARIZE2 noise should affect at least one qudit"
+    )
+
+
 def test_reference_sample():
     circuit = Circuit(2, 2)
     circuit.append("X", 0)
     circuit.append("CNOT", 0, 1)
-    circuit.append("M", [0,1])
+    circuit.append("M", [0, 1])
     reference = circuit.reference_sample()
     assert np.array_equal(reference, np.array([1, 1]))
     circuit.append("CNOT", -1, 1)
-    circuit.append("M", [0,1])
+    circuit.append("M", [0, 1])
     reference = circuit.reference_sample()
     assert np.array_equal(reference, np.array([1, 1, 1, 0]))
-    
+
+
 def test_phase_kickback():
     circuit = Circuit(2, 2)
     circuit.append("H", 1)
@@ -96,6 +105,7 @@ def test_phase_kickback():
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[1, 1]]))
 
+
 def test_qubit_flip():
     circuit = Circuit(2, 2)
     circuit.append("H", 0)
@@ -107,6 +117,7 @@ def test_qubit_flip():
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[1, 1]]))
+
 
 def test_qutrit_flip():
     circuit = Circuit(2, 3)
@@ -121,6 +132,7 @@ def test_qutrit_flip():
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[2]]))
 
+
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_computational_basis(dimension):
     circuit = Circuit(2, dimension)
@@ -132,12 +144,13 @@ def test_qudit_swap_computational_basis(dimension):
         circuit.append("X", 0)
     for _ in range(x1):
         circuit.append("X", 1)
-    
+
     circuit.append("SWAP", 0, 1)
     circuit.append("M", 0)
     circuit.append("M", 1)
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[x1, x0]]))
+
 
 @pytest.mark.parametrize("dimension", [2, 3, 4, 5])
 def test_qudit_swap_self_inverse(dimension):
@@ -146,7 +159,7 @@ def test_qudit_swap_self_inverse(dimension):
     should leave the original state unchanged.
     """
     circuit = Circuit(2, dimension)
-    
+
     # Prepare a random computational basis state.
     x0 = random.choice(range(dimension))
     x1 = random.choice(range(dimension))
@@ -154,33 +167,34 @@ def test_qudit_swap_self_inverse(dimension):
         circuit.append("X", 0)
     for _ in range(x1):
         circuit.append("X", 1)
-    
+
     # Apply SWAP twice.
     circuit.append("SWAP", 0, 1)
     circuit.append("SWAP", 0, 1)
-    
+
     # Measure both qudits.
     circuit.append("M", 0)
     circuit.append("M", 1)
-    
+
     sampler = circuit.compile_sampler()
     expected = np.array([[x0, x1]])
     assert np.array_equal(sampler.sample(shots=1), expected), (
         f"Double SWAP failed for dimension={dimension} with initial states x0={x0}, x1={x1}"
     )
 
+
 @pytest.mark.parametrize("a", range(3))
 @pytest.mark.parametrize("b", range(3))
 def test_qutrit_swap_in_x_basis(a, b):
     """
     Test that the SWAP gate correctly swaps states prepared in the X basis.
-    
+
     The preparation for each qudit is as follows:
       1. Start in the computational |0> state.
       2. Apply X^a (or X^b) to shift |0> to |a> (or |b>).
       3. Apply the Fourier gate F so that F|a> is an eigenstate of the X operator
          with eigenvalue ω^a (and similarly for F|b>).
-    
+
     After applying SWAP, the state on qudit 0 should be F|b> and on qudit 1 should be F|a>.
     Measuring directly in the X basis (with "MX") should then return outcomes b and a respectively.
     """
@@ -207,6 +221,7 @@ def test_qutrit_swap_in_x_basis(a, b):
         f"SWAP in X basis failed for preparation F|{a}> and F|{b}>: "
         f"expected {expected}, got {result}"
     )
+
 
 def test_qubit_deutsch():
     # Create circuit
@@ -236,15 +251,18 @@ def test_qubit_deutsch():
         expected_result = 0
     else:
         expected_result = 1
-    
-    assert np.array_equal(sampler.sample(shots=1), np.array([[expected_result]]))
+
+    assert np.array_equal(
+        sampler.sample(shots=1), np.array([[expected_result]])
+    )
+
 
 def test_z_stabilizer_extraction():
     """
     Five qutrit circuit that measures two operators initialized to state $|111\rangle$
 
     $Z_2 \otimes Z_3 \otimes Z_4^\dag$ onto qutrit 0
-    
+
     $Z_2^\dag \otimes Z_3^\dag \otimes Z_4$ onto qutrit 1
 
     Outcomes are $\omega$ and $\omega^2$ for the operators respectively
@@ -266,18 +284,19 @@ def test_z_stabilizer_extraction():
     sampler = circuit.compile_sampler()
     assert np.array_equal(sampler.sample(shots=1), np.array([[1, 2]]))
 
+
 def test_x_stabilizer_extraction():
     """
-    Five qutrit circuit that measures two operators 
-    
+    Five qutrit circuit that measures two operators
+
     $X_2 \otimes X_3 \otimes X_4^\dag$ onto qutrit 0
-    
+
     $X_2^\dag \otimes X_3^\dag \otimes X_4$ onto qutrit 1
-    
+
     Introduces a phase error on qutrit 2
     """
     circuit = Circuit(dimension=3, num_qudits=5)
-    circuit.append("H", [2,3,4])
+    circuit.append("H", [2, 3, 4])
     circuit.append("Z", 2)
     circuit.append("H", 0)
     circuit.append("CX", 0, 2)
@@ -295,10 +314,11 @@ def test_x_stabilizer_extraction():
 
     assert np.array_equal(sampler.sample(shots=1), np.array([[2, 1]]))
 
+
 def test_deutsch():
     # input the dimension here
     dimension = 3
-    
+
     # Create circuit
     circuit = Circuit(2, dimension)
 
@@ -307,7 +327,7 @@ def test_deutsch():
     circuit.append("X", 1)
     circuit.append("H", 1)
 
-    #is_constant = random.choice([True, False])
+    # is_constant = random.choice([True, False])
     is_constant = False
 
     if is_constant:
@@ -330,5 +350,6 @@ def test_deutsch():
     else:
         expected_result = 2
 
-    assert np.array_equal(sampler.sample(shots=1), np.array([[expected_result]]))
-    
+    assert np.array_equal(
+        sampler.sample(shots=1), np.array([[expected_result]])
+    )

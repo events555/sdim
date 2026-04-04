@@ -11,7 +11,7 @@ from typing import Optional
 
 import numpy as np
 
-from ..gatedata import gate_id_to_name, is_gate_noisy
+from ..gates.registry import gate_id_to_name, is_gate_noisy
 
 
 def _snf_mod(matrix: list[list[int]], d: int):
@@ -269,7 +269,7 @@ class TableauSimulator:
         Returns outcome h in ``[0, d)``.  Follows the unified
         Steps 1-5 from algorithm.md (deterministic when eta = d).
         """
-        n, d, D = self.n, self.d, 2 * self.d
+        d = self.d
         l = self.l
 
         c = (a @ self.X[:l].T - b @ self.Z[:l].T) % d

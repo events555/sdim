@@ -1,13 +1,13 @@
 # sdim/simulators/frame_simulator.py
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Callable, Any
+from typing import Optional, Dict, Callable
 import numpy as np
 
 
-from ..gatedata import (
+from ..gates.registry import (
     is_gate_pauli, is_gate_collapsing, is_gate_noisy,
     is_gate_two_qubit, gate_name_to_id, gate_id_to_name,
-    is_gate_records, is_gate_annotating, is_gate_collapsing_and_records
+    is_gate_records, is_gate_annotating
 )
 
 @dataclass
@@ -34,7 +34,7 @@ class PauliFrameSimulator:
     num_qudits: int
     num_total_measurements: int # Total number of measurement results expected per shot
 
-    id_to_pauli_frame_op_map: Dict[int, Callable[[np.ndarray, np.ndarray, int, Optional[int]], None]] = field(default_factory=dict, init=False)
+    id_to_pauli_frame_op_map: Dict[int, Callable[..., None]] = field(default_factory=dict, init=False)
 
     def __post_init__(self):
         """Initialize the mapping from gate IDs to their Pauli frame operations."""
@@ -97,11 +97,11 @@ class PauliFrameSimulator:
     def run_simulation_for_raw_measurements(
         self,
         shots: int,
-        reference_sample: np.ndarray, # Shape: (num_total_measurements,)
-        noise1_bank: np.ndarray,      # Shape: (num_single_qubit_noise_ops, shots, 2)
-        noise2_bank: np.ndarray,      # Shape: (num_two_qubit_noise_ops, shots, 4)
-        erased_bank: np.ndarray,       # Shape: (num_heralded_erasure_ops, shots)
-        measurement_bank: np.ndarray
+        reference_sample: np.ndarray,
+        noise1_bank: np.ndarray,
+        noise2_bank: np.ndarray,
+        erased_bank: Optional[np.ndarray],
+        measurement_bank: Optional[np.ndarray],
     ) -> np.ndarray:
         """
         Performs the core noisy simulation.
@@ -140,15 +140,16 @@ class PauliFrameSimulator:
             arg0 = inst['arg0']
             gate_name = gate_id_to_name(gate_id)
 
-            if gate_counter % 128 == 0: # Periodic modulo
-                x_frame %= self.dimension
-                z_frame %= self.dimension
+            if gate_counter % 128 == 0:
+                np.mod(x_frame, self.dimension, out=x_frame)
+                np.mod(z_frame, self.dimension, out=z_frame)
 
             if is_gate_noisy(gate_id) and is_gate_collapsing(gate_id):
                 reference_outcome = reference_sample[measurement_counter]
                 if gate_name in ("M_X", "MR_X"):
                     self._op_H_INV(x_frame, z_frame, q_idx, None)
                 if is_gate_records(gate_id):
+                    assert measurement_bank is not None
                     frame_results[measurement_counter, :] = (reference_outcome + x_frame[q_idx] + measurement_bank[measurement_noise_counter, :, 0]) % self.dimension
                     measurement_noise_counter += 1
                 if gate_name in ("MR", "MR_X", "RESET"):
@@ -170,6 +171,7 @@ class PauliFrameSimulator:
                     z_frame[q_idx] += noise1_bank[noise1_counter, :, 1]
                     noise1_counter += 1
                 if is_gate_records(gate_id):
+                    assert erased_bank is not None
                     frame_results[measurement_counter, :] = erased_bank[erasure_events_counter, :]
                     erasure_events_counter += 1
                 
@@ -236,8 +238,7 @@ class PauliFrameSimulator:
             
             gate_counter += 1
 
-        # Final modulo
-        x_frame %= self.dimension
-        z_frame %= self.dimension
+        np.mod(x_frame, self.dimension, out=x_frame)
+        np.mod(z_frame, self.dimension, out=z_frame)
         
         return frame_results.T

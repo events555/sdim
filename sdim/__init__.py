@@ -70,26 +70,29 @@ Internal modules providing core functionality:
 
 # Core classes
 from .circuit import Circuit
-from .sampler import CompiledMeasurementSampler, CompiledDetectorSampler
+from .circuit import CircuitInstruction
+from .gates.targets import GateTarget as GateTarget
+from .compiler.sampler import CompiledMeasurementSampler, CompiledDetectorSampler
 
-# Circuit I/O (cirq interop is lazy — requires sdim[interop])
-from .circuit_io import read_circuit, write_circuit
+# I/O
+from .io.chp import read_circuit, write_circuit
 
+# Cirq interop (lazy — requires sdim[interop])
 def circuit_to_cirq_circuit(*args, **kwargs):
-    from .circuit_io import circuit_to_cirq_circuit as _f
+    from .interop.cirq import circuit_to_cirq_circuit as _f
     return _f(*args, **kwargs)
 
 def cirq_statevector_from_circuit(*args, **kwargs):
-    from .circuit_io import cirq_statevector_from_circuit as _f
+    from .interop.cirq import cirq_statevector_from_circuit as _f
     return _f(*args, **kwargs)
-from .random_circuit import (
+
+from .util import (
     generate_random_clifford_circuit,
-    generate_and_write_random_circuit
+    generate_and_write_random_circuit,
 )
 
 # Gate and Target related imports
-from .gatedata import (
-    GateTarget,  # The class itself
+from .gates.registry import (
     GATE_DATA,
     gate_name_to_id,
     gate_id_to_name,
@@ -184,9 +187,10 @@ def target_inv(index: int) -> GateTarget:
 __all__ = [
     # Core Classes
     "Circuit",
+    "CircuitInstruction",
     "CompiledMeasurementSampler",
     "CompiledDetectorSampler",
-    "GateTarget", # The class for type hinting and direct instantiation if needed
+    "GateTarget",
 
     # Module-level target functions
     "target_qudit",
@@ -215,6 +219,7 @@ __all__ = [
     "is_gate_pauli",
     "is_gate_records",
     "is_gate_collapsing",
+    "is_gate_collapsing_and_records",
     "is_not_a_gate",
 
     # Tableau (for advanced users or if they need direct access)

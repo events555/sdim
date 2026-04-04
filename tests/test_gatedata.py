@@ -1,5 +1,13 @@
 import pytest
-from sdim.gatedata import GATE_DATA, gate_name_to_id, gate_id_to_name, is_gate_noisy, is_gate_two_qubit, is_gate_pauli
+
+from sdim.gates.registry import (
+    GATE_DATA,
+    gate_id_to_name,
+    gate_name_to_id,
+    is_gate_noisy,
+    is_gate_pauli,
+    is_gate_two_qubit,
+)
 
 
 def test_round_trip_canonical_names():
@@ -8,6 +16,7 @@ def test_round_trip_canonical_names():
         gate_id = gate_name_to_id(canonical_name)
         # The reverse should give us the canonical name.
         assert gate_id_to_name(gate_id) == canonical_name
+
 
 def test_alias_resolution():
     # Test a few aliases and check they map to the same canonical id.
@@ -26,10 +35,12 @@ def test_alias_resolution():
     cx_id = gate_name_to_id("CX")
     assert cnot_id == cx_id
 
+
 def test_invalid_gate_name():
     # A non-existent gate name should raise a ValueError.
     with pytest.raises(ValueError):
         gate_name_to_id("INVALID_GATE")
+
 
 def test_invalid_gate_id():
     # Use an id that is outside the valid range.
@@ -37,9 +48,17 @@ def test_invalid_gate_id():
     with pytest.raises(ValueError):
         gate_id_to_name(invalid_id)
 
+
 def test_is_gate_noisy():
     # Test gates that are expected to be noisy.
-    noisy_gates = ["X_ERROR", "Z_ERROR", "DEPOLARIZE1", "DEPOLARIZE2", "M", "M_X"]
+    noisy_gates = [
+        "X_ERROR",
+        "Z_ERROR",
+        "DEPOLARIZE1",
+        "DEPOLARIZE2",
+        "M",
+        "M_X",
+    ]
     for gate in noisy_gates:
         gate_id = gate_name_to_id(gate)
         assert is_gate_noisy(gate_id) is True
@@ -50,9 +69,17 @@ def test_is_gate_noisy():
         gate_id = gate_name_to_id(gate)
         assert is_gate_noisy(gate_id) is False
 
+
 def test_is_gate_two_qubit():
     # Test gates that are expected to be two-qubit gates.
-    two_qubit_gates = ["CNOT", "CZ", "SWAP", "CNOT_INV", "CZ_INV", "DEPOLARIZE2"]
+    two_qubit_gates = [
+        "CNOT",
+        "CZ",
+        "SWAP",
+        "CNOT_INV",
+        "CZ_INV",
+        "DEPOLARIZE2",
+    ]
     for gate in two_qubit_gates:
         gate_id = gate_name_to_id(gate)
         assert is_gate_two_qubit(gate_id) is True
@@ -62,6 +89,7 @@ def test_is_gate_two_qubit():
     for gate in single_qubit:
         gate_id = gate_name_to_id(gate)
         assert is_gate_two_qubit(gate_id) is False
+
 
 def test_is_gate_pauli():
     # Only "X" and "Z" should return True.
