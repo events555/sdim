@@ -3,212 +3,170 @@ import numpy as np
 from sdim import TableauSimulator
 
 
-def test_hadamard():
-    tab1 = TableauSimulator()
-    tab1.hadamard(0)
-    tab1.modulo()
-    assert np.array_equal(tab1.x_block, np.array([[1]]))
-    assert np.array_equal(tab1.z_block, np.array([[0]]))
+def stab_X(tab):
+    return tab.X[:tab.l] % tab.d
 
-    tab2 = TableauSimulator(num_qudits=2)
-    tab2.hadamard(0)
-    tab2.modulo()
-    assert np.array_equal(tab2.x_block, np.array([[1, 0], [0, 0]]))
-    assert np.array_equal(tab2.z_block, np.array([[0, 0], [0, 1]]))
-    
-    tab3 = TableauSimulator(num_qudits=2)
-    tab3.hadamard(0)
-    tab3.hadamard(1)
-    tab3.modulo()
-    assert np.array_equal(tab3.x_block, np.array([[1, 0], [0, 1]]))
-    assert np.array_equal(tab3.z_block, np.array([[0, 0], [0, 0]]))
+def stab_Z(tab):
+    return tab.Z[:tab.l] % tab.d
 
-    tab4 = TableauSimulator()
-    tab4.hadamard(0)
-    tab4.hadamard_inv(0)
-    tab4.modulo()
-    assert np.array_equal(tab4.x_block, np.array([[0]]))
-    assert np.array_equal(tab4.z_block, np.array([[1]]))
+def stab_tau(tab):
+    return tab.tau_exp[:tab.l] % (2 * tab.d)
 
-def test_phase():
-    tab1 = TableauSimulator()
-    tab1.hadamard(0)
-    tab1.phase(0)
-    tab1.phase(0)
-    tab1.hadamard(0)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([2]))
-    assert np.array_equal(tab1.x_block, np.array([[0]]))
-    assert np.array_equal(tab1.z_block, np.array([[1]]))
-
-def test_pauli():
-    tab1 = TableauSimulator()
-    tab1.x(0)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([2]))
-    assert np.array_equal(tab1.x_block, np.array([[0]]))
-    assert np.array_equal(tab1.z_block, np.array([[1]]))
-
-    tab2 = TableauSimulator()
-    tab2.x(0)
-    tab2.x_inv(0)
-    tab2.modulo()
-    assert np.array_equal(tab2.phase_vector, np.array([0]))
-    assert np.array_equal(tab2.x_block, np.array([[0]]))
-    assert np.array_equal(tab2.z_block, np.array([[1]]))
-
-    tab3 = TableauSimulator(dimension=3)
-    tab3.x(0)
-    tab3.modulo()
-    assert np.array_equal(tab3.phase_vector, np.array([2]))
-    assert np.array_equal(tab3.x_block, np.array([[0]]))
-    assert np.array_equal(tab3.z_block, np.array([[1]]))
-
-    tab4 = TableauSimulator()
-    tab4.hadamard(0)
-    tab4.z(0)
-    tab4.modulo()
-    assert np.array_equal(tab4.phase_vector, np.array([2]))
-    assert np.array_equal(tab4.x_block, np.array([[1]]))
-    assert np.array_equal(tab4.z_block, np.array([[0]]))
-
-    tab5 = TableauSimulator(dimension=3)
-    tab5.hadamard(0)
-    tab5.z(0)
-    tab5.modulo()
-    assert np.array_equal(tab5.phase_vector, np.array([2]))
-    assert np.array_equal(tab5.x_block, np.array([[2]]))
-    assert np.array_equal(tab5.z_block, np.array([[0]]))
-
-    tab6 = TableauSimulator()
-    tab6.hadamard(0)
-    tab6.z(0)
-    tab6.z_inv(0)
-    tab6.modulo()
-    assert np.array_equal(tab6.phase_vector, np.array([0]))
-    assert np.array_equal(tab6.x_block, np.array([[1]]))
-    assert np.array_equal(tab6.z_block, np.array([[0]]))
-
-def test_cnot():
-    tab1 = TableauSimulator(num_qudits=2)
-    tab1.x(0)
-    tab1.cnot(0, 1)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([2, 0]))
-    assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab1.z_block, np.array([[1, 1], [0, 1]]))
-    tab2 = TableauSimulator(num_qudits=2, dimension=3)
-    tab2.x(0)
-    tab2.x(0)
-    tab2.cnot(0, 1)
-    tab2.modulo()
-    assert np.array_equal(tab2.phase_vector, np.array([1, 0]))
-    assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab2.z_block, np.array([[1, 2], [0, 1]]))
-
-def test_swap():
-    tab1 = TableauSimulator(num_qudits=2)
-    tab1.x(0)
-    tab1.swap(0, 1)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([2, 0]))
-    assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab1.z_block, np.array([[0, 1], [1, 0]]))
-    tab2 = TableauSimulator(num_qudits=2, dimension=3)
-    tab2.x(0)
-    tab2.x(0)
-    tab2.swap(0, 1)
-    tab2.modulo()
-    assert np.array_equal(tab2.phase_vector, np.array([1, 0]))
-    assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab2.z_block, np.array([[0, 1], [1, 0]]))
-    tab3 = TableauSimulator(num_qudits=2)
-    tab3.x(0)
-    tab3.swap(0, 1)
-    tab3.swap(0, 1)
-    tab3.modulo()
-    assert np.array_equal(tab3.phase_vector, np.array([2, 0]))
-    assert np.array_equal(tab3.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab3.z_block, np.array([[1, 0], [0, 1]]))
-
-def test_cz():
-    tab1 = TableauSimulator(num_qudits=2)
-    tab1.hadamard(0)
-    tab1.x(1)
-    tab1.cz(0, 1)
-    tab1.hadamard(0)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([0, 2]))
-    assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab1.z_block, np.array([[1, 0], [1, 1]]))
-    tab2 = TableauSimulator(num_qudits=2, dimension=3)
-    tab2.hadamard(0)
-    tab2.x(1)
-    tab2.cz(0, 1)
-    tab2.hadamard_inv(0)
-    tab2.modulo()
-    assert np.array_equal(tab2.phase_vector, np.array([0, 2]))
-    assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab2.z_block, np.array([[1, 0], [2, 1]]))
-
-def test_inverse():
-    tab1 = TableauSimulator(num_qudits=2)
-    tab1.hadamard(0)
-    tab1.x(1)
-    tab1.cz(0, 1)
-    tab1.hadamard(0)
-    tab1.cnot(1,0)
-    tab1.z_inv(1)
-    tab1.z(1)
-    tab1.cnot_inv(1,0)
-    tab1.hadamard_inv(0)
-    tab1.cz_inv(0, 1)
-    tab1.x_inv(1)
-    tab1.hadamard_inv(0)
-    tab1.modulo()
-    assert np.array_equal(tab1.phase_vector, np.array([0, 0]))
-    assert np.array_equal(tab1.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab1.z_block, np.array([[1, 0], [0, 1]]))
-
-    tab2 = TableauSimulator(num_qudits=2, dimension=5)
-    tab2.hadamard(0)
-    tab2.x(1)
-    tab2.cz(0, 1)
-    tab2.hadamard(0)
-    tab2.cnot(1,0)
-    tab2.multiply_inv(1, 2)
-    tab2.z_inv(1)
-    tab2.z(1)
-    tab2.multiply(1, 2)
-    tab2.cnot_inv(1,0)
-    tab2.hadamard_inv(0)
-    tab2.cz_inv(0, 1)
-    tab2.x_inv(1)
-    tab2.hadamard_inv(0)
-    tab2.modulo()
-    assert np.array_equal(tab2.phase_vector, np.array([0, 0]))
-    assert np.array_equal(tab2.x_block, np.array([[0, 0], [0, 0]]))
-    assert np.array_equal(tab2.z_block, np.array([[1, 0], [0, 1]]))
+def check_symplectic(tab):
+    d = tab.d
+    Z = tab.Z[:tab.l] % d
+    X = tab.X[:tab.l] % d
+    SS = (Z @ X.T - X @ Z.T) % d
+    assert np.all(SS == 0), f"stabilizer commutation violated:\n{SS}"
 
 
-@pytest.mark.parametrize("d, a", [
-    (3, 2),     # qutrit, a = 2
-    (4, 3),     # even dimension, gcd(3,4)=1
-    (5, 3),     # prime 5
-    (6, 5),     # composite even 6
-])
-def test_multiply(d, a):
-    a_inv = pow(a, -1, d)
+DIMENSIONS = [2, 3, 4, 5, 6]
 
-    tab = TableauSimulator(num_qudits=1, dimension=d)
-    z0, x0, p0 = tab.z_block.copy(), tab.x_block.copy(), tab.phase_vector.copy()
 
-    tab.multiply(0, a)
-    assert np.array_equal(tab.x_block, (a * x0) % d)
-    assert np.array_equal(tab.z_block, (a_inv * z0) % d)
+@pytest.mark.parametrize("d", DIMENSIONS)
+def test_random_circuit_preserves_symplectic(d):
+    rng = np.random.default_rng(42)
+    n = 3
+    t = TableauSimulator(n, d)
+    gates_1q = ["hadamard", "phase_gate", "pauli_x", "pauli_z"]
+    gates_2q = ["cnot", "cz", "swap"]
+    for _ in range(50):
+        if rng.random() < 0.6:
+            gate = rng.choice(gates_1q)
+            q = int(rng.integers(0, n))
+            getattr(t, gate)(q)
+        else:
+            gate = rng.choice(gates_2q)
+            q1, q2 = rng.choice(n, size=2, replace=False)
+            getattr(t, gate)(int(q1), int(q2))
+    check_symplectic(t)
 
-    # now undo it
-    tab.multiply(0, a_inv)              # multiply by a^{-1}
-    assert np.array_equal(tab.z_block, z0) # tableau back to identity
-    assert np.array_equal(tab.x_block, x0)
-    assert np.array_equal(tab.phase_vector % tab.order, p0 % tab.order)
+
+@pytest.mark.parametrize("d", DIMENSIONS)
+def test_gate_roundtrips(d):
+    n = 2
+    ref_Z = stab_Z(TableauSimulator(n, d)).copy()
+    ref_X = stab_X(TableauSimulator(n, d)).copy()
+    ref_tau = stab_tau(TableauSimulator(n, d)).copy()
+
+    for gate, args in [
+        ("hadamard", (0,)),
+        ("phase_gate", (0,)),
+        ("pauli_x", (0,)),
+        ("pauli_z", (0,)),
+        ("cnot", (0, 1)),
+        ("cz", (0, 1)),
+        ("swap", (0, 1)),
+    ]:
+        t = TableauSimulator(n, d)
+        getattr(t, gate)(*args)
+        if gate != "swap":
+            getattr(t, gate)(*args, dagger=True)
+        else:
+            getattr(t, gate)(*args)
+        t.modulo()
+        assert np.array_equal(stab_Z(t), ref_Z), f"{gate} roundtrip Z (d={d})"
+        assert np.array_equal(stab_X(t), ref_X), f"{gate} roundtrip X (d={d})"
+        assert np.array_equal(stab_tau(t), ref_tau), f"{gate} roundtrip tau (d={d})"
+
+
+def test_hadamard_values():
+    t = TableauSimulator(1, 2)
+    t.hadamard(0)
+    t.modulo()
+    assert np.array_equal(stab_X(t), [[1]])
+    assert np.array_equal(stab_Z(t), [[0]])
+
+    t2 = TableauSimulator(2, 2)
+    t2.hadamard(0)
+    t2.modulo()
+    assert np.array_equal(stab_X(t2), [[1, 0], [0, 0]])
+    assert np.array_equal(stab_Z(t2), [[0, 0], [0, 1]])
+
+
+def test_cnot_values():
+    t1 = TableauSimulator(2, 2)
+    t1.pauli_x(0)
+    t1.cnot(0, 1)
+    t1.modulo()
+    assert np.array_equal(stab_X(t1), [[0, 0], [0, 0]])
+    assert np.array_equal(stab_Z(t1), [[1, 0], [1, 1]])
+
+    t2 = TableauSimulator(2, 3)
+    t2.pauli_x(0)
+    t2.pauli_x(0)
+    t2.cnot(0, 1)
+    t2.modulo()
+    assert np.array_equal(stab_X(t2), [[0, 0], [0, 0]])
+    assert np.array_equal(stab_Z(t2), [[1, 0], [2, 1]])
+
+
+def test_cz_values():
+    t1 = TableauSimulator(2, 2)
+    t1.hadamard(0)
+    t1.pauli_x(1)
+    t1.cz(0, 1)
+    t1.hadamard(0)
+    t1.modulo()
+    assert np.array_equal(stab_X(t1), [[0, 0], [0, 0]])
+    assert np.array_equal(stab_Z(t1), [[1, 1], [0, 1]])
+
+
+def test_measure_z_basis_deterministic():
+    for d in [2, 3, 4, 5, 6]:
+        t = TableauSimulator(1, d)
+        assert t.measure(0) == 0
+
+
+def test_measure_z_after_x():
+    t = TableauSimulator(1, 2)
+    t.pauli_x(0)
+    assert t.measure(0) == 1
+
+
+def test_measure_random_qubit():
+    counts = {0: 0, 1: 0}
+    for _ in range(200):
+        t = TableauSimulator(1, 2)
+        t.hadamard(0)
+        counts[t.measure(0)] += 1
+    assert counts[0] > 20 and counts[1] > 20
+
+
+@pytest.mark.parametrize("d", [2, 3, 5])
+def test_measure_idempotent(d):
+    t = TableauSimulator(1, d)
+    t.hadamard(0)
+    r1 = t.measure(0)
+    r2 = t.measure(0)
+    assert r1 == r2
+
+
+def test_measure_bell_pair():
+    for _ in range(50):
+        t = TableauSimulator(2, 2)
+        t.hadamard(0)
+        t.cnot(0, 1)
+        r0 = t.measure(0)
+        r1 = t.measure(1)
+        assert r0 == r1
+
+
+@pytest.mark.parametrize("d", [4, 6])
+def test_measure_composite_deterministic(d):
+    t = TableauSimulator(2, d)
+    assert t.measure(0) == 0
+    assert t.measure(1) == 0
+
+
+@pytest.mark.parametrize("d", [4, 6])
+def test_measure_composite_random(d):
+    from collections import Counter
+    counts = Counter()
+    for _ in range(500):
+        t = TableauSimulator(1, d)
+        t.hadamard(0)
+        counts[t.measure(0)] += 1
+    assert len(counts) == d
+    for v in counts.values():
+        assert v > 10

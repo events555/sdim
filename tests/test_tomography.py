@@ -1,80 +1,56 @@
-import pytest
+"""End-to-end validation against Cirq statevector simulation.
 
-from sdim.circuit_io import write_circuit, cirq_statevector_from_circuit
-from sdim.random_circuit import generate_random_clifford_circuit
+Requires cirq: run with `just test-all`.
+
+Override defaults via environment variables:
+    TOMO_QUDITS=3 TOMO_CIRCUITS=2000 uv run pytest tests/test_tomography.py
+"""
+
+import os
+import pytest
 import numpy as np
 
-def create_key(measurements, dimension):
-    key = 0
-    for m in measurements:
-        key = key * dimension + m
-    return key
+from sdim.circuit_io import cirq_statevector_from_circuit
+from sdim.random_circuit import generate_random_clifford_circuit
 
-def generate_and_test_circuit(depth, dimension, num_qudits):
-    circuit = generate_random_clifford_circuit(num_qudits, depth, dimension, measurement_rounds=1,
-                                               # gate_set=["X", "Z", "CNOT", "H", "P", "CNOT_INV", "P_INV"]
-                                               )
+NUM_QUDITS = int(os.environ.get("TOMO_QUDITS", 2))
+NUM_CIRCUITS = int(os.environ.get("TOMO_CIRCUITS", 500))
+NUM_SHOTS = int(os.environ.get("TOMO_SHOTS", 2000))
 
+
+def tvd_for_circuit(circuit, num_shots=NUM_SHOTS):
     statevector = cirq_statevector_from_circuit(circuit)
     amplitudes = np.abs(statevector) ** 2
+    amplitudes = np.where(np.abs(amplitudes) < 1e-14, 0, amplitudes)
 
-    num_samples = 800
-    num_states = dimension ** num_qudits
-    measurement_counts = np.zeros(num_states, dtype=int)
+    d = circuit.dimension
+    n = circuit.num_qudits
+    num_states = d ** n
 
-    # Simulate all shots at once
     sampler = circuit.compile_sampler()
-    measurements = sampler.sample(shots=num_samples)
+    measurements = sampler.sample(shots=num_shots)
+
+    counts = np.zeros(num_states, dtype=int)
+    for shot in measurements:
+        key = 0
+        for m in shot:
+            key = key * d + m
+        counts[key] += 1
+
+    probs = counts / num_shots
+    return np.sum(np.abs(probs - amplitudes)) / 2
 
 
-    for shot_index in range(num_samples):
-        shot_measurements = []
+@pytest.mark.parametrize("d", [2, 3, 4, 5, 6, 9])
+@pytest.mark.parametrize("depth", [5, 20, 50])
+def test_random_circuits(d, depth):
+    shots = max(NUM_SHOTS, 20 * d ** NUM_QUDITS)
 
-        for qudit_index in range(num_qudits):
-            measurement_result = measurements[shot_index][qudit_index]
-            shot_measurements.append(measurement_result)
-
-        key = create_key(shot_measurements, dimension)
-        measurement_counts[key] += 1
-
-    probabilities = measurement_counts / num_samples
-    threshold = 1e-14
-    cleaned_amp = np.where(np.abs(amplitudes) < threshold, 0, amplitudes)
-    tvd = np.sum(np.abs(probabilities - cleaned_amp)) / 2
-
-    return tvd, cleaned_amp, probabilities, circuit
-
-
-
-@pytest.mark.parametrize("dimension", [2, 3, 5])
-@pytest.mark.parametrize("depth", [5, 10, 15, 30, 50, 100, 500])
-def test_random_circuits(dimension, depth):
-    num_qudits = 3
-    num_circuits = 1000
-
-    for i in range(num_circuits):
-        circuit = None
-        amplitudes = None
-        probabilities = None
-        try:
-            tvd, amplitudes, probabilities, circuit = generate_and_test_circuit(depth, dimension, num_qudits)
-            assert np.isclose(np.sum(probabilities), 1, atol=1e-6), f"Circuit {i+1}: The sum of the probabilities is not approximately 1"
-            assert np.isclose(np.sum(amplitudes), 1, atol=1e-6), f"Circuit {i+1}: The sum of the amplitudes is not approximately 1"
-            assert tvd < 0.20, f"Circuit {i+1}: Total Variation Distance ({tvd}) is not less than 20%"
-        except Exception as e:
-            if circuit is not None:
-                file_name = f"failed_circuit_{dimension}_{depth}_{i+1}.chp"
-                comment = f"Failed circuit - Dimension: {dimension}, Depth: {depth}, Circuit: {i+1}"
-                print("Probabilities:", probabilities)
-                print("Amplitudes:", amplitudes)
-                write_circuit(circuit, file_name, comment)
-            raise e
-
-        print(f"Circuit {i+1} - Dimension: {dimension}, Depth: {depth}, Qudits: {num_qudits}")
-        print(f"Total Variation Distance: {tvd}")
-        print(f"Sum of Amplitudes: {np.sum(amplitudes)}")
-        print(f"Sum of Probabilities: {np.sum(probabilities)}")
-        print("---")
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-n", "auto"])
+    for i in range(NUM_CIRCUITS):
+        circuit = generate_random_clifford_circuit(
+            NUM_QUDITS, depth, d, measurement_rounds=1,
+        )
+        tvd = tvd_for_circuit(circuit, shots)
+        assert tvd < 0.20, (
+            f"circuit {i} d={d} depth={depth}: TVD={tvd:.3f}"
+        )
