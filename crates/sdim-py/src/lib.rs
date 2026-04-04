@@ -8,7 +8,9 @@ use numpy::ndarray::{Array1, Array2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
 
+use numpy::PyReadonlyArray1;
 use sdim_core::ir::{IrInstruction, run_ir as core_run_ir, run_ir_with_snapshot};
+use sdim_core::frame::run_frame as core_run_frame;
 
 /// Run an IR instruction array through the Rust tableau simulator.
 ///
@@ -139,11 +141,84 @@ fn snf_mod(matrix: Vec<Vec<i64>>, d: i64) -> PyResult<(Vec<Vec<i64>>, Vec<Vec<i6
     Ok((to_vecs(&s), to_vecs(&u), to_vecs(&v)))
 }
 
+/// Run the Pauli frame simulation in Rust.
+///
+/// Args:
+///     ir_array: numpy int64 array of shape (N, 4)
+///     reference_sample: numpy int64 array of noiseless measurement outcomes
+///     num_qudits: number of qudits
+///     dimension: local qudit dimension
+///     shots: number of shots to simulate
+///     noise1_bank: flattened (num_noise1, shots, 2) int64 array
+///     noise2_bank: flattened (num_noise2, shots, 4) int64 array
+///     erased_bank: flattened (num_erasures, shots) int64 array
+///     measurement_bank: flattened (num_meas_noise, shots, 1) int64 array
+///
+/// Returns:
+///     numpy int64 array of shape (shots, num_measurements) — transposed from internal layout
+#[pyfunction]
+fn run_frame<'py>(
+    py: Python<'py>,
+    ir_array: PyReadonlyArray2<'py, i64>,
+    reference_sample: PyReadonlyArray1<'py, i64>,
+    num_qudits: usize,
+    dimension: i64,
+    shots: usize,
+    noise1_bank: PyReadonlyArray1<'py, i64>,
+    noise2_bank: PyReadonlyArray1<'py, i64>,
+    erased_bank: PyReadonlyArray1<'py, i64>,
+    measurement_bank: PyReadonlyArray1<'py, i64>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let arr = ir_array.as_array();
+    let n_instr = arr.nrows();
+
+    let mut instructions = Vec::with_capacity(n_instr);
+    for i in 0..n_instr {
+        instructions.push(IrInstruction {
+            gate_id: arr[[i, 0]],
+            qudit_index: arr[[i, 1]],
+            target_index: arr[[i, 2]],
+            arg0: arr[[i, 3]],
+        });
+    }
+
+    let ref_sample = reference_sample.as_slice()?;
+    let n1 = noise1_bank.as_slice()?;
+    let n2 = noise2_bank.as_slice()?;
+    let erased = erased_bank.as_slice()?;
+    let meas = measurement_bank.as_slice()?;
+
+    let flat_results = core_run_frame(
+        &instructions,
+        ref_sample,
+        num_qudits,
+        dimension,
+        shots,
+        n1,
+        n2,
+        erased,
+        meas,
+    );
+
+    // flat_results is (num_measurements * shots) row-major: results[m][s]
+    // Python expects (shots, num_measurements), so we need to transpose
+    let num_measurements = ref_sample.len();
+    let mut out = Array2::<i64>::zeros((shots, num_measurements));
+    for m in 0..num_measurements {
+        for s in 0..shots {
+            out[[s, m]] = flat_results[m * shots + s];
+        }
+    }
+
+    Ok(out.into_pyarray(py))
+}
+
 /// Python module: sdim._sdim_rs
 #[pymodule]
 fn _sdim_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_ir, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(snf_mod, m)?)?;
+    m.add_function(wrap_pyfunction!(run_frame, m)?)?;
     Ok(())
 }

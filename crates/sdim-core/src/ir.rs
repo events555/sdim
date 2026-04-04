@@ -37,13 +37,13 @@ fn is_noise_gate(gate_id: i64) -> bool {
 
 /// Returns true if the gate is collapsing (measurement or reset).
 #[inline]
-fn is_collapsing(gate_id: i64) -> bool {
+pub fn is_collapsing(gate_id: i64) -> bool {
     matches!(gate_id, GATE_M | GATE_MR | GATE_M_X | GATE_MR_X | GATE_RESET)
 }
 
 /// Returns true if the gate records a measurement result.
 #[inline]
-fn is_recording(gate_id: i64) -> bool {
+pub fn is_recording(gate_id: i64) -> bool {
     matches!(gate_id, GATE_M | GATE_MR | GATE_M_X | GATE_MR_X | GATE_HERALDED_ERASURE)
 }
 
