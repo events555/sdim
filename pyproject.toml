@@ -1,34 +1,47 @@
-[tool.poetry]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
 name = "sdim"
-version = "1.2.0"
+version = "2.0.0"
 description = "A tableau Clifford simulator for qudits"
-authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>"]
-license = "GPL-3.0-or-later"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
+]
 keywords = ["quantum computing", "Clifford simulator", "qudits"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "numpy>=1.25.0",
+    "modularsnf",
+]
 
-[tool.poetry.urls]
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "ty", "sympy"]
+interop = ["cirq"]
+
+[project.urls]
 Homepage = "https://events555.github.io/sdim/sdim.html"
 Repository = "https://github.com/events555/sdim"
 Documentation = "https://events555.github.io/sdim/sdim.html"
 
-[tool.poetry.dependencies]
-python = "^3.11"
-numpy = ">=1.25.0"
-sympy = ">=1.12.1"
-cirq = ">=1.0.0"
-Diophantine = "*"
-numba = "*"
-networkx = "^3.4.2"
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --cov=sdim --cov-report=term-missing"
+testpaths = ["tests"]
 
-[tool.poetry.dev-dependencies]
-pdoc = "*"
+[tool.ruff]
+line-length = 80
+target-version = "py311"
+extend-exclude = ["examples/"]
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.ruff.lint]
+select = ["F", "E9"]

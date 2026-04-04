@@ -1,33 +1,32 @@
-# Ignore everything by default except the directories
+# Ignore everything by default
 *
 
-# Whitelist specific files and directories
+# Whitelist project source and config
 !sdim/
-!circuits/
-!docs/
-!examples/
-!tests/
-
 !sdim/**
-!circuits/**
-!docs/**
-!examples/**
+!tests/
 !tests/**
+!circuits/
+!circuits/**
+!docs/
+!docs/**
+!examples/
+!examples/**
+!.github/
+!.github/**
 
+!pyproject.toml
+!uv.lock
 !README.md
 !CHANGELOG.md
 !TODO.md
-
-!pyproject.toml
-!poetry.lock
-
 !LICENSE
-
 !CITATION.cff
+!Justfile
 
-# Ignore specific files and directories
 circuits/random*.chp
 circuits/failed*.chp
 circuits/test*.chp
-
 **/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
