@@ -95,8 +95,8 @@ impl ResultArray {
 
 /// Build mod-d LUT: for every possible i8 bit pattern (interpreted as u8 index),
 /// return the value mod d in [0, d). Since values never actually overflow
-/// (guaranteed by the Fibonacci bound), the only entries that matter are
-/// those reachable without wrapping. But we fill all 256 for safety.
+/// (guaranteed by the Fibonacci bound for d ≤ 64), the only entries that matter
+/// are those reachable without wrapping. We fill all 256 for completeness.
 fn build_mod_lut(d: i8) -> [i8; 256] {
     let mut lut = [0i8; 256];
     for i in 0u16..256 {
@@ -106,6 +106,21 @@ fn build_mod_lut(d: i8) -> [i8; 256] {
         lut[i as usize] = r;
     }
     lut
+}
+
+/// Safe modular add for d > 64: widens to i16, reduces, narrows back.
+/// Used in the pre_reduce path where wrapping_add would be incorrect.
+#[inline(always)]
+fn safe_add(a: i8, b: i8, d: i16) -> i8 {
+    let r = (a as i16 + b as i16).rem_euclid(d);
+    r as i8
+}
+
+/// Safe modular subtract for d > 64.
+#[inline(always)]
+fn safe_sub(a: i8, b: i8, d: i16) -> i8 {
+    let r = (a as i16 - b as i16).rem_euclid(d);
+    r as i8
 }
 
 /// Fibonacci-bounded reduction interval.
@@ -277,53 +292,97 @@ pub fn run_frame(
                     GATE_H => hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, false),
                     GATE_H_INV => hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, true),
                     GATE_P => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut); }
-                        let xr = x_frame.row(qi);
-                        let zr = z_frame.row_mut(qi);
-                        for s in 0..shots { zr[s] = zr[s].wrapping_add(xr[s]); }
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut);
+                            let xr = x_frame.row(qi); let zr = z_frame.row_mut(qi);
+                            let d16 = d as i16;
+                            for s in 0..shots { zr[s] = safe_add(zr[s], xr[s], d16); }
+                        } else {
+                            let xr = x_frame.row(qi); let zr = z_frame.row_mut(qi);
+                            for s in 0..shots { zr[s] = zr[s].wrapping_add(xr[s]); }
+                        }
                     }
                     GATE_P_INV => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut); }
-                        let xr = x_frame.row(qi);
-                        let zr = z_frame.row_mut(qi);
-                        for s in 0..shots { zr[s] = zr[s].wrapping_sub(xr[s]); }
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut);
+                            let xr = x_frame.row(qi); let zr = z_frame.row_mut(qi);
+                            let d16 = d as i16;
+                            for s in 0..shots { zr[s] = safe_sub(zr[s], xr[s], d16); }
+                        } else {
+                            let xr = x_frame.row(qi); let zr = z_frame.row_mut(qi);
+                            for s in 0..shots { zr[s] = zr[s].wrapping_sub(xr[s]); }
+                        }
                     }
                     GATE_CNOT => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut); }
-                        let (xq, xt) = x_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots { xt[s] = xt[s].wrapping_add(xq[s]); }
-                        if pre_reduce { z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
-                        let (zq, zt) = z_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots { zq[s] = zq[s].wrapping_sub(zt[s]); }
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                            let d16 = d as i16;
+                            let (xq, xt) = x_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { xt[s] = safe_add(xt[s], xq[s], d16); }
+                            z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { zq[s] = safe_sub(zq[s], zt[s], d16); }
+                        } else {
+                            let (xq, xt) = x_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { xt[s] = xt[s].wrapping_add(xq[s]); }
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { zq[s] = zq[s].wrapping_sub(zt[s]); }
+                        }
                     }
                     GATE_CNOT_INV => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut); }
-                        let (xq, xt) = x_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots { xt[s] = xt[s].wrapping_sub(xq[s]); }
-                        if pre_reduce { z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
-                        let (zq, zt) = z_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots { zq[s] = zq[s].wrapping_add(zt[s]); }
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                            let d16 = d as i16;
+                            let (xq, xt) = x_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { xt[s] = safe_sub(xt[s], xq[s], d16); }
+                            z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { zq[s] = safe_add(zq[s], zt[s], d16); }
+                        } else {
+                            let (xq, xt) = x_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { xt[s] = xt[s].wrapping_sub(xq[s]); }
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots { zq[s] = zq[s].wrapping_add(zt[s]); }
+                        }
                     }
                     GATE_CZ => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
-                                        z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
-                        let xq = x_frame.row(qi);
-                        let xt = x_frame.row(ti);
-                        let (zq, zt) = z_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots {
-                            zt[s] = zt[s].wrapping_add(xq[s]);
-                            zq[s] = zq[s].wrapping_add(xt[s]);
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                            z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut);
+                            let d16 = d as i16;
+                            let xq = x_frame.row(qi); let xt = x_frame.row(ti);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots {
+                                zt[s] = safe_add(zt[s], xq[s], d16);
+                                zq[s] = safe_add(zq[s], xt[s], d16);
+                            }
+                        } else {
+                            let xq = x_frame.row(qi); let xt = x_frame.row(ti);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots {
+                                zt[s] = zt[s].wrapping_add(xq[s]);
+                                zq[s] = zq[s].wrapping_add(xt[s]);
+                            }
                         }
                     }
                     GATE_CZ_INV => {
-                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
-                                        z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
-                        let xq = x_frame.row(qi);
-                        let xt = x_frame.row(ti);
-                        let (zq, zt) = z_frame.two_rows_mut(qi, ti);
-                        for s in 0..shots {
-                            zt[s] = zt[s].wrapping_sub(xq[s]);
-                            zq[s] = zq[s].wrapping_sub(xt[s]);
+                        if pre_reduce {
+                            x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                            z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut);
+                            let d16 = d as i16;
+                            let xq = x_frame.row(qi); let xt = x_frame.row(ti);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots {
+                                zt[s] = safe_sub(zt[s], xq[s], d16);
+                                zq[s] = safe_sub(zq[s], xt[s], d16);
+                            }
+                        } else {
+                            let xq = x_frame.row(qi); let xt = x_frame.row(ti);
+                            let (zq, zt) = z_frame.two_rows_mut(qi, ti);
+                            for s in 0..shots {
+                                zt[s] = zt[s].wrapping_sub(xq[s]);
+                                zq[s] = zq[s].wrapping_sub(xt[s]);
+                            }
                         }
                     }
                     GATE_SWAP => {
