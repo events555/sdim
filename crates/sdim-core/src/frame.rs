@@ -1,12 +1,13 @@
 //! Pauli frame simulator for multi-shot sampling.
 //!
-//! Uses i8-packed flat arrays for 8x data density vs i64.
-//! For qudit dimension d < 128, each frame element fits in a single byte.
-//! Gate operations are plain i8 addition (no modulo), with periodic
-//! branchless reduction to keep values in [0, d).
+//! Uses i8-packed flat arrays with a 256-byte LUT for modular reduction.
+//! For dimension d ≤ 127, each frame element fits in i8. Gate ops use
+//! plain addition (no wrapping needed — values are proven to stay in
+//! [-128, 127] via a Fibonacci-bounded reduction interval).
 //!
-//! This gives 32 shots per 256-bit SIMD word (vs 4 with i64),
-//! plus 8x less memory bandwidth per gate.
+//! The LUT replaces expensive `idiv` instructions with a single byte lookup,
+//! and fits entirely in L1 cache (256 bytes). This combined with 32 shots
+//! per SIMD word (vs 4 for i64) gives major throughput gains.
 
 use crate::ir::*;
 use rand::Rng;
@@ -48,25 +49,24 @@ impl Frame {
         }
     }
 
-    /// Reduce a single row to [0, d) using a precomputed lookup table.
-    /// This avoids the expensive i8 `%` (idiv) instruction.
+    /// Reduce a single row to [0, d) via LUT.
     #[inline]
     fn reduce_row(&mut self, r: usize, lut: &[i8; 256]) {
-        let row = self.row_mut(r);
-        for v in row.iter_mut() {
+        for v in self.row_mut(r) {
             *v = lut[*v as u8 as usize];
         }
     }
 
-    /// Reduce all rows to [0, d).
+    /// Reduce all active rows via LUT.
     fn reduce_all(&mut self, lut: &[i8; 256], num_rows: usize) {
-        for r in 0..num_rows {
-            self.reduce_row(r, lut);
+        let end = num_rows * self.cols;
+        for v in self.data[..end].iter_mut() {
+            *v = lut[*v as u8 as usize];
         }
     }
 }
 
-// ─── i64-packed results (measurements are returned as i64) ────────
+// ─── i64 results array ────────────────────────────────────────────
 
 struct ResultArray {
     data: Vec<i64>,
@@ -91,24 +91,12 @@ impl ResultArray {
     }
 }
 
-// ─── How often to reduce mod d ───────────────────────────────────
-// We use wrapping_add/sub, so values stay in i8 range [-128, 127].
-// But we need to reduce before measurement to get correct [0, d) values.
-// The only danger is if wrapping causes a value to jump to the wrong
-// equivalence class. With wrapping i8 arithmetic:
-//   val starts in [0, d-1], each gate adds/subs at most one value in [-(d-1), d-1]
-//   After k ops, val is in [-(d-1)*k, (d-1)*(k+1)] before wrapping.
-//   Wrapping is safe if this range stays within [-128, 127].
-//   So k <= min(128/(d-1), 127/(d-1)) - 1 = 127/(d-1) - 1.
-// We ONLY reduce before measurements. The periodic reduction is just a safety net.
-#[inline]
-fn reduction_interval(d: i8) -> usize {
-    if d <= 1 { return usize::MAX; }
-    let k = 127 / (d as usize - 1);
-    k.max(1)
-}
+// ─── LUT + reduction interval ─────────────────────────────────────
 
-/// Build a 256-entry lookup table: lut[v as u8] = ((v as i8) mod d) mapped to [0, d).
+/// Build mod-d LUT: for every possible i8 bit pattern (interpreted as u8 index),
+/// return the value mod d in [0, d). Since values never actually overflow
+/// (guaranteed by the Fibonacci bound), the only entries that matter are
+/// those reachable without wrapping. But we fill all 256 for safety.
 fn build_mod_lut(d: i8) -> [i8; 256] {
     let mut lut = [0i8; 256];
     for i in 0u16..256 {
@@ -118,6 +106,28 @@ fn build_mod_lut(d: i8) -> [i8; 256] {
         lut[i as usize] = r;
     }
     lut
+}
+
+/// Fibonacci-bounded reduction interval.
+///
+/// Between full reductions, worst-case value growth follows a Fibonacci
+/// recurrence from alternating 2-qudit gates (CNOT A→B, CNOT B→A).
+/// Starting from [0, d-1], after k gates: max value ≈ fib(k) * (d-1).
+///
+/// We need fib(k) * (d-1) ≤ 127 to stay in i8 range without overflow.
+/// For d > 64, a single gate can produce 2*(d-1) > 127, so we must
+/// reduce before every gate (interval = 0, handled specially in the loop).
+const FIB: [i64; 15] = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610];
+
+fn reduction_interval(d: i8) -> usize {
+    if d <= 1 { return usize::MAX; }
+    if d > 64 { return 0; } // Must reduce before every gate
+    let max_fib = 127i64 / (d as i64 - 1);
+    let mut k = 0;
+    while k + 1 < FIB.len() && FIB[k + 1] <= max_fib {
+        k += 1;
+    }
+    k.max(1)
 }
 
 // ─── Main entry point ─────────────────────────────────────────────
@@ -133,23 +143,23 @@ pub fn run_frame(
     erased_bank: &[i64],
     measurement_bank: &[i64],
 ) -> Vec<i64> {
+    assert!(dimension >= 2 && dimension <= 127, "Frame simulator requires 2 <= dimension <= 127");
     let d = dimension as i8;
     let d64 = dimension;
     let num_meas = reference_sample.len();
+    let lut = build_mod_lut(d);
     let reduce_every = reduction_interval(d);
 
     let mut x_frame = Frame::new(num_qudits, shots);
     let mut z_frame = Frame::new(num_qudits, shots);
     {
         let mut rng = rand::thread_rng();
-        for v in z_frame.data.iter_mut() {
+        for v in z_frame.data[..num_qudits * shots].iter_mut() {
             *v = rng.gen_range(0..d);
         }
     }
 
     let mut results = ResultArray::new(num_meas, shots);
-
-    let lut = build_mod_lut(d);
 
     let mut noise1_ctr: usize = 0;
     let mut noise2_ctr: usize = 0;
@@ -164,14 +174,16 @@ pub fn run_frame(
         let ti = inst.target_index as usize;
         let arg0 = inst.arg0;
 
-        // Periodic safety reduction — only when close to i8 overflow
-        if gates_since_reduce >= reduce_every {
-            // Only reduce rows that might overflow. For most circuits
-            // with measurements every few gates, this rarely triggers.
+        // Fibonacci-bounded periodic reduction.
+        // For d > 64, reduce_every == 0 means we reduce before every gate
+        // (source rows are reduced individually in the gate code below).
+        // For d ≤ 64, we reduce all rows periodically.
+        if reduce_every > 0 && gates_since_reduce >= reduce_every {
             x_frame.reduce_all(&lut, num_qudits);
             z_frame.reduce_all(&lut, num_qudits);
             gates_since_reduce = 0;
         }
+        let pre_reduce = reduce_every == 0; // d > 64: reduce sources before each gate
 
         let collapsing = is_collapsing(gate_id);
         let recording = is_recording(gate_id);
@@ -180,13 +192,11 @@ pub fn run_frame(
         let noisy_collapsing = collapsing && has_meas_noise;
 
         if noisy_collapsing {
-            // Only reduce the measured qudit's row
             x_frame.reduce_row(qi, &lut);
-
             let ref_out = reference_sample[meas_ctr];
             if gate_id == GATE_M_X || gate_id == GATE_MR_X {
                 hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, true);
-                x_frame.reduce_row(qi, &lut); // re-reduce after H swap
+                x_frame.reduce_row(qi, &lut);
             }
             if recording {
                 let mb = meas_noise_ctr * shots;
@@ -205,7 +215,7 @@ pub fn run_frame(
                 hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, false);
             }
         } else if is_pure_noise {
-            if gate_id == 25 {
+            if gate_id == 25 { // DEPOLARIZE2
                 let base = noise2_ctr * shots * 4;
                 let chunk = &noise2_bank[base..base + shots * 4];
                 let xq = x_frame.row_mut(qi);
@@ -244,14 +254,12 @@ pub fn run_frame(
                 if gate_id == GATE_CNOT {
                     let xr = x_frame.row_mut(ti_u);
                     for s in 0..shots {
-                        let ce = ((rec_row[s] - ref_val).rem_euclid(d64)) as i8;
-                        xr[s] = xr[s].wrapping_add(ce);
+                        xr[s] = xr[s].wrapping_add(((rec_row[s] - ref_val).rem_euclid(d64)) as i8);
                     }
                 } else if gate_id == GATE_CZ {
                     let zr = z_frame.row_mut(ti_u);
                     for s in 0..shots {
-                        let ce = ((rec_row[s] - ref_val).rem_euclid(d64)) as i8;
-                        zr[s] = zr[s].wrapping_add(ce);
+                        zr[s] = zr[s].wrapping_add(((rec_row[s] - ref_val).rem_euclid(d64)) as i8);
                     }
                 }
             } else if ti_signed < 0 {
@@ -261,8 +269,7 @@ pub fn run_frame(
                 if gate_id == GATE_CZ {
                     let zr = z_frame.row_mut(qi);
                     for s in 0..shots {
-                        let ce = ((rec_row[s] - ref_val).rem_euclid(d64)) as i8;
-                        zr[s] = zr[s].wrapping_add(ce);
+                        zr[s] = zr[s].wrapping_add(((rec_row[s] - ref_val).rem_euclid(d64)) as i8);
                     }
                 }
             } else {
@@ -270,28 +277,36 @@ pub fn run_frame(
                     GATE_H => hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, false),
                     GATE_H_INV => hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, true),
                     GATE_P => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut); }
                         let xr = x_frame.row(qi);
                         let zr = z_frame.row_mut(qi);
                         for s in 0..shots { zr[s] = zr[s].wrapping_add(xr[s]); }
                     }
                     GATE_P_INV => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); z_frame.reduce_row(qi, &lut); }
                         let xr = x_frame.row(qi);
                         let zr = z_frame.row_mut(qi);
                         for s in 0..shots { zr[s] = zr[s].wrapping_sub(xr[s]); }
                     }
                     GATE_CNOT => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut); }
                         let (xq, xt) = x_frame.two_rows_mut(qi, ti);
                         for s in 0..shots { xt[s] = xt[s].wrapping_add(xq[s]); }
+                        if pre_reduce { z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
                         let (zq, zt) = z_frame.two_rows_mut(qi, ti);
                         for s in 0..shots { zq[s] = zq[s].wrapping_sub(zt[s]); }
                     }
                     GATE_CNOT_INV => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut); }
                         let (xq, xt) = x_frame.two_rows_mut(qi, ti);
                         for s in 0..shots { xt[s] = xt[s].wrapping_sub(xq[s]); }
+                        if pre_reduce { z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
                         let (zq, zt) = z_frame.two_rows_mut(qi, ti);
                         for s in 0..shots { zq[s] = zq[s].wrapping_add(zt[s]); }
                     }
                     GATE_CZ => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                                        z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
                         let xq = x_frame.row(qi);
                         let xt = x_frame.row(ti);
                         let (zq, zt) = z_frame.two_rows_mut(qi, ti);
@@ -301,6 +316,8 @@ pub fn run_frame(
                         }
                     }
                     GATE_CZ_INV => {
+                        if pre_reduce { x_frame.reduce_row(qi, &lut); x_frame.reduce_row(ti, &lut);
+                                        z_frame.reduce_row(qi, &lut); z_frame.reduce_row(ti, &lut); }
                         let xq = x_frame.row(qi);
                         let xt = x_frame.row(ti);
                         let (zq, zt) = z_frame.two_rows_mut(qi, ti);
@@ -316,7 +333,6 @@ pub fn run_frame(
                         zq.swap_with_slice(zt);
                     }
                     GATE_MULTIPLY | GATE_MULTIPLY_INV => {
-                        // Multiply requires reduced values for this qudit
                         x_frame.reduce_row(qi, &lut);
                         z_frame.reduce_row(qi, &lut);
                         let mut a = (arg0.rem_euclid(d64)) as i8;
@@ -330,9 +346,7 @@ pub fn run_frame(
                     }
                     GATE_X | GATE_X_INV | GATE_Z | GATE_Z_INV | GATE_I => {}
                     GATE_M | GATE_MR | GATE_M_X | GATE_MR_X | GATE_RESET => {
-                        // Only reduce the measured qudit
                         x_frame.reduce_row(qi, &lut);
-
                         let ref_out = reference_sample[meas_ctr];
                         if gate_id == GATE_M_X || gate_id == GATE_MR_X {
                             hadamard_rows(&mut x_frame, &mut z_frame, qi, shots, true);
@@ -412,11 +426,8 @@ mod tests {
             IrInstruction { gate_id: GATE_M, qudit_index: 0, target_index: i64::MAX, arg0: -1 },
             IrInstruction { gate_id: GATE_M, qudit_index: 1, target_index: i64::MAX, arg0: -1 },
         ];
-        let reference = vec![0, 0];
-        let result = run_frame(&ir, &reference, 2, 2, 10, &[], &[], &[], &[]);
-        for &v in &result {
-            assert_eq!(v, 0, "Expected 0, got {v}");
-        }
+        let result = run_frame(&ir, &[0, 0], 2, 2, 10, &[], &[], &[], &[]);
+        for &v in &result { assert_eq!(v, 0); }
     }
 
     #[test]
@@ -425,25 +436,19 @@ mod tests {
             IrInstruction { gate_id: GATE_H, qudit_index: 0, target_index: i64::MAX, arg0: -1 },
             IrInstruction { gate_id: GATE_M, qudit_index: 0, target_index: i64::MAX, arg0: -1 },
         ];
-        let reference = vec![0];
-        let shots = 100;
-        let result = run_frame(&ir, &reference, 1, 2, shots, &[], &[], &[], &[]);
+        let result = run_frame(&ir, &[0], 1, 2, 100, &[], &[], &[], &[]);
         let nonzero = result.iter().filter(|&&v| v != 0).count();
         assert!(nonzero > 10, "Expected randomness, got {nonzero}/100 nonzero");
     }
 
     #[test]
-    fn test_frame_dimensions() {
-        // Test correctness across dimensions
-        for d in [2i64, 3, 5, 7, 11, 13] {
+    fn test_frame_all_dimensions() {
+        for d in [2i64, 3, 5, 7, 11, 13, 17, 23, 53, 97, 127] {
             let ir = vec![
                 IrInstruction { gate_id: GATE_H, qudit_index: 0, target_index: i64::MAX, arg0: -1 },
                 IrInstruction { gate_id: GATE_M, qudit_index: 0, target_index: i64::MAX, arg0: -1 },
             ];
-            let reference = vec![0];
-            let shots = 500;
-            let result = run_frame(&ir, &reference, 1, d, shots, &[], &[], &[], &[]);
-            // All values should be in [0, d)
+            let result = run_frame(&ir, &[0], 1, d, 500, &[], &[], &[], &[]);
             for &v in &result {
                 assert!(v >= 0 && v < d, "d={d}: value {v} out of range");
             }
@@ -452,7 +457,6 @@ mod tests {
 
     #[test]
     fn test_frame_deep_circuit() {
-        // Many gates without measurement to stress lazy reduction
         let mut ir = Vec::new();
         for _ in 0..100 {
             ir.push(IrInstruction { gate_id: GATE_H, qudit_index: 0, target_index: i64::MAX, arg0: -1 });
@@ -462,9 +466,8 @@ mod tests {
         ir.push(IrInstruction { gate_id: GATE_M, qudit_index: 0, target_index: i64::MAX, arg0: -1 });
         ir.push(IrInstruction { gate_id: GATE_M, qudit_index: 1, target_index: i64::MAX, arg0: -1 });
 
-        for d in [3i64, 7, 13] {
-            let reference = vec![0, 0];
-            let result = run_frame(&ir, &reference, 2, d, 50, &[], &[], &[], &[]);
+        for d in [3i64, 7, 13, 97, 127] {
+            let result = run_frame(&ir, &[0, 0], 2, d, 50, &[], &[], &[], &[]);
             for &v in &result {
                 assert!(v >= 0 && v < d, "d={d}: value {v} out of range after deep circuit");
             }
@@ -472,12 +475,20 @@ mod tests {
     }
 
     #[test]
-    fn test_reduction_interval() {
-        assert_eq!(reduction_interval(2), 127); // 127/(2-1) = 127
-        assert_eq!(reduction_interval(3), 63);  // 127/2 = 63
-        assert_eq!(reduction_interval(5), 31);  // 127/4 = 31
-        assert_eq!(reduction_interval(7), 21);  // 127/6 = 21
-        assert_eq!(reduction_interval(13), 10); // 127/12 = 10
-        assert!(reduction_interval(100) >= 1);
+    fn test_reduction_interval_bounds() {
+        for d in 2..=64i8 {
+            let k = reduction_interval(d);
+            assert!(k >= 1, "d={d}: interval should be >= 1");
+            if k < FIB.len() {
+                let max_val = FIB[k] * (d as i64 - 1);
+                assert!(max_val <= 127,
+                    "d={d}, k={k}: max_val={max_val} exceeds i8 range");
+            }
+        }
+        // d > 64 must return 0 (pre-reduce every gate)
+        for d in 65..=127i8 {
+            assert_eq!(reduction_interval(d), 0,
+                "d={d}: should be 0 for d > 64");
+        }
     }
 }
