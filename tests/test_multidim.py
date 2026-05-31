@@ -6,13 +6,15 @@ Three tiers:
   3. TVD tomography: statistical comparison against Cirq statevector (slow).
 """
 
+import math
+import random
+
 import numpy as np
 import pytest
 
 from sdim import (
     Circuit,
     TableauSimulator,
-    generate_random_clifford_circuit,
 )
 
 DIMENSIONS = [2, 3, 4, 5, 6, 7, 8, 9]
@@ -150,73 +152,109 @@ class TestSymplecticInvariant:
 
 
 class TestTVDTomography:
-    """Tier 1: statistical validation against Cirq statevector.
+    """Sampler vs Cirq statevector over random Cliffords, all d. Needs cirq."""
 
-    Only runs when cirq is available and d^n <= 5000.
-    """
-
-    MAX_HILBERT = 5000
-    TVD_THRESHOLD = 0.20
-    SHOTS_MULTIPLIER = 20
-    MIN_SHOTS = 2000
+    MAX_HILBERT = 4096
+    SHOTS_PER_OUTCOME = 40
+    MIN_SHOTS = 4000
+    SEEDS_PER_CONFIG = 10
+    DEPTHS = [20, 60]
+    DELTA_TOTAL = 1e-9  # suite-wide false-failure budget (Bonferroni)
 
     @pytest.fixture(autouse=True)
     def _skip_without_cirq(self):
         pytest.importorskip("cirq")
 
     @staticmethod
-    def tvd(empirical: dict, exact: np.ndarray, d: int, n: int) -> float:
-        """Total variation distance between empirical counts and exact distribution."""
-        total_shots = sum(empirical.values())
-        dist = 0.0
-        for basis_idx in range(d**n):
-            p_exact = float(np.abs(exact[basis_idx]) ** 2)
-            p_emp = empirical.get(basis_idx, 0) / total_shots
-            dist += abs(p_exact - p_emp)
-        return dist / 2.0
+    def tvd_threshold(
+        num_outcomes: int,
+        shots: int,
+        num_comparisons: int,
+        *,
+        delta_total: float = DELTA_TOTAL,
+        two_sample: bool = False,
+    ) -> float:
+        # E[TVD] <= 0.5*sqrt((K-1)/S) (multinomial) + McDiarmid tail margin,
+        # delta split Bonferroni-style over the sweep. two_sample doubles it.
+        K, S = num_outcomes, shots
+        base = math.sqrt((K - 1) / S)
+        expected = base if two_sample else 0.5 * base
+        delta = delta_total / max(num_comparisons, 1)
+        margin_factor = math.sqrt(2.0) if two_sample else 1.0
+        margin = margin_factor * math.sqrt(math.log(1.0 / delta) / (2 * S))
+        return expected + margin
 
     @staticmethod
-    def outcomes_to_scalar(results: np.ndarray, d: int) -> list[int]:
-        """Convert (shots, n) measurement array to base-d scalars."""
-        n = results.shape[1]
-        powers = np.array([d ** (n - 1 - i) for i in range(n)])
-        return list(results @ powers)
+    def outcomes_to_scalars(results: np.ndarray, d: int) -> np.ndarray:
+        """Convert a (shots, m) measurement array to base-d scalars."""
+        m = results.shape[1]
+        powers = np.array([d ** (m - 1 - i) for i in range(m)], dtype=np.int64)
+        return results.astype(np.int64) @ powers
+
+    @staticmethod
+    def empirical_tvd(scalars: np.ndarray, ref: np.ndarray, K: int) -> float:
+        """TVD between sampled scalars and a reference probability vector."""
+        counts = np.bincount(scalars, minlength=K).astype(float)
+        emp = counts / counts.sum()
+        return 0.5 * float(np.abs(emp - ref).sum())
+
+    @staticmethod
+    def _random_circuit(
+        n: int,
+        depth: int,
+        d: int,
+        seed: int,
+        measurement_rounds: int,
+    ) -> Circuit:
+        # Private RNG: a given seed yields the same unitary for any
+        # measurement_rounds, so statevector and sampling circuits match.
+        rng = random.Random(seed)
+        coprimes = [a for a in range(2, d) if math.gcd(a, d) == 1]
+        one_q = ["H", "P", "X", "Z", "H_INV", "P_INV", "X_INV", "Z_INV"]
+        two_q = ["CNOT", "CNOT_INV", "CZ", "CZ_INV", "SWAP"]
+        c = Circuit(n, d)
+        for _ in range(depth):
+            roll = rng.random()
+            if n > 1 and roll < 0.4:
+                g = rng.choice(two_q)
+                a, b = rng.sample(range(n), 2)
+                c.append(g, a, b)
+            elif coprimes and roll < 0.55:
+                c.append("MULTIPLY", rng.randrange(n), args=rng.choice(coprimes))
+            else:
+                c.append(rng.choice(one_q), rng.randrange(n))
+        for _ in range(measurement_rounds):
+            for q in range(n):
+                c.append("M", q)
+        return c
 
     @pytest.mark.parametrize("d", DIMENSIONS)
     def test_random_clifford_tvd(self, d):
-        from collections import Counter
-
+        """Terminal-measurement distribution vs exact statevector."""
         from sdim import cirq_statevector_from_circuit
 
-        max_n = 1
-        while d ** (max_n + 1) <= self.MAX_HILBERT:
-            max_n += 1
-        max_n = min(max_n, 12)
+        ns = [n for n in (2, 3) if d**n <= self.MAX_HILBERT]
+        num_comparisons = len(DIMENSIONS) * len(ns) * len(self.DEPTHS) * (
+            self.SEEDS_PER_CONFIG
+        )
 
-        for n in range(2, max_n + 1):
-            shots = max(self.MIN_SHOTS, self.SHOTS_MULTIPLIER * d**n)
-            circuit = generate_random_clifford_circuit(
-                num_qudits=n,
-                num_gates=50,
-                dimension=d,
-                measurement_rounds=0,
-                seed=d * 1000 + n,
-            )
-            sv = cirq_statevector_from_circuit(circuit)
+        for n in ns:
+            K = d**n
+            shots = max(self.MIN_SHOTS, self.SHOTS_PER_OUTCOME * K)
+            threshold = self.tvd_threshold(K, shots, num_comparisons)
+            for depth in self.DEPTHS:
+                for s in range(self.SEEDS_PER_CONFIG):
+                    seed = d * 100_003 + n * 911 + depth * 13 + s
+                    base = self._random_circuit(n, depth, d, seed, 0)
+                    sv = cirq_statevector_from_circuit(base)
+                    ref = np.abs(sv) ** 2
 
-            meas_circuit = generate_random_clifford_circuit(
-                num_qudits=n,
-                num_gates=50,
-                dimension=d,
-                measurement_rounds=1,
-                seed=d * 1000 + n,
-            )
-            sampler = meas_circuit.compile_sampler()
-            results = sampler.sample(shots)
+                    meas = self._random_circuit(n, depth, d, seed, 1)
+                    results = meas.compile_sampler().sample(shots)
+                    scalars = self.outcomes_to_scalars(results, d)
+                    dist = self.empirical_tvd(scalars, ref, K)
 
-            scalars = self.outcomes_to_scalar(results, d)
-            counts = Counter(scalars)
-            distance = self.tvd(counts, sv, d, n)
-            assert distance < self.TVD_THRESHOLD, (
-                f"TVD={distance:.3f} > {self.TVD_THRESHOLD} for d={d}, n={n}, shots={shots}"
-            )
+                    assert dist < threshold, (
+                        f"TVD={dist:.4f} >= {threshold:.4f} for d={d}, n={n}, "
+                        f"depth={depth}, seed={seed}, shots={shots}"
+                    )
