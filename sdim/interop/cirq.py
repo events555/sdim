@@ -7,8 +7,9 @@ from .unitary import (
     generate_cnot_matrix,
     generate_h_matrix,
     generate_identity_matrix,
-    generate_multiply_matrix,
+    generate_m_matrix,
     generate_p_matrix,
+    generate_swap_matrix,
     generate_x_matrix,
     generate_z_matrix,
 )
@@ -231,7 +232,7 @@ def _gate_classes():
             return (self.d,)
 
         def _unitary_(self):
-            return generate_multiply_matrix(self.d, self.a)
+            return generate_m_matrix(self.d, self.a)
 
         def __pow__(self, power):
             if power == 1:
@@ -337,8 +338,30 @@ def _gate_classes():
         def _circuit_diagram_info_(self, args):
             return (f"CZ_{self.d}_control†", f"CZ_{self.d}_target†")
 
+    class GeneralizedSwapGate(cirq.Gate):
+        def __init__(self, d):
+            super().__init__()
+            self.d = d
+
+        def _qid_shape_(self):
+            return (self.d, self.d)
+
+        def _unitary_(self):
+            return generate_swap_matrix(self.d)
+
+        def __pow__(self, power):
+            if power == 0:
+                return IdentityGate(self.d)
+            if power in (1, -1):
+                return self
+            return NotImplemented
+
+        def _circuit_diagram_info_(self, args):
+            return (f"SWAP_{self.d}_a", f"SWAP_{self.d}_b")
+
     return {
         "IdentityGate": IdentityGate,
+        "GeneralizedSwapGate": GeneralizedSwapGate,
         "GeneralizedHadamardGate": GeneralizedHadamardGate,
         "GeneralizedHadamardGateInverse": GeneralizedHadamardGateInverse,
         "GeneralizedPhaseShiftGate": GeneralizedPhaseShiftGate,
@@ -381,9 +404,11 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         "Z_INV": gates["GeneralizedZPauliGateInverse"](circuit.dimension),
         "CZ": gates["GeneralizedCZGate"](circuit.dimension),
         "CZ_INV": gates["GeneralizedCZGateInverse"](circuit.dimension),
+        "SWAP": gates["GeneralizedSwapGate"](circuit.dimension),
     }
 
     cirq_circuit = cirq.Circuit()
+    meas_counter = 0
 
     for inst in circuit.operations:
         name = gate_id_to_name(inst.gate_type)
@@ -417,8 +442,9 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
             if measurement:
                 for t in inst.targets:
                     cirq_circuit.append(
-                        cirq.measure(qudits[t._value], key=f"m_{t._value}")
+                        cirq.measure(qudits[t._value], key=f"m{meas_counter}")
                     )
+                    meas_counter += 1
         else:
             raise NotImplementedError(f"Gate {name} not implemented")
 

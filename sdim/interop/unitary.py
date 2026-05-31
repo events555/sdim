@@ -67,10 +67,8 @@ def generate_cnot_matrix(d: int) -> np.ndarray:
     return CNOT
 
 
-def generate_multiply_matrix(d: int, a: int) -> np.ndarray:
-    if np.gcd(a, d) != 1:
-        raise ValueError("a and d must be coprime")
-    M = np.zeros((d, d), dtype=np.complex128)
-    for i in range(d):
-        M[i, (a * i) % d] = 1
-    return M
+def generate_swap_matrix(d: int) -> np.ndarray:
+    SWAP = np.zeros((d**2, d**2), dtype=np.complex128)
+    for i, j in product(range(d), repeat=2):
+        SWAP[d * j + i, d * i + j] = 1
+    return SWAP
