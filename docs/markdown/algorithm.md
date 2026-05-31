@@ -125,7 +125,7 @@ The measurement outcome $h$ satisfies
 
 $$2\,s\,h \equiv t \pmod{D}$$
 
-Sample $h$ uniformly from the solution set $h_0 + \eta\,\mathbb{Z}_d$, which has $\eta$ equally likely outcomes. When $\eta = d$, there is exactly one solution (deterministic).
+Sample $h$ uniformly from the solution set $h_0 + \eta\,\mathbb{Z}_{d/\eta}$, which has $d/\eta = s$ equally likely outcomes. When $\eta = d$ (so $s = 1$), there is exactly one solution (deterministic).
 
 ### Step 5 — Collapse the Tableau
 

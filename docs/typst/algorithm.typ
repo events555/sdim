@@ -186,7 +186,7 @@ Evaluate the ordered product $Q = product_k S_k^(c_k)$ using the product and pow
 *Step 4 --- Sample the Outcome.*
 The measurement outcome $h$ satisfies
 $ 2 s h equiv t quad (mod D). $
-Sample $h$ uniformly from the solution set $h_0 + eta ZZ_d$, which has $eta$ equally likely outcomes. When $eta = d$, there is exactly one solution (deterministic).
+Sample $h$ uniformly from the solution set $h_0 + eta ZZ_(d \/ eta)$, which has $d \/ eta = s$ equally likely outcomes. When $eta = d$ (so $s = 1$), there is exactly one solution (deterministic).
 
 *Step 5 --- Collapse the Tableau.*
 Update the tableau to reflect the post-measurement state. Scale column~1 by $s$ (via generator scaling), which zeroes out its commutation with $P$, and insert the measurement result $R = tau^(-(delta + 2h)) Z^(bold(a)) X^(bold(b))$ as a new generator.
