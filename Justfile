@@ -2,7 +2,13 @@
 check: lint typecheck test
 
 lint:
+    uv run ruff format --check .
     uv run ruff check .
+
+# Apply formatting and autofixable lints
+fmt:
+    uv run ruff format .
+    uv run ruff check --fix .
 
 typecheck:
     uv run ty check sdim/ tests/
