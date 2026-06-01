@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -23,3 +23,4 @@ class CompiledCircuit:
     num_qudits: int
     dimension: int
     num_measurements: int
+    measurement_records: list = field(default_factory=list)

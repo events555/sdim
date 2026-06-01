@@ -350,6 +350,7 @@ class Circuit:
             circuit_object=self,
             reference_sample=compiled.reference_sample,
             ir_array=compiled.ir_array,
+            measurement_records=compiled.measurement_records,
             seed=seed,
         )
 
@@ -372,6 +373,7 @@ class Circuit:
             circuit_object=self,
             reference_sample=compiled.reference_sample,
             ir_array=compiled.ir_array,
+            measurement_records=compiled.measurement_records,
             seed=seed,
         )
 

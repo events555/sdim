@@ -37,7 +37,7 @@ class TableauSimulator:
         tau_exp: ``(2n,)`` array, entries mod 2d.
     """
 
-    __slots__ = ("n", "d", "l", "X", "Z", "tau_exp")
+    __slots__ = ("n", "d", "l", "X", "Z", "tau_exp", "last_destabilizer")
 
     def __init__(self, n: int = 1, d: int = 2) -> None:
         self.n = n
@@ -47,6 +47,7 @@ class TableauSimulator:
         self.Z = np.zeros((2 * n, n), dtype=np.int64)
         self.tau_exp = np.zeros(2 * n, dtype=np.int64)
         np.fill_diagonal(self.Z[:n], 1)
+        self.last_destabilizer: tuple | None = None
 
     @property
     def even(self) -> bool:
@@ -146,23 +147,27 @@ class TableauSimulator:
         xj = self.X[r, q]
         self.Z[r, q] = (self.Z[r, q] + dir_ * xj) % self.d
         if self.even:
-            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * xj)) % (2 * self.d)
+            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * xj)) % (
+                2 * self.d
+            )
         else:
-            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * (xj + 1))) % (2 * self.d)
+            self.tau_exp[r] = (self.tau_exp[r] + dir_ * (xj * (xj + 1))) % (
+                2 * self.d
+            )
 
     def pauli_x(self, q: int, power: int = 1, dagger: bool = False) -> None:
         r = self._rows()
         dir_ = -1 if dagger else 1
-        self.tau_exp[r] = (self.tau_exp[r] + dir_ * 2 * power * self.Z[r, q]) % (
-            2 * self.d
-        )
+        self.tau_exp[r] = (
+            self.tau_exp[r] + dir_ * 2 * power * self.Z[r, q]
+        ) % (2 * self.d)
 
     def pauli_z(self, q: int, power: int = 1, dagger: bool = False) -> None:
         r = self._rows()
         dir_ = -1 if dagger else 1
-        self.tau_exp[r] = (self.tau_exp[r] - dir_ * 2 * power * self.X[r, q]) % (
-            2 * self.d
-        )
+        self.tau_exp[r] = (
+            self.tau_exp[r] - dir_ * 2 * power * self.X[r, q]
+        ) % (2 * self.d)
 
     def cnot(self, c: int, t: int, dagger: bool = False) -> None:
         r = self._rows()
@@ -177,7 +182,9 @@ class TableauSimulator:
         x2 = self.X[r, q2].copy()
         self.Z[r, q1] = (self.Z[r, q1] + dir_ * x2) % self.d
         self.Z[r, q2] = (self.Z[r, q2] + dir_ * x1) % self.d
-        self.tau_exp[r] = (self.tau_exp[r] + 2 * dir_ * (x1 * x2)) % (2 * self.d)
+        self.tau_exp[r] = (self.tau_exp[r] + 2 * dir_ * (x1 * x2)) % (
+            2 * self.d
+        )
 
     def swap(self, q1: int, q2: int) -> None:
         if q1 != q2:
@@ -279,6 +286,14 @@ class TableauSimulator:
         if eta < d:
             _S, _U, V = _snf_mod(c.reshape(1, -1).tolist(), d)
             self._apply_column_transform(np.array(V, dtype=np.int64))
+            self.last_destabilizer = (
+                eta,
+                s,
+                self.Z[0].copy(),
+                self.X[0].copy(),
+            )
+        else:
+            self.last_destabilizer = None
 
         t, f1 = self._eigenvalue_Ps(a, b, delta, s)
         h = self._sample_outcome(t, s, eta)

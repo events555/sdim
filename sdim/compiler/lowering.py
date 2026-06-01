@@ -51,8 +51,15 @@ def reference_sample(
     ir: np.ndarray,
     num_qudits: int,
     dimension: int,
+    *,
+    records: list | None = None,
 ) -> np.ndarray:
-    """Run a noiseless tableau simulation over the IR to produce reference measurements."""
+    """Run a noiseless tableau simulation over the IR to produce reference measurements.
+
+    If ``records`` is given, one entry is appended per recorded measurement:
+    ``None`` for a deterministic outcome, or ``(eta, s, S0_z, S0_x)`` for a
+    random one (the destabilizer the frame sampler folds in).
+    """
     from ..simulators.tableau_simulator import TableauSimulator
 
     tableau = TableauSimulator(num_qudits, dimension)
@@ -68,20 +75,24 @@ def reference_sample(
 
         if gate_name == "HERALDED_ERASURE":
             measurements.append(0)
+            if records is not None:
+                records.append(None)
         elif is_gate_collapsing(gate_id):
             if gate_name in ("M_X", "MR_X"):
                 tableau.hadamard(qudit_index, dagger=True)
 
             measurement = tableau.measure(qudit_index)
 
+            if is_gate_records(gate_id):
+                measurements.append(measurement)
+                if records is not None:
+                    records.append(tableau.last_destabilizer)
+
             if gate_name in ("MR", "MR_X", "RESET"):
                 correction = (-measurement) % dimension
                 tableau.pauli_x(qudit_index, correction)
                 if gate_name == "MR_X":
                     tableau.hadamard(qudit_index)
-
-            if is_gate_records(gate_id):
-                measurements.append(measurement)
         else:
             if qudit_index < 0:
                 if gate_name == "CNOT":

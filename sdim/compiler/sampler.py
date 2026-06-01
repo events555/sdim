@@ -21,6 +21,7 @@ class CompiledMeasurementSampler:
         seed: Optional[int] = None,
         reference_sample: np.ndarray,  # Make these required from the compile step
         ir_array: np.ndarray,
+        measurement_records: Optional[list] = None,
     ) -> None:
         self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
@@ -31,6 +32,7 @@ class CompiledMeasurementSampler:
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements,
+            measurement_records=measurement_records,
         )
 
     def sample(
@@ -88,6 +90,7 @@ class CompiledDetectorSampler:
         seed: Optional[int] = None,
         reference_sample: np.ndarray,
         ir_array: np.ndarray,
+        measurement_records: Optional[list] = None,
     ) -> None:
         self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
@@ -98,6 +101,7 @@ class CompiledDetectorSampler:
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements,
+            measurement_records=measurement_records,
         )
         self._parse_annotations()
         self._calculate_reference_annotations()
@@ -193,11 +197,8 @@ class CompiledDetectorSampler:
             self.observables_meas_indices[idx] = sorted(
                 list(set(targets_for_obs))
             )
-        # --- End of _parse_annotations sketch ---
 
     def _calculate_reference_annotations(self):
-        # (Implementation from previous responses, using self.reference_sample,
-        #  self.detectors_meas_indices, self.observables_meas_indices)
         self.ref_detector_values = np.zeros(self.num_detectors, dtype=np.int64)
         for i, indices in enumerate(self.detectors_meas_indices):
             if not indices:
@@ -249,7 +250,6 @@ class CompiledDetectorSampler:
             )
         )  # Shape: (shots, num_total_measurements)
 
-        # --- Post-process raw measurements into detection events ---
         if dets_out is None and self.num_detectors > 0:
             dets_out = np.empty((shots, self.num_detectors), dtype=np.uint8)
         elif self.num_detectors == 0:
