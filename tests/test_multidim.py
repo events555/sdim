@@ -220,7 +220,9 @@ class TestTVDTomography:
                 a, b = rng.sample(range(n), 2)
                 c.append(g, a, b)
             elif coprimes and roll < 0.55:
-                c.append("MULTIPLY", rng.randrange(n), args=rng.choice(coprimes))
+                c.append(
+                    "MULTIPLY", rng.randrange(n), args=rng.choice(coprimes)
+                )
             else:
                 c.append(rng.choice(one_q), rng.randrange(n))
         for _ in range(measurement_rounds):
@@ -234,8 +236,11 @@ class TestTVDTomography:
         from sdim import cirq_statevector_from_circuit
 
         ns = [n for n in (2, 3) if d**n <= self.MAX_HILBERT]
-        num_comparisons = len(DIMENSIONS) * len(ns) * len(self.DEPTHS) * (
-            self.SEEDS_PER_CONFIG
+        num_comparisons = (
+            len(DIMENSIONS)
+            * len(ns)
+            * len(self.DEPTHS)
+            * (self.SEEDS_PER_CONFIG)
         )
 
         for n in ns:
@@ -258,3 +263,78 @@ class TestTVDTomography:
                         f"TVD={dist:.4f} >= {threshold:.4f} for d={d}, n={n}, "
                         f"depth={depth}, seed={seed}, shots={shots}"
                     )
+
+    @staticmethod
+    def _interleaved_circuit(n, d, seed, rounds):
+        rng = random.Random(seed)
+        one_q = ["H", "P", "X", "Z", "H_INV", "P_INV"]
+        two_q = ["CNOT", "CZ", "SWAP"]
+        c = Circuit(n, d)
+        for _ in range(rounds):
+            for _ in range(4):
+                if n > 1 and rng.random() < 0.4:
+                    a, b = rng.sample(range(n), 2)
+                    c.append(rng.choice(two_q), a, b)
+                else:
+                    c.append(rng.choice(one_q), rng.randrange(n))
+            for q in range(n):
+                c.append("M", q)
+        return c
+
+    @staticmethod
+    def _engine_sample(circuit, shots):
+        from sdim.gates.registry import gate_id_to_name, is_gate_two_qubit
+
+        rows = []
+        for _ in range(shots):
+            tab = TableauSimulator(circuit.num_qudits, circuit.dimension)
+            row = []
+            for op in circuit.operations:
+                tg = [t._value for t in op.targets]
+                if gate_id_to_name(op.gate_type) == "M":
+                    row.extend(tab.measure(q) for q in tg)
+                elif is_gate_two_qubit(op.gate_type):
+                    tab.apply_gate(op.gate_type, tg[0], tg[1])
+                else:
+                    for q in tg:
+                        tab.apply_gate(op.gate_type, q, q)
+            rows.append(row)
+        return np.array(rows, dtype=np.int64)
+
+    MIDCIRCUIT_CONFIGS = [
+        (2, 2, 2),
+        (3, 2, 2),
+        (2, 1, 4),
+        (4, 1, 3),
+        (5, 1, 3),
+        (9, 1, 2),
+    ]
+
+    @pytest.mark.parametrize("d,n,rounds", MIDCIRCUIT_CONFIGS)
+    def test_midcircuit_vs_engine(self, d, n, rounds):
+        """Mid-circuit measurement (collapse + reuse) vs the exact engine.
+
+        The statevector oracle drops measurements and cannot model collapse,
+        so the frame sampler is checked against the exact TableauSimulator.
+        """
+        K = d ** (rounds * n)
+        shots = max(1500, 15 * K)
+        seeds = 2
+        num_comparisons = len(self.MIDCIRCUIT_CONFIGS) * seeds
+        threshold = self.tvd_threshold(
+            K, shots, num_comparisons, two_sample=True
+        )
+        for s in range(seeds):
+            seed = d * 7919 + n * 17 + s
+            c = self._interleaved_circuit(n, d, seed, rounds)
+            sampled = self.outcomes_to_scalars(
+                c.compile_sampler(seed=seed).sample(shots), d
+            )
+            exact = self.outcomes_to_scalars(self._engine_sample(c, shots), d)
+            ref = np.bincount(exact, minlength=K).astype(float)
+            ref /= ref.sum()
+            dist = self.empirical_tvd(sampled, ref, K)
+            assert dist < threshold, (
+                f"mid-circuit TVD={dist:.4f} >= {threshold:.4f} for "
+                f"d={d}, n={n}, rounds={rounds}, seed={seed}, shots={shots}"
+            )
