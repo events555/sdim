@@ -3,6 +3,7 @@
 Isolates individual operations so pre/post Rust comparisons
 are meaningful. Each benchmark measures one thing.
 """
+
 import numpy as np
 import pytest
 

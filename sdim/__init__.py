@@ -1,9 +1,9 @@
 """
-This package provides tools for working with qudit stabilizer circuits, 
-particularly focusing on error correction simulations and applications for 
+This package provides tools for working with qudit stabilizer circuits,
+particularly focusing on error correction simulations and applications for
 fault-tolerant quantum computing.
 
-It supports circuit construction, noise modeling, and efficient sampling of 
+It supports circuit construction, noise modeling, and efficient sampling of
 measurement outcomes and detector events.
 
 ## Getting Started
@@ -34,7 +34,7 @@ print(measurement_samples)
 # (Assuming circuit has appropriate DETECTOR and OBSERVABLE_INCLUDE instructions)
 detector_circuit = circuit.append("DETECTOR", [sdim.target_rec(-1), sdim.target_rec(-2)])
 detector_sampler = detector_circuit.compile_detector_sampler()
-detection_events = detector_sampler.sample(shots=100) 
+detection_events = detector_sampler.sample(shots=100)
 ```
 
 
@@ -48,7 +48,7 @@ detection_events = detector_sampler.sample(shots=100)
     - **`sdim.CompiledDetectorSampler`**: For sampling detection events and logical observable flips, crucial for quantum error correction simulations.
 - **Targeting**:
     - **`sdim.GateTarget`**: Class representing different types of gate targets.
-    - Module-level functions like `sdim.target_qudit()`, `sdim.target_rec()`, 
+    - Module-level functions like `sdim.target_qudit()`, `sdim.target_rec()`,
       `sdim.target_x()`, etc., for convenient target creation, mimicking Stim's API.
 - **Circuit I/O**:
     - Functions like `sdim.read_circuit()` and `sdim.write_circuit()`.
@@ -72,19 +72,27 @@ Internal modules providing core functionality:
 from .circuit import Circuit
 from .circuit import CircuitInstruction
 from .gates.targets import GateTarget as GateTarget
-from .compiler.sampler import CompiledMeasurementSampler, CompiledDetectorSampler
+from .compiler.sampler import (
+    CompiledMeasurementSampler,
+    CompiledDetectorSampler,
+)
 
 # I/O
 from .io.chp import read_circuit, write_circuit
 
+
 # Cirq interop (lazy — requires sdim[interop])
 def circuit_to_cirq_circuit(*args, **kwargs):
     from .interop.cirq import circuit_to_cirq_circuit as _f
+
     return _f(*args, **kwargs)
+
 
 def cirq_statevector_from_circuit(*args, **kwargs):
     from .interop.cirq import cirq_statevector_from_circuit as _f
+
     return _f(*args, **kwargs)
+
 
 from .util import (
     generate_random_clifford_circuit,
@@ -102,13 +110,14 @@ from .gates.registry import (
     is_gate_records,
     is_gate_collapsing,
     is_gate_collapsing_and_records,
-    is_not_a_gate
+    is_not_a_gate,
 )
 
 from .simulators.tableau_simulator import TableauSimulator
 
 
 # --- Module-level target creation functions (like stim.target_xxx) ---
+
 
 def target_qudit(index: int, *, invert: bool = False) -> GateTarget:
     """
@@ -123,6 +132,7 @@ def target_qudit(index: int, *, invert: bool = False) -> GateTarget:
     """
     return GateTarget.qudit(index, invert=invert)
 
+
 def target_rec(lookback: int) -> GateTarget:
     """
     Creates a measurement record target.
@@ -135,6 +145,7 @@ def target_rec(lookback: int) -> GateTarget:
         A GateTarget instance.
     """
     return GateTarget.rec(lookback)
+
 
 def target_x(index: int, *, invert: bool = False) -> GateTarget:
     """
@@ -149,13 +160,16 @@ def target_x(index: int, *, invert: bool = False) -> GateTarget:
     """
     return GateTarget.x(index, invert=invert)
 
+
 def target_y(index: int, *, invert: bool = False) -> GateTarget:
     """Creates a Y Pauli target."""
     return GateTarget.y(index, invert=invert)
 
+
 def target_z(index: int, *, invert: bool = False) -> GateTarget:
     """Creates a Z Pauli target."""
     return GateTarget.z(index, invert=invert)
+
 
 def target_sweep_bit(index: int) -> GateTarget:
     """
@@ -169,6 +183,7 @@ def target_sweep_bit(index: int) -> GateTarget:
     """
     return GateTarget.sweep_bit(index)
 
+
 def target_combiner() -> GateTarget:
     """
     Creates a combiner target (used in MPP arguments like `X0*Z1`).
@@ -176,12 +191,14 @@ def target_combiner() -> GateTarget:
     """
     return GateTarget.combiner()
 
+
 def target_inv(index: int) -> GateTarget:
     """
     Shorthand for creating an inverted qubit/qudit target.
     Equivalent to `sdim.target_qudit(index, invert=True)`.
     """
     return GateTarget.qudit(index, invert=True)
+
 
 # --- Define __all__ for explicit public API ---
 __all__ = [
@@ -191,7 +208,6 @@ __all__ = [
     "CompiledMeasurementSampler",
     "CompiledDetectorSampler",
     "GateTarget",
-
     # Module-level target functions
     "target_qudit",
     "target_rec",
@@ -201,7 +217,6 @@ __all__ = [
     "target_sweep_bit",
     "target_combiner",
     "target_inv",
-
     # Circuit I/O and Generation
     "read_circuit",
     "write_circuit",
@@ -209,7 +224,6 @@ __all__ = [
     "cirq_statevector_from_circuit",
     "generate_random_clifford_circuit",
     "generate_and_write_random_circuit",
-
     # Gate Data Utilities (useful for advanced users or introspection)
     "GATE_DATA",
     "gate_name_to_id",
@@ -221,10 +235,8 @@ __all__ = [
     "is_gate_collapsing",
     "is_gate_collapsing_and_records",
     "is_not_a_gate",
-
     # Tableau (for advanced users or if they need direct access)
     "TableauSimulator",
-
     # Potentially other high-level functions or classes you add
     # "Program", # If you re-introduce or complete the Program class
 ]

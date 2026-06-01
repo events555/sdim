@@ -68,7 +68,12 @@ def sample_depolarize1(d: int, shots: int, error_prob: float) -> np.ndarray:
     num_errors = int(np.sum(mask))
     if num_errors > 0:
         errors = np.array(
-            [(x, z) for x in range(d) for z in range(d) if not (x == 0 and z == 0)],
+            [
+                (x, z)
+                for x in range(d)
+                for z in range(d)
+                if not (x == 0 and z == 0)
+            ],
             dtype=np.int64,
         )
         indices = np.random.randint(0, len(errors), size=num_errors)
@@ -85,7 +90,12 @@ def sample_depolarize2(d: int, shots: int, error_prob: float) -> np.ndarray:
     num_errors = int(np.sum(mask))
     if num_errors > 0:
         errors = np.array(
-            [(x, z) for x in range(d) for z in range(d) if not (x == 0 and z == 0)],
+            [
+                (x, z)
+                for x in range(d)
+                for z in range(d)
+                if not (x == 0 and z == 0)
+            ],
             dtype=np.int64,
         )
         indices1 = np.random.randint(0, len(errors), size=num_errors)

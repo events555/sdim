@@ -1,5 +1,5 @@
 """Frame simulator and noise sampling benchmarks."""
-import numpy as np
+
 import pytest
 
 from sdim import generate_random_clifford_circuit
@@ -9,7 +9,6 @@ from sdim.noise import (
     sample_depolarize2,
     sample_x_error,
 )
-
 
 DIMENSIONS = [2, 3, 5, 7, 9]
 
@@ -40,8 +39,11 @@ class TestBuildNoiseBanks:
     @pytest.mark.parametrize("n", [5, 10, 25])
     def test_build_noise_banks(self, benchmark, d, n):
         circuit = generate_random_clifford_circuit(
-            num_qudits=n, num_gates=100, dimension=d,
-            measurement_rounds=0, seed=d * 1000 + n,
+            num_qudits=n,
+            num_gates=100,
+            dimension=d,
+            measurement_rounds=0,
+            seed=d * 1000 + n,
         )
         for i in range(n):
             circuit.append("DEPOLARIZE1", i, args=[0.01])
@@ -58,8 +60,11 @@ class TestFrameSimulation:
     @pytest.mark.parametrize("shots", [1000, 10000])
     def test_sample(self, benchmark, d, n, shots):
         circuit = generate_random_clifford_circuit(
-            num_qudits=n, num_gates=min(200, n * 10), dimension=d,
-            measurement_rounds=1, seed=d * 1000 + n,
+            num_qudits=n,
+            num_gates=min(200, n * 10),
+            dimension=d,
+            measurement_rounds=1,
+            seed=d * 1000 + n,
         )
         circuit.append("DEPOLARIZE1", list(range(n)), args=[0.01])
         circuit.append("M", list(range(n)))
@@ -75,8 +80,11 @@ class TestCompilation:
     @pytest.mark.parametrize("n", [5, 10, 25])
     def test_compile_sampler(self, benchmark, d, n):
         circuit = generate_random_clifford_circuit(
-            num_qudits=n, num_gates=min(200, n * 10), dimension=d,
-            measurement_rounds=1, seed=d * 1000 + n,
+            num_qudits=n,
+            num_gates=min(200, n * 10),
+            dimension=d,
+            measurement_rounds=1,
+            seed=d * 1000 + n,
         )
 
         benchmark(circuit.compile_sampler)

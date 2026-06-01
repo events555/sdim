@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+
 from sdim.interop.unitary import (
     generate_cnot_matrix,
     generate_h_matrix,
