@@ -48,6 +48,7 @@ class GateData:
         self.add_gate_controlled(dimension)
         self.add_gate_collapsing(dimension)
         self.add_gate_noise(dimension)
+        self.add_gate_detectors(dimension)
 
     def __str__(self):
         return "\n".join(str(gate) for gate in self.gateMap.values())
@@ -105,6 +106,20 @@ class GateData:
         self.add_gate_alias("N2", ["NOISE2"])
         default_dist = np.ones(d ** 4) / (d ** 4)
         self.gateMap["N2"].defaults = {"prob_dist": default_dist}
+
+    def add_gate_detectors(self, d):
+        
+        self.add_gate("DETECTOR", 0)
+        self.add_gate_alias("DETECTOR", ["DETECT", "D"])
+        self.gateMap["DETECTOR"].defaults = {"expr" : "0"}
+
+        self.add_gate("LOGICAL_OBSERVABLE", 0)
+        self.add_gate_alias("LOGICAL_OBSERVABLE", ["LO", "LOGICALOBSERVABLE", "OBSERVABLE"])
+        self.gateMap["LOGICAL_OBSERVABLE"].defaults = {"expr" : "0"}
+
+        self.add_gate("TICK", 0)
+
+        
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:

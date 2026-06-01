@@ -13,18 +13,18 @@ class CircuitInstruction:
     Attributes:
         gate_data (GateData): Contains information about available gates.
         gate_name (str): The name of the gate.
-        qudit_index (int): The index of the primary qudit the gate acts on.
+        qudit_index (int, optional): The index of the primary qudit the gate acts on.
         target_index (int, optional): The index of the target qudit for two-qudit gates.
         gate_id (int): The unique identifier for the gate.
         name (str): The canonical name of the gate.
-        params (dict, optional): Additional parameters for specific gates (i.e. noise gates)
+        params (dict, optional): Additional parameters for specific gates (e.g. noise gates)
 
     Raises:
         ValueError: If the specified gate is not found in gate_data.
     """
     gate_data: GateData
     gate_name: str
-    qudit_index: int
+    qudit_index: int = None
     target_index: int = None
     gate_id: int = None
     name: str = None
@@ -73,13 +73,13 @@ class Circuit:
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
-    def add_gate(self, gate_name: str, control: Union[int, List[int]], target: Union[int, List[int], None] = None, **kwargs):
+    def add_gate(self, gate_name: str, control: Union[int, List[int], None] = None, target: Union[int, List[int], None] = None, **kwargs):
         """
         Adds gate operation(s) to the circuit.
 
         Args:
             gate_name (str): The name of the gate to add.
-            control (int or List[int]): The index or indices of the control qudit(s).
+            control (int or List[int], or None, optional): The index or indices of the control qudit(s).  No control index applies only detector data.
             target (int, List[int], or None, optional): The index or indices of the target qudit(s).
 
         Optional parameters:
@@ -105,7 +105,11 @@ class Circuit:
             for key, value in gate.defaults.items():
                 kwargs.setdefault(key, value)
 
-        if target is None:
+
+        if control is None and target is None: # Detectors only
+            self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), None, None, params=kwargs))
+            return
+        elif target is None:
             for c in control:
                 self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None, params=kwargs))
             return

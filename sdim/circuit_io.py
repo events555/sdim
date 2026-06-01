@@ -2,6 +2,7 @@ from .circuit import Circuit
 from .unitary import *
 import cirq
 import os
+import shlex
 
 def read_circuit(filename):
     """
@@ -51,7 +52,7 @@ def read_circuit(filename):
     for line in gate_lines:
         if not line.strip():
             continue
-        parts = line.split()
+        parts = shlex.split(line)
         gate_name = parts[0].upper()
 
         # Extract all purely numerical arguments as qubit indices
@@ -71,20 +72,40 @@ def read_circuit(filename):
 
         num_indices = len(gate_qubits)
 
-        if num_indices == 1:
-            # Single-qubit gate
-            if params_dict is None:
-                circuit.add_gate(gate_name, gate_qubits[0])
-            else:    
-                circuit.add_gate(gate_name, gate_qubits[0], **params_dict)
-        elif num_indices == 2:
-            # Two-qubit gate
-            if params_dict is None:
-                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1])
-            else:
-                circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1], **params_dict)
+        if num_indices > 2:
+            raise ValueError(f"Unexpected number of arguments for gate {gate_name}")   
+
+        gate_params = [gate_name] + gate_qubits
+
+        # extend_on_condition = lambda source, target, cond : source.extend(target) if cond else None
+        # extend_on_condition(gate_params, gate_qubits, num_indices > 0)
+        # extend_on_condition(gate_params, **params_dict, params_dict is not None)
+
+        if params_dict is not None:
+            circuit.add_gate(*gate_params, **params_dict)
         else:
-            raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
+            circuit.add_gate(*gate_params)
+
+        # if num_indices == 0: 
+        #     # Detectors
+        #     if params_dict is None:
+        #         circuit.add_gate(gate_name, gate_qubits[0])
+        #     else:    
+        #         circuit.add_gate(gate_name, **params_dict)
+        # elif num_indices == 1:
+        #     # Single-qubit gate
+        #     if params_dict is None:
+        #         circuit.add_gate(gate_name, gate_qubits[0])
+        #     else:    
+        #         circuit.add_gate(gate_name, gate_qubits[0], **params_dict)
+        # elif num_indices == 2:
+        #     # Two-qubit gate
+        #     if params_dict is None:
+        #         circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1])
+        #     else:
+        #         circuit.add_gate(gate_name, gate_qubits[0], gate_qubits[1], **params_dict)
+        # else:
+        #     raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
 
     return circuit
 
@@ -113,12 +134,12 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
         #print("Gate is " + gate_str)
         if gate.target_index is not None:
             gate_str += f" {gate.qudit_index} {gate.target_index}"
-        else:
+        elif gate.qudit_index is not None:
             gate_str += f" {gate.qudit_index}"
         # Writing extra parameters
         if not (gate.params is None):
             for key, value in gate.params.items():
-                gate_str += f" {key}={value}"
+                gate_str += f" {key}=\"{value}\""
 
         chp_content += f"{gate_str}\n"
 
@@ -169,7 +190,10 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         "Z_INV": GeneralizedZPauliGateInverse(circuit.dimension),
         "CZ": GeneralizedCZGate(circuit.dimension),
         "CZ_INV": GeneralizedCZGateInverse(circuit.dimension),
-        "N1" : IdentityGate(circuit.dimension) # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
+        "N1" : IdentityGate(circuit.dimension), # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
+        "N2" : IdentityGate(circuit.dimension), # TODO: Implement for Cirq circuit in unitary.py.  Need to figure out how to pass probability and noise_channel parameters.
+        "DETECTOR" : IdentityGate(circuit.dimension),
+        "LOGICAL_OBSERVABBLE" : IdentityGate(circuit.dimension) 
     }
 
     # Create a Cirq circuit.

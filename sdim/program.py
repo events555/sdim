@@ -9,6 +9,8 @@ from numba.core import types
 from numba.typed import Dict
 import numpy as np
 import copy
+import re 
+
 # Gate function dictionary
 GATE_FUNCTIONS: dict[int, Callable] = {
     0: apply_I,      # I gate
@@ -29,7 +31,10 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     15: apply_measure_x, # Measure gate in X basis
     16: apply_reset, # Reset gate
     17: apply_I, # Single qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless reference tableau
-    18: apply_I # 2 qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless ref.  Input is a distribution on Pauli operators, shape is (d, d, d, d)
+    18: apply_I, # 2 qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless ref.  Input is a distribution on Pauli operators, shape is (d, d, d, d)
+    19: apply_I, # Generic detectors
+    20: apply_I, # Logical operator detectors
+    21: apply_I # TICK, do nothing.
 }
 
 MEASUREMENT_DTYPE = np.dtype([
@@ -40,12 +45,28 @@ MEASUREMENT_DTYPE = np.dtype([
     ('measurement_value', np.int64)
 ])
 
-noise_gate_indices = {17}
+noise_gate_indices = {17, 18}
+
+# TODO: Clean up typing to expose the now hidden structure of detector_data
+@dataclass
+class DetectorData:
+    detector_data : np.ndarray | None = None # Format is (unique_detector_function_index, label, arguments, is_logical)
+    detector_functions : list = None
+    total_measurements : int = 1
+    num_detector_events : int = 0
+    num_logical_operators : int = 0
+
+@dataclass
+class DetectorResults:
+    detection_events : np.ndarray = None
+    logical_operator_shifts : np.ndarray = None
+
 
 # @njit
 def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
                   n_qudits: int, dimension: int, extra_shots: int,
-                  noise_array: np.ndarray = None) -> np.ndarray:
+                  noise_array: np.ndarray = None, 
+                  detector_info : DetectorData = None) -> tuple[np.ndarray, DetectorResults]:
     """
     Simulates quantum circuit using Pauli frame simulation.
     
@@ -68,6 +89,18 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
     measurement_counts = np.zeros(n_qudits, dtype=np.int64)
     noise_counter = 0
     gate_count = 1
+
+    # Initialize detector and shift matrix tracking
+    detector_counter = 0
+    lo_counter = 0
+    total_measurement_counter = 0
+    shift_data = np.zeros((detector_info.total_measurements, extra_shots), dtype=np.int64)
+    detector_events = np.zeros((detector_info.num_detector_events, extra_shots), dtype=np.int64)
+    logical_operator_events = np.zeros((detector_info.num_logical_operators, extra_shots), dtype=np.int64)
+
+    time = 0
+
+
     # Initialize results array
     frame_results = np.empty((n_qudits, reference_results.shape[1], extra_shots), 
                            dtype=MEASUREMENT_DTYPE)
@@ -121,6 +154,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             z_frame[target_index] = tmp
         if gate_id in (14, 15):  # Measurement gates
             m = measurement_counts[qudit_index]
+            shifts = shift_data[total_measurement_counter]
             
             ref_val = reference_results[qudit_index, m]['measurement_value']
             deterministic = reference_results[qudit_index, m]['deterministic']
@@ -134,6 +168,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             # Compute and store measurements for each shot
             for shot in range(extra_shots):
                 new_val = (ref_val + x_frame[qudit_index, shot]) % dimension
+                shifts[shot] = x_frame[qudit_index, shot] % dimension
                 frame_results[qudit_index, m, shot]['qudit_index'] = qudit_index
                 frame_results[qudit_index, m, shot]['meas_round'] = m
                 frame_results[qudit_index, m, shot]['shot'] = shot
@@ -142,6 +177,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
 
             
             measurement_counts[qudit_index] += 1
+            total_measurement_counter += 1
             z_frame[qudit_index] = np.random.randint(0, dimension, size=extra_shots)
             
         elif gate_id == 16:  # Reset
@@ -163,18 +199,41 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             noise_counter += 1
 
         elif gate_id == 18: # 2 qudit noise
+            #print(f" {noise_array[noise_counter, :, 0]} \n {noise_array[noise_counter, :, 1]} \n {noise_array[noise_counter, :, 2]} \n {noise_array[noise_counter, :, 3]} \n\n")
             x_frame[qudit_index] += noise_array[noise_counter, :, 0]
             z_frame[qudit_index] += noise_array[noise_counter, :, 1]
             x_frame[target_index] += noise_array[noise_counter, :, 2]
             z_frame[target_index] += noise_array[noise_counter, :, 3]
             noise_counter += 1
 
+        elif gate_id in (19, 20):
+            # Fetch in detector params
+            # TODO: Write this using just is_logical since there is a lot of redundant information
+            detector_collection_bin = detector_events if gate_id == 19 else logical_operator_events
+            position = detector_counter if gate_id == 19 else lo_counter
+            function_index, label, arguments, _ = detector_info.detector_data[detector_counter + lo_counter]
+            # Compute and store the data appropriately
+            shift_params = [shift_data[a] for a in arguments]
+            detector = detector_info.detector_functions[function_index]
+            detector_collection_bin[position] = detector(shift_params)
+
+            if gate_id == 19:
+                detector_counter += 1
+            else:
+                lo_counter += 1
+
+        # elif gate_id == 21: # TICK, increment internal clock
+        #     time += 1
+
         gate_count += 1
         
-        
     
-    
-    return frame_results
+    detector_results = DetectorResults(
+        detection_events=detector_events,
+        logical_operator_shifts=logical_operator_events
+    )
+
+    return frame_results, detector_results
 
 @dataclass
 class SimulationOptions:
@@ -185,6 +244,7 @@ class SimulationOptions:
     verbose: bool = False
     show_gate: bool = False
     exact: bool = False
+
 
 class Program:
     """
@@ -215,8 +275,13 @@ class Program:
         self.measurement_results = []
         self.initial_tableau = copy.copy(self.stabilizer_tableau)
 
+    # def enumerate_detector_shifts(self) -> dict[str, dict[str, str | np.ndarray]]:
+
+    #     return
+
     def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False, force_tableau: bool = False,
-                 verbose: bool = False, show_gate: bool = False, exact: bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]]:
+                 verbose: bool = False, show_gate: bool = False, exact: bool = False, 
+                 building_error_mechanism : bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]] | tuple[list[list[list[MeasurementResult]]], dict[str, list(dict[str, str | np.ndarray])]]:
         """
         Runs the list of `Circuit` and applies the gates to the `stabilizer_tableau`.
         
@@ -233,6 +298,8 @@ class Program:
             force_tableau (bool): Whether to force the use of the tableau method.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
                 Much slower but fails less often.
+            building_error_mechanim (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
+                Not for manual use
             options (SimulationOptions): An optional SimulationOptions object.
 
         Returns:
@@ -262,19 +329,20 @@ class Program:
             ref_array = self._results_to_array(self.measurement_results)
             
             # Build IR and noise arrays
-            ir_array, noise = self._build_ir(self.circuits, options.shots - 1)
+            ir_array, noise, detector_info = self._build_ir(self.circuits, options.shots - 1)
             
             # Run frame simulation
-            frame_results = simulate_frame(
+            frame_results, detection_results = simulate_frame(
                 ir_array, ref_array, 
                 self.stabilizer_tableau.num_qudits,
                 self.stabilizer_tableau.dimension,
                 options.shots - 1,
-                noise
+                noise, 
+                detector_info
             )
             
             # Combine results
-            return self._combine_results(frame_results)
+            return self._combine_results(frame_results), self._combine_detector_results(detector_info, detection_results)
         else:
             return self._simulate_tableau(options)
 
@@ -406,12 +474,20 @@ class Program:
         """
         def measurement_to_tuple(m: MeasurementResult, meas_round: int = 0, shot: int = 0):
             return (m.qudit_index, meas_round, shot, m.deterministic, m.measurement_value)
+        # TODO: make this check a little less truthy and more explicitly against a list of empty measurement outcomes.
+        # TODO: actually, make sure program is okay even if there are no measurements...for some reason.
         # Ensure the list is not empty and has the expected nested structure.
-        if not measurements or not measurements[0]:
-            raise ValueError("Empty or invalid measurement results format")
+        if not measurements:
+            raise ValueError("Empty measurement results format")
+
+        # TODO: make this robust against all elements of measurements being empty, ie None
+        # find the first non-empty element of the list
+        j = 0
+        while (not measurements[j]):
+            j += 1
 
         # If it's a 3D list (i.e., each measurement round is a list of shots)
-        if isinstance(measurements[0][0], list):
+        if isinstance(measurements[j][0], list):
             max_rounds = max(len(m) for m in measurements)
             reference_results = np.empty((len(measurements), max_rounds), dtype=MEASUREMENT_DTYPE)
             for q, measurements_per_qudit in enumerate(measurements):
@@ -419,14 +495,14 @@ class Program:
                     # Convert the first shot in each round into a tuple.
                     reference_results[q, m] = measurement_to_tuple(shots_list[0], meas_round=m, shot=0)
             return reference_results
-
         # If it's a 2D list (each sublist contains MeasurementResult objects, one per round)
-        elif isinstance(measurements[0][0], MeasurementResult):
+        elif isinstance(measurements[j][0], MeasurementResult):
             max_rounds = max(len(m) for m in measurements)
             reference_results = np.empty((len(measurements), max_rounds), dtype=MEASUREMENT_DTYPE)
             for q, shots_list in enumerate(measurements):
                 for m, measurement in enumerate(shots_list):
                     reference_results[q, m] = measurement_to_tuple(measurement, meas_round=m, shot=0)
+            print(reference_results)
             return reference_results
 
         else:
@@ -464,8 +540,45 @@ class Program:
                 # Extend the already-existing list for this measurement round
                 self.measurement_results[qudit_index][meas_round].extend(new_results)
         return self.measurement_results
+
+    def _combine_detector_results(self, info : DetectorData, raw_results : DetectorResults) -> dict[str, list(dict[str, str | np.ndarray])]:
+        """
+        Combines all detector mechanism results into a single dictionary organized by their quantitative (e.g. order in the circuit) and qualitative information (e.g. label).
+        The topmost dictionary has keys: 'detectors', 'logicals'.
+        The list enumerates the detectors / frame change data in order of occurence in the circuit.  
+        Finally, the bottom most dictionary has keys: 'label', 'data'
+        (unique-index, label, arguments)
+        """
+
+        d_ind = 0
+        l_ind = 0
+        results = {'detectors' : list(), 'logicals' : list()}
+        detector_events = raw_results.detection_events
+        logical_events = raw_results.logical_operator_shifts
+
+        for j, d_data in enumerate(info.detector_data):
+            label = d_data[1]
+            args = d_data[2]
+            is_logical = d_data[3]
+
+            entry_type, data, index = ('logicals', logical_events, l_ind) if is_logical else ('detectors', detector_events, d_ind)
+
+            event_info = {
+                'label' : label, 
+                'data' : data[index]
+            }
+
+            results[entry_type].append(event_info)
+
+            if is_logical:
+                l_ind += 1
+            else:
+                d_ind += 1
+
+        return results
         
-    def _build_ir(self, circuits: list[Circuit], extra_shots: int) -> tuple[np.ndarray, np.ndarray]:
+    def _build_ir(self, circuits: list[Circuit], extra_shots: int, 
+    building_error_mechanism : bool = False) -> tuple[np.ndarray, np.ndarray, DetectorData]:
         """
         Builds an intermediate representation (IR) for the given circuits and also precomputes
         an array of sampled Pauli noise outcomes for noise gates (if applicable)
@@ -474,6 +587,7 @@ class Program:
             circuits (list[Circuit]): A list of Circuit objects.
             extra_shots (int): The number of extra shots for which noise outcomes
                             will be sampled.
+            building_error_mechanism (bool): Flag for sampling errors in the circuit to build error mechanisms in a detector-error model.
         
         Returns:
             tuple:
@@ -482,58 +596,137 @@ class Program:
                 - A NumPy array of shape (num_noise_gates, extra_shots, [x_block, z_block]) containing
                 pre-sampled noise outcomes for each noise gate encountered.
                 If no noise gate is present, an empty array is returned.
+                - A DetectorData object containing runtime information for the detection events in the circuit. 
+                If no detectors are present, a default object is returned.
         """
         ir_list  = []
         noise_list = []
+        detector_list = []
+        detector_data = []
         dimension = self.stabilizer_tableau.dimension
+
+        # Detector related counters
+        seen_measurements = 0
+        num_detector_events = 0
+        num_logical_operators = 0
+
+        # Offset to organize error mechanism sampler
+        error_skip_offset = 0
+
         for circuit in circuits:
+
+            #TODO: Repeater blocks for detectors that link detectors to earlier detector expressions
+            unique_detector_index = 0
+
             for instruction in circuit.operations:
                 if instruction.gate_id == 0:
                     continue
+                
+                control_index = instruction.qudit_index if instruction.qudit_index is not None else -1
                 target_index = instruction.target_index if instruction.target_index is not None else -1
-                ir_list.append((instruction.gate_id, instruction.qudit_index, target_index))
-                                
+
+                ir_list.append((instruction.gate_id, control_index, target_index))
+
+                # Count measurements here in order to properly track measurements in detector expressions
+                if (instruction.gate_id == 14 or instruction.gate_id == 15):
+                    seen_measurements += 1
+
                 if instruction.gate_id == 17:
                     # Always add a noise sample, but only actually sample non-identity with some probability.
                     channel = instruction.params['noise_channel']
-                    if channel == 'd':
-                        # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
-                        r = np.random.randint(1, dimension**2, size=extra_shots)
-                        a = r % dimension
-                        b = r // dimension
-                    elif channel == 'f':
-                        a = np.random.randint(1, dimension, size=extra_shots)
-                        b = np.zeros(extra_shots, dtype=np.int64)
-                    elif channel == 'p':
-                        a = np.zeros(extra_shots, dtype=np.int64)
-                        b = np.random.randint(1, dimension, size=extra_shots)
+                    if not building_error_mechanism:
+                        if channel == 'd':
+                            # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
+                            r = np.random.randint(1, dimension**2, size=extra_shots)
+                            a = r % dimension
+                            b = r // dimension
+                        elif channel == 'f':
+                            a = np.random.randint(1, dimension, size=extra_shots)
+                            b = np.zeros(extra_shots, dtype=np.int64)
+                        elif channel == 'p':
+                            a = np.zeros(extra_shots, dtype=np.int64)
+                            b = np.random.randint(1, dimension, size=extra_shots)
 
-                    # Roll to see if the channel applies on this each shot
-                    shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)
-                    # Mask that checks for failure to clear threshold, aka applying I = X^0 Z^0
-                    probability = float(instruction.params['prob'])
-                    mask = shot_dice_rolls < 1.0 - probability
+                        # Roll to see if the channel applies on this each shot
+                        shot_dice_rolls = np.random.uniform(0.0, 1.0, size=extra_shots)
+                        # Mask that checks for failure to clear threshold, aka applying I = X^0 Z^0
+                        probability = float(instruction.params['prob'])
+                        mask = shot_dice_rolls < 1.0 - probability
 
-                    # Apply mask to both Pauli exponents
-                    a[mask] = 0
-                    b[mask] = 0
+                        # Apply mask to both Pauli exponents
+                        a[mask] = 0
+                        b[mask] = 0
 
-                    zero_vec = [0,] * extra_shots
-                    pair = np.stack((a, b, zero_vec, zero_vec), axis=1)
-                    noise_list.append(pair)
+                        zero_vec = [0,] * extra_shots
+                        pair = np.stack((a, b, zero_vec, zero_vec), axis=1)
+                        noise_list.append(pair)
+
+                    else:
+                        print("TODO")
+                        # if channel == 'd':
+                        #     powers = list(np.ndindex((dimension, ) * 4))
+
+                        # elif channel == 'f':
+
+                        # elif channel == 'p':
+
+
+
+
 
                 if instruction.gate_id == 18:
                     distribution = instruction.params['prob_dist']
-
-                    if len(distribution) != (dimension ** 4):
-                        raise ValueError(f"Input distribution has length {len(distribution)} instead of the required {(dimension ** 4)}.")
                     
                     powers = list(np.ndindex((dimension, ) * 4))
-                    noise_indices = np.random.choice(a=len(powers), size=extra_shots, p=distribution)
-                    noise = np.array( [powers[i] for i in noise_indices] )
-                    noise_list.append(noise)
 
+                    if len(distribution) == (dimension ** 4):
+                        powers = list(np.ndindex((dimension, ) * 4))
+                        noise_indices = np.random.choice(a=len(powers), size=extra_shots, p=distribution)
+                        noise = np.array( [powers[i] for i in noise_indices] )
+                        noise_list.append(noise)
+                    else: # If the list doesn't have a valid shape, then the channel acts as identity.
+                        zero_vec = [0,] * extra_shots
+                        noise = np.stack((zero_vec, ) * 4, axis=1)
+                        noise_list.append(noise)
 
+                if instruction.gate_id in (19, 20):
+
+                    arguments = []
+                    
+                    if 'expr' not in instruction.params:
+                        raise ValueError("No detector provided.")
+                    
+                    source = instruction.params['expr']
+                    # TODO: Sanitize input.
+                    # Extract argument indices and turn detector expression into a general lambda
+                    # Pattern match for "(+/-)? [index]"
+                    # If the first term is positive, leave the sign field blank to avoid unnecessary copying
+                    j = 0
+                    matches = list(re.finditer(r"\[(-?\d+)\]", source))
+                    seen_args = set()
+                    for match in matches:
+                        match_string = match.group()
+                        arg = int(match_string[1:-1]) % seen_measurements
+                        if arg not in seen_args:
+                            arguments.append(arg)
+                            seen_args.add(arg)
+                            source = source.replace(match_string, '[' + str(j) + ']')
+                            j += 1
+            
+                    detector = eval('lambda rec : (' + str(source) + ") % " + str(dimension))
+                    # Store lambdas in a map
+                    detector_list.append(detector)
+                    # Store detector data
+                    label = instruction.params['label'] if 'label' in instruction.params else ''
+                    is_logical = True if instruction.gate_id == 20 else False
+                    detector_data.append((unique_detector_index, label, arguments, is_logical))
+
+                    unique_detector_index += 1
+                    if instruction.gate_id == 19:
+                        num_detector_events += 1
+                    else:
+                        num_logical_operators +=1
+                    
         ir_dtype = np.dtype([
             ('gate_id', np.int64),
             ('qudit_index', np.int64),
@@ -547,8 +740,16 @@ class Program:
         else:
             noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
 
+        detection_info = DetectorData(
+            detector_data=detector_data,
+            detector_functions=detector_list,
+            total_measurements=seen_measurements,
+            num_detector_events=num_detector_events,
+            num_logical_operators=num_logical_operators
+        )
+
         #print(noise_array)
-        return ir_array, noise_array
+        return ir_array, noise_array, detection_info
 
     def append_circuit(self, circuit: Circuit):
         """

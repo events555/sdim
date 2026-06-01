@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sdim"
-version = "1.3.3"
+version = "1.3.4"
 description = "A tableau Clifford simulator for qudits"
 authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>", "Adeeb Kabir <ask171@rutgers.edu>"]
 license = "GPL-3.0-or-later"
