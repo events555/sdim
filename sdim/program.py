@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Tuple, Optional, Callable
 from .circuit import CircuitInstruction, Circuit
 from .tableau.tableau_composite import WeylTableau
@@ -28,8 +30,9 @@ GATE_FUNCTIONS: dict[int, Callable] = {
     14: apply_measure, # Measure gate in computational basis
     15: apply_measure_x, # Measure gate in X basis
     16: apply_reset, # Reset gate
-    17: apply_I, # Single qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless reference tableau
-    18: apply_I # 2 qudit Pauli noise gate, implemented in Pauli frame, applied as I in noiseless ref.  Input is a distribution on Pauli operators, shape is (d, d, d, d)
+    17: apply_single_qudit_noise, # Single qudit Pauli noise gate
+    18: apply_two_qudit_noise, # 2 qudit Pauli noise gate, input is a distribution on Pauli operators, shape is (d, d, d, d)
+    19: apply_multiplication, # Multiplication gate
 }
 
 MEASUREMENT_DTYPE = np.dtype([
@@ -77,6 +80,7 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
         gate_id = inst['gate_id']
         qudit_index = inst['qudit_index']
         target_index = inst['target_index']
+        scalar = inst['scalar']
         if gate_count % 64 == 0:
             x_frame %= dimension
             z_frame %= dimension
@@ -168,6 +172,11 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             x_frame[target_index] += noise_array[noise_counter, :, 2]
             z_frame[target_index] += noise_array[noise_counter, :, 3]
             noise_counter += 1
+        elif gate_id == 19:  # Multiplication gate
+            scalar = int(scalar) % dimension
+            inverse = pow(scalar, -1, dimension)
+            x_frame[qudit_index] *= scalar
+            z_frame[qudit_index] *= inverse
 
         gate_count += 1
         
@@ -214,6 +223,7 @@ class Program:
         self.circuits = [circuit]
         self.measurement_results = []
         self.initial_tableau = copy.copy(self.stabilizer_tableau)
+        self._tableau_noise_enabled = True
 
     def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False, force_tableau: bool = False,
                  verbose: bool = False, show_gate: bool = False, exact: bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]]:
@@ -256,7 +266,11 @@ class Program:
         if options.shots > 1 and not options.record_tableau and not options.force_tableau:
             tableau_options = copy.copy(options)
             tableau_options.shots = 1
-            self._simulate_tableau(tableau_options)
+            self._tableau_noise_enabled = False
+            try:
+                self._simulate_tableau(tableau_options)
+            finally:
+                self._tableau_noise_enabled = True
             
             # Convert flattened reference results to structured array
             ref_array = self._results_to_array(self.measurement_results)
@@ -392,6 +406,8 @@ class Program:
         """
         if instruc.gate_id not in GATE_FUNCTIONS:
             raise ValueError("Invalid gate value")
+        if not self._tableau_noise_enabled and instruc.gate_id in (17, 18):
+            return None
         gate_function = GATE_FUNCTIONS[instruc.gate_id]
         measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, instruc.params)
         return measurement_result
@@ -478,7 +494,7 @@ class Program:
         Returns:
             tuple:
                 - A NumPy array of IR instructions with each element as a tuple
-                (gate_id, qudit_index, target_index).
+                (gate_id, qudit_index, target_index, scalar).
                 - A NumPy array of shape (num_noise_gates, extra_shots, [x_block, z_block]) containing
                 pre-sampled noise outcomes for each noise gate encountered.
                 If no noise gate is present, an empty array is returned.
@@ -491,11 +507,20 @@ class Program:
                 if instruction.gate_id == 0:
                     continue
                 target_index = instruction.target_index if instruction.target_index is not None else -1
-                ir_list.append((instruction.gate_id, instruction.qudit_index, target_index))
+                scalar = -1
+                if instruction.gate_id == 19:
+                    if instruction.params is None:
+                        raise ValueError("Multiplication gate requires an 'a' parameter.")
+                    scalar = instruction.params.get('a', instruction.params.get('scalar'))
+                    if scalar is None:
+                        raise ValueError("Multiplication gate requires an 'a' parameter.")
+                    scalar = int(scalar)
+
+                ir_list.append((instruction.gate_id, instruction.qudit_index, target_index, scalar))
                                 
                 if instruction.gate_id == 17:
                     # Always add a noise sample, but only actually sample non-identity with some probability.
-                    channel = instruction.params['noise_channel']
+                    channel = instruction.params.get('noise_channel', instruction.params.get('channel', 'd'))
                     if channel == 'd':
                         # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
                         r = np.random.randint(1, dimension**2, size=extra_shots)
@@ -537,7 +562,8 @@ class Program:
         ir_dtype = np.dtype([
             ('gate_id', np.int64),
             ('qudit_index', np.int64),
-            ('target_index', np.int64)
+            ('target_index', np.int64),
+            ('scalar', np.int64)
         ])
 
         ir_array = np.array(ir_list, dtype=ir_dtype)

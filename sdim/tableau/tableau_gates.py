@@ -24,6 +24,24 @@ def apply_I(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     return None
 
+def _apply_pauli_powers(tableau: Tableau, qudit_index: int, x_exp: int, z_exp: int) -> None:
+    """
+    Apply X and Z powers to a single qudit.
+    """
+    x_exp %= tableau.dimension
+    z_exp %= tableau.dimension
+
+    for _ in range(x_exp):
+        apply_X(tableau=tableau, qudit_index=qudit_index)
+    for _ in range(z_exp):
+        apply_Z(tableau=tableau, qudit_index=qudit_index)
+
+def _get_noise_channel(params: dict) -> str:
+    """
+    Normalize the user-facing noise channel parameter name.
+    """
+    return params.get('noise_channel', params.get('channel', 'd'))
+
 def apply_X(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     Apply Pauli X gate.
@@ -345,7 +363,26 @@ def apply_reset(tableau: Tableau, qudit_index: int, *_) -> Optional[MeasurementR
     else:
         return tableau.measure(qudit_index)
     
+def apply_multiplication(tableau: Tableau, qudit_index: int, _, params: dict) -> None:
+    """
+    Apply a multiplicative Clifford gate to a qudit.
 
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The qudit on which to act.
+        _ : Unused target index.
+        params (dict): Must contain either ``a`` or ``scalar``.
+    """
+    if params is None:
+        raise ValueError("Multiplication gate requires a scalar parameter.")
+
+    scalar = params.get('a', params.get('scalar'))
+    if scalar is None:
+        raise ValueError("Multiplication gate requires an 'a' parameter.")
+
+    tableau.multiply(qudit_index, int(scalar))
+    return None
+    
 def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dict) -> None:
     """
     DEPRECIATED -- Noise behavior is handled in program.py in Pauli frames.  This gate definition is nonetheless included for the sake of documentation and completeness.
@@ -371,7 +408,7 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
         None  
     """
     prob = float(params.get('prob', 0.5))
-    noise_channel = params.get('noise_channel', 'd')
+    noise_channel = _get_noise_channel(params)
 
     if noise_channel == 'd':
         num = random.uniform(0.0, 1.0)
@@ -380,16 +417,11 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
             return None
         
         # Sample error from all non-identity Pauli gates 
-        elem = random.randint(1, tableau.dimension - 1)
+        elem = random.randint(1, tableau.dimension ** 2 - 1)
         x_exp = elem % tableau.dimension
         z_exp = elem // tableau.dimension
 
-        # Apply the Pauli gates.  Order does not matter up to phase since measurement statistics are identical.
-        for _ in range(x_exp):
-            apply_X(tableau=tableau, qudit_index=qudit_index)
-        for _ in range(z_exp):
-            apply_Z(tableau=tableau, qudit_index=qudit_index)
-
+        _apply_pauli_powers(tableau, qudit_index, x_exp, z_exp)
         return None
     
     elif noise_channel == 'f' or noise_channel == 'p':
@@ -402,15 +434,32 @@ def apply_single_qudit_noise(tableau : Tableau, qudit_index: int, _, params: dic
         op_exp = random.randint(1, tableau.dimension - 1)
         # Apply appropriate error
         if flip:
-            for _ in range(op_exp):
-                apply_X(tableau=tableau, qudit_index=qudit_index)
+            _apply_pauli_powers(tableau, qudit_index, op_exp, 0)
         else:
-            for _ in range(op_exp):
-                apply_Z(tableau=tableau, qudit_index=qudit_index)
+            _apply_pauli_powers(tableau, qudit_index, 0, op_exp)
         
         return None
     
 
     raise ValueError("Must specify a valid noise channel.")
-    
+
+def apply_two_qudit_noise(tableau: Tableau, qudit_index: int, target_index: int, params: dict) -> None:
+    """
+    Sample and apply a two-qudit Pauli noise event.
+    """
+    if params is None or 'prob_dist' not in params:
+        raise ValueError("Two-qudit noise requires a 'prob_dist' parameter.")
+
+    distribution = np.asarray(params['prob_dist'], dtype=float).reshape(-1)
+    required_length = tableau.dimension ** 4
+    if distribution.size != required_length:
+        raise ValueError(
+            f"Input distribution has length {distribution.size} instead of the required {required_length}."
+        )
+
+    noise_index = np.random.choice(required_length, p=distribution)
+    x_1, z_1, x_2, z_2 = np.unravel_index(noise_index, (tableau.dimension,) * 4)
+    _apply_pauli_powers(tableau, qudit_index, int(x_1), int(z_1))
+    _apply_pauli_powers(tableau, target_index, int(x_2), int(z_2))
+    return None
 

@@ -180,19 +180,27 @@ def circuit_to_cirq_circuit(circuit, measurement=False, print_circuit=False):
         # Choose the appropriate gate.
         if op.name in gate_map:
             gate = gate_map[op.name]
+        elif op.name == "MUL":
+            if op.params is None:
+                raise ValueError("Multiplication gate requires an 'a' parameter.")
+            scalar = op.params.get("a", op.params.get("scalar"))
+            if scalar is None:
+                raise ValueError("Multiplication gate requires an 'a' parameter.")
+            gate = GeneralizedMultiplicationGate(circuit.dimension, int(scalar))
             # Add the gate to the Cirq circuit.
-            if op.target_index is None:
-                # Single-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index]))
-            else:
-                # Two-qudit gate.
-                cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
         elif op.name == "M":
             if measurement:
                 cirq_circuit.append(cirq.measure(qudits[op.qudit_index], key=f'm_{op.qudit_index}'))
             continue
         else:
             raise NotImplementedError(f"Gate {op.name} not implemented")
+
+        if op.target_index is None:
+            # Single-qudit gate.
+            cirq_circuit.append(gate.on(qudits[op.qudit_index]))
+        else:
+            # Two-qudit gate.
+            cirq_circuit.append(gate.on(qudits[op.qudit_index], qudits[op.target_index]))
     for qudit in qudits:
         if not any(op.qubits[0] == qudit for op in cirq_circuit.all_operations()):
             # Append identity to qudits with no gates
