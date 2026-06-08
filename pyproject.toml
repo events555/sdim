@@ -47,6 +47,9 @@ extend-exclude = ["examples/"]
 select = ["F", "E9"]
 
 [dependency-groups]
+bench = [
+    "cupy-cuda12x[ctk]>=14.1.1",
+]
 dev = [
     "pytest-benchmark>=5.2.3",
 ]
