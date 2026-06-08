@@ -189,15 +189,16 @@ def test_depolarize2(noise_circuit, prob):
     )
 
     if prob > 0:
-        num_non_I = d**2 - 1
-        expected_each = prob / (num_non_I * num_non_I)
+        # Standard two-qudit depolarizing: every non-identity two-qudit
+        # Pauli is equally likely, including the weight-1 terms (one qudit
+        # identity). There are d**4 - 1 of them.
+        num_non_I = d**4 - 1
+        expected_each = prob / num_non_I
         for x1 in range(d):
             for z1 in range(d):
-                if x1 == 0 and z1 == 0:
-                    continue
                 for x2 in range(d):
                     for z2 in range(d):
-                        if x2 == 0 and z2 == 0:
+                        if x1 == 0 and z1 == 0 and x2 == 0 and z2 == 0:
                             continue
                         observed = counts[(x1, z1, x2, z2)] / N_SHOTS
                         assert observed == pytest.approx(

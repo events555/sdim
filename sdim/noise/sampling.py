@@ -89,19 +89,15 @@ def sample_depolarize2(d: int, shots: int, error_prob: float) -> np.ndarray:
     mask = rnd < error_prob
     num_errors = int(np.sum(mask))
     if num_errors > 0:
-        errors = np.array(
-            [
-                (x, z)
-                for x in range(d)
-                for z in range(d)
-                if not (x == 0 and z == 0)
-            ],
-            dtype=np.int64,
-        )
-        indices1 = np.random.randint(0, len(errors), size=num_errors)
-        indices2 = np.random.randint(0, len(errors), size=num_errors)
-        noise[mask, :2] = errors[indices1]
-        noise[mask, 2:] = errors[indices2]
+        # Standard two-qudit depolarizing: with probability p apply a Pauli
+        # drawn uniformly from the d**4 - 1 non-identity two-qudit Paulis.
+        # This includes the weight-1 terms (P (x) I and I (x) P); sampling a
+        # non-identity Pauli per qudit independently would wrongly omit them.
+        idx = np.random.randint(0, d**4 - 1, size=num_errors) + 1
+        noise[mask, 0] = idx // d**3
+        noise[mask, 1] = (idx // d**2) % d
+        noise[mask, 2] = (idx // d) % d
+        noise[mask, 3] = idx % d
     return noise
 
 
