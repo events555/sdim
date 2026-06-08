@@ -1,6 +1,7 @@
 """CHP format reader/writer."""
 
 import os
+import re
 
 from ..circuit import Circuit
 from ..gates.registry import gate_id_to_name
@@ -33,24 +34,25 @@ def read_circuit(filename: str) -> Circuit:
         if not line.strip():
             continue
         parts = line.split()
-        gate_name = parts[0].upper()
+        # The writer serializes gate args as parenthesized suffixes on the
+        # gate token, e.g. "DEPOLARIZE1(0.02) 0". Strip them off the name and
+        # parse them back into the float arg list the gate expects.
+        token = parts[0]
+        gate_name = token.split("(", 1)[0].upper()
+        gate_args = [
+            float(value)
+            for group in re.findall(r"\(([^)]*)\)", token)
+            for value in group.split(",")
+            if value.strip()
+        ]
+        args = gate_args or None
 
         gate_qubits = [int(qubit) for qubit in parts[1:] if qubit.isdigit()]
-        extra_params = [text for text in parts[1:] if "=" in text]
-        params_dict: dict[str, str] = {}
-        for param in extra_params:
-            param_parts = param.split("=")
-            if len(param_parts) != 2:
-                raise ValueError(
-                    "Extra parameter doesn't have the correct format."
-                )
-            params_dict[param_parts[0]] = param_parts[1]
-
         num_indices = len(gate_qubits)
         if num_indices == 1:
-            circuit.append(gate_name, gate_qubits[0])
+            circuit.append(gate_name, gate_qubits[0], args=args)
         elif num_indices == 2:
-            circuit.append(gate_name, gate_qubits[0], gate_qubits[1])
+            circuit.append(gate_name, gate_qubits, args=args)
         else:
             raise ValueError(
                 f"Unexpected number of arguments for gate {gate_name}"
