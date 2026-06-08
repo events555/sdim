@@ -310,24 +310,28 @@ class Circuit:
             if is_gate_records(op.gate_type)
         )
 
-    def _build_ir(self) -> np.ndarray:
+    def _build_ir(self) -> tuple[np.ndarray, np.ndarray]:
         from ..compiler.lowering import lower_to_ir
 
         return lower_to_ir(self)
 
     def _build_noise(
-        self, shots: int
+        self, shots: int, xp=None, rng=None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
         from ..noise.sampling import build_noise_banks
 
-        return build_noise_banks(self, shots)
+        return build_noise_banks(self, shots, xp=xp or np, rng=rng)
 
-    def reference_sample(self, ir: Optional[np.ndarray] = None) -> np.ndarray:
+    def reference_sample(
+        self,
+        ir: Optional[np.ndarray] = None,
+        args_pool: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         from ..compiler.lowering import lower_to_ir, reference_sample
 
         if ir is None:
-            ir = lower_to_ir(self)
-        return reference_sample(ir, self.num_qudits, self.dimension)
+            ir, args_pool = lower_to_ir(self)
+        return reference_sample(ir, self.num_qudits, self.dimension, args_pool)
 
     def compile_sampler(
         self,
@@ -336,6 +340,8 @@ class Circuit:
         seed: Optional[int] = None,
         reference_sample: Optional[np.ndarray] = None,
         ir_array: Optional[np.ndarray] = None,
+        args_pool: Optional[np.ndarray] = None,
+        backend: str = "numpy",
     ) -> "CompiledMeasurementSampler":
         from ..compiler import compile as _compile
         from ..compiler.sampler import CompiledMeasurementSampler
@@ -345,13 +351,16 @@ class Circuit:
             skip_reference_sample=skip_reference_sample,
             ref_sample=reference_sample,
             ir_array=ir_array,
+            args_pool=args_pool,
         )
         return CompiledMeasurementSampler(
             circuit_object=self,
             reference_sample=compiled.reference_sample,
             ir_array=compiled.ir_array,
+            args_pool=compiled.args_pool,
             measurement_records=compiled.measurement_records,
             seed=seed,
+            backend=backend,
         )
 
     def compile_detector_sampler(
@@ -360,6 +369,7 @@ class Circuit:
         seed: Optional[int] = None,
         reference_sample: Optional[np.ndarray] = None,
         ir_array: Optional[np.ndarray] = None,
+        args_pool: Optional[np.ndarray] = None,
     ) -> "CompiledDetectorSampler":
         from ..compiler import compile as _compile
         from ..compiler.sampler import CompiledDetectorSampler
@@ -368,11 +378,13 @@ class Circuit:
             self,
             ref_sample=reference_sample,
             ir_array=ir_array,
+            args_pool=args_pool,
         )
         return CompiledDetectorSampler(
             circuit_object=self,
             reference_sample=compiled.reference_sample,
             ir_array=compiled.ir_array,
+            args_pool=compiled.args_pool,
             measurement_records=compiled.measurement_records,
             seed=seed,
         )

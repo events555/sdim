@@ -21,9 +21,17 @@ def compile(
     skip_reference_sample: bool = False,
     ref_sample: Optional[np.ndarray] = None,
     ir_array: Optional[np.ndarray] = None,
+    args_pool: Optional[np.ndarray] = None,
 ) -> CompiledCircuit:
     """Lower a Circuit AST into a CompiledCircuit ready for sampling."""
-    ir = ir_array if ir_array is not None else lower_to_ir(circuit)
+    if ir_array is not None:
+        if args_pool is None:
+            raise ValueError(
+                "args_pool must accompany an externally supplied ir_array."
+            )
+        ir = ir_array
+    else:
+        ir, args_pool = lower_to_ir(circuit)
 
     records: list = []
     if skip_reference_sample:
@@ -38,7 +46,11 @@ def compile(
         # ref_sample cannot be paired with matching records and is ignored
         # here (the records' collapse choices would not align with it).
         ref = reference_sample(
-            ir, circuit.num_qudits, circuit.dimension, records=records
+            ir,
+            circuit.num_qudits,
+            circuit.dimension,
+            args_pool,
+            records=records,
         )
     elif ref_sample is not None:
         ref = ref_sample
@@ -48,6 +60,7 @@ def compile(
     return CompiledCircuit(
         circuit=circuit,
         ir_array=ir,
+        args_pool=args_pool,
         reference_sample=ref,
         num_qudits=circuit.num_qudits,
         dimension=circuit.dimension,

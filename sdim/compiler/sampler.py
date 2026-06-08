@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from ..circuit import Circuit
 
 
+_CPU_BATCH_BYTES = 2 * 1024**3
+
+
 class CompiledMeasurementSampler:
     def __init__(
         self,
@@ -21,7 +24,9 @@ class CompiledMeasurementSampler:
         seed: Optional[int] = None,
         reference_sample: np.ndarray,  # Make these required from the compile step
         ir_array: np.ndarray,
+        args_pool: np.ndarray,
         measurement_records: Optional[list] = None,
+        backend: str = "numpy",
     ) -> None:
         self.circuit: "Circuit" = circuit_object
         self.reference_sample = reference_sample
@@ -29,40 +34,91 @@ class CompiledMeasurementSampler:
         self.seed: Optional[int] = seed
         self.engine = PauliFrameSimulator(
             ir_array=ir_array,
+            args_pool=args_pool,
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements,
             measurement_records=measurement_records,
+            backend=backend,
+            rng_seed=seed,
         )
 
     def sample(
         self,
         shots: int,
+        *,
+        batch_size: Optional[int] = None,
     ) -> np.ndarray:
         """
         Samples the measurement results of the circuit.
         """
         if self.seed is not None:
-            np.random.seed(self.seed)
-            import random
+            self.engine._seed_base_rng()
 
-            random.seed(self.seed)
-        noise1_bank, noise2_bank, erased_bank, measurement_bank = (
-            self.circuit._build_noise(shots)
+        return self._sample_batched(shots, batch_size)
+
+    def _run_once(self, shots: int) -> np.ndarray:
+        """One pass for ``shots`` shots. Noise is streamed inline by the
+        engine (drawn on-device for cupy), so no banks are materialized."""
+        return self.engine.run_simulation_for_raw_measurements(
+            shots=shots,
+            reference_sample=self.reference_sample,
         )
 
-        # Get raw noisy measurements from the engine
-        raw_noisy_measurements = (
-            self.engine.run_simulation_for_raw_measurements(
-                shots=shots,
-                reference_sample=self.reference_sample,
-                noise1_bank=noise1_bank,
-                noise2_bank=noise2_bank,
-                erased_bank=erased_bank,
-                measurement_bank=measurement_bank,
-            )
-        )
-        return raw_noisy_measurements
+    def _bytes_per_shot(self) -> int:
+        """Backend bytes per shot: the x/z frames + the result table (int64).
+
+        Streamed noise adds only transient O(shots) temporaries, no
+        depth-dependent term, so this is Stim's ``2*qubits + measurements``
+        per-shot memory model.
+        """
+        n = self.engine.num_qudits
+        m = self.engine.num_total_measurements
+        return 8 * (2 * n + m)
+
+    def _auto_batch_size(self, shots: int) -> int:
+        if self.engine.xp is np:
+            budget = _CPU_BATCH_BYTES
+        else:
+            import cupy as cp
+
+            free, _total = cp.cuda.runtime.memGetInfo()
+            budget = int(free * 0.35)
+        cap = max(1, budget // self._bytes_per_shot())
+        return min(shots, cap)
+
+    def _sample_batched(
+        self, shots: int, batch_size: Optional[int]
+    ) -> np.ndarray:
+        if shots <= 0:
+            return self._run_once(shots)
+        is_gpu = self.engine.xp is not np
+        if batch_size is None:
+            batch_size = self._auto_batch_size(shots)
+
+        parts: list[np.ndarray] = []
+        start = 0
+        while start < shots:
+            n = min(batch_size, shots - start)
+            if is_gpu:
+                import cupy as cp
+
+                try:
+                    parts.append(self._run_once(n))
+                    cp.get_default_memory_pool().free_all_blocks()
+                except cp.cuda.memory.OutOfMemoryError:
+                    cp.get_default_memory_pool().free_all_blocks()
+                    if n <= 1:
+                        raise
+                    # Halve and retry this chunk. The RNG already advanced in
+                    # the failed attempt, so an OOM here breaks bit-for-bit
+                    # reproducibility of subsequent draws (rare corner).
+                    batch_size = max(1, batch_size // 2)
+                    continue
+            else:
+                parts.append(self._run_once(n))
+            start += n
+        return np.concatenate(parts, axis=0)
 
     def sample_write(
         self,
@@ -90,6 +146,7 @@ class CompiledDetectorSampler:
         seed: Optional[int] = None,
         reference_sample: np.ndarray,
         ir_array: np.ndarray,
+        args_pool: np.ndarray,
         measurement_records: Optional[list] = None,
     ) -> None:
         self.circuit: "Circuit" = circuit_object
@@ -98,10 +155,12 @@ class CompiledDetectorSampler:
         self.seed: Optional[int] = seed
         self.engine = PauliFrameSimulator(
             ir_array=ir_array,
+            args_pool=args_pool,
             dimension=circuit_object.dimension,
             num_qudits=circuit_object.num_qudits,
             num_total_measurements=circuit_object.num_measurements,
             measurement_records=measurement_records,
+            rng_seed=seed,
         )
         self._parse_annotations()
         self._calculate_reference_annotations()
@@ -229,24 +288,13 @@ class CompiledDetectorSampler:
         obs_out: Optional[np.ndarray] = None,
     ) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
         if self.seed is not None:
-            np.random.seed(self.seed)
-            import random
+            self.engine._seed_base_rng()
 
-            random.seed(self.seed)
-        # Generate noise
-        noise1_bank, noise2_bank, erased_bank, measurement_bank = (
-            self.circuit._build_noise(shots)
-        )
-
-        # Get raw noisy measurements from the engine
+        # Noise is streamed inline by the engine; no banks to build here.
         raw_noisy_measurements_all_shots = (
             self.engine.run_simulation_for_raw_measurements(
                 shots=shots,
                 reference_sample=self.reference_sample,
-                noise1_bank=noise1_bank,
-                noise2_bank=noise2_bank,
-                erased_bank=erased_bank,
-                measurement_bank=measurement_bank,
             )
         )  # Shape: (shots, num_total_measurements)
 

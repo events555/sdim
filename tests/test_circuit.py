@@ -32,7 +32,7 @@ def test_build_ir():
     circuit.append("DEPOLARIZE1", 0, args=1)
     circuit.append("DEPOLARIZE2", 0, 1, args=1)
 
-    ir = circuit._build_ir()
+    ir, args_pool = circuit._build_ir()
     noise1, noise2, erased, measurement = circuit._build_noise(shots=1)
 
     NO_TARGET = np.iinfo(np.int64).max
@@ -42,24 +42,29 @@ def test_build_ir():
     depol2_id = gate_name_to_id("DEPOLARIZE2")
 
     exp = np.empty(6, dtype=ir.dtype)
-    exp[0] = (had_id, 0, NO_TARGET, np.nan)
-    exp[1] = (had_id, 1, NO_TARGET, np.nan)
-    exp[2] = (cnot_id, 0, 1, np.nan)
-    exp[3] = (cnot_id, 0, 2, np.nan)
-    exp[4] = (depol1_id, 0, NO_TARGET, 1.0)
-    exp[5] = (depol2_id, 0, 1, 1.0)
+    exp[0] = (had_id, 0, NO_TARGET, 0, 0)
+    exp[1] = (had_id, 1, NO_TARGET, 0, 0)
+    exp[2] = (cnot_id, 0, 1, 0, 0)
+    exp[3] = (cnot_id, 0, 2, 0, 0)
+    exp[4] = (depol1_id, 0, NO_TARGET, 0, 1)
+    exp[5] = (depol2_id, 0, 1, 1, 1)
 
     assert np.array_equal(
         ir[["gate_id", "qudit_index", "target_index"]],
         exp[["gate_id", "qudit_index", "target_index"]],
     ), "gate ids / targets differ"
 
-    arg0 = ir["arg0"]
-    assert np.all(np.isnan(arg0[:4])), (
-        f"Expected nan for no-arg gates, got {arg0[:4]}"
+    assert np.all(ir["arg_len"][:4] == 0), (
+        f"Expected empty arg span for no-arg gates, got {ir['arg_len'][:4]}"
     )
-    assert np.allclose(arg0[4:], [1.0, 1.0]), (
-        f"Expected 1.0 for DEPOLARIZE args, got {arg0[4:]}"
+    assert np.array_equal(
+        ir[["arg_start", "arg_len"]], exp[["arg_start", "arg_len"]]
+    ), "arg spans differ"
+    resolved = [
+        args_pool[row["arg_start"]] if row["arg_len"] else None for row in ir
+    ]
+    assert resolved[4] == 1.0 and resolved[5] == 1.0, (
+        f"Expected 1.0 DEPOLARIZE args via pool, got {resolved[4:]}"
     )
 
     assert noise1.shape == (1, 1, 2)

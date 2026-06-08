@@ -1,8 +1,15 @@
 # sdim/simulators/frame_simulator.py
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
+
+_cupy: Any = None
+try:  # GPU backend is optional; falls back to numpy when absent.
+    import cupy as _cupy
+except Exception:
+    pass
+
 
 from ..gates.registry import (
     gate_id_to_name,
@@ -14,6 +21,7 @@ from ..gates.registry import (
     is_gate_records,
     is_gate_two_qubit,
 )
+from ..noise.sampling import sample_channel
 
 
 @dataclass
@@ -37,17 +45,21 @@ class PauliFrameSimulator:
     """
 
     ir_array: np.ndarray
+    args_pool: np.ndarray
     dimension: int
     num_qudits: int
     num_total_measurements: int
     measurement_records: Optional[list] = None
+    backend: str = "numpy"
+    rng_seed: Optional[int] = None
 
     id_to_pauli_frame_op_map: Dict[int, Callable[..., None]] = field(
         default_factory=dict, init=False
     )
 
     def __post_init__(self):
-        """Initialize the mapping from gate IDs to their Pauli frame operations."""
+        """Initialize gate-op map and the array/RNG backend."""
+        self._setup_backend()
         self.id_to_pauli_frame_op_map = {
             gate_name_to_id("H"): self._op_H,
             gate_name_to_id("H_INV"): self._op_H_INV,
@@ -62,6 +74,125 @@ class PauliFrameSimulator:
             gate_name_to_id("MULTIPLY_INV"): self._op_MUL,
         }
 
+    def _setup_backend(self) -> None:
+        """Select numpy or cupy as the array module + RNG source."""
+        self.xp: Any
+        self._rng: Any
+        if self.backend == "cupy":
+            if _cupy is None:
+                raise RuntimeError(
+                    "backend='cupy' requested but cupy is not installed "
+                    "(install the 'bench' dependency group)."
+                )
+            self.xp = _cupy
+            self._fused = True
+            self._compile_kernels()
+        elif self.backend == "numpy":
+            self.xp = np
+            self._fused = False
+        else:
+            raise ValueError(f"Unknown backend: {self.backend!r}")
+        self._bind_ops()
+        self._seed_base_rng()
+
+    def _bind_ops(self) -> None:
+        """Bind add/sub/neg/mul to the backend's reduction strategy.
+
+        cupy reduces to ``[0, d)`` inside each fused kernel; numpy accumulates
+        and leaves reduction to the periodic sweep, so its ops are bare
+        ufuncs. Either way the gate methods call the same helpers and stay
+        branch-free — the lazy-vs-fused split lives only here and at the three
+        reduction points in the run loop.
+        """
+        d = self.dimension
+        if self._fused:
+            self._addm = lambda a, b, out: self._add_cs(a, b, d, out)
+            self._subm = lambda a, b, out: self._sub_cs(a, b, d, out)
+            self._negm = lambda a, out: self._neg_cs(a, d, out)
+            self._mulm = lambda a, s, out: self._mul_mod(a, s, d, out)
+        else:
+            self._addm = lambda a, b, out: np.add(a, b, out=out)
+            self._subm = lambda a, b, out: np.subtract(a, b, out=out)
+            self._negm = lambda a, out: np.negative(a, out=out)
+            self._mulm = lambda a, s, out: np.mod(
+                np.multiply(a, s, out=out), d, out=out
+            )
+
+    def _seed_base_rng(self) -> None:
+        """(Re)create the base Generator from ``rng_seed``.
+
+        ``numpy.random.Generator`` and ``cupy.random.Generator`` share the
+        ``.random``/``.integers`` API the noise samplers call, so the rest of
+        the engine is backend-agnostic. cupy uses counter-based Philox
+        (stateless, reproducible, per-shot independent); numpy uses its
+        default bit generator. A ``None`` seed means fresh entropy.
+        """
+        if self.xp is np:
+            self._rng = np.random.default_rng(self.rng_seed)
+        else:
+            seed = 0 if self.rng_seed is None else int(self.rng_seed)
+            self._rng = self.xp.random.Generator(
+                self.xp.random.Philox4x3210(seed=seed)
+            )
+
+    def _compile_kernels(self) -> None:
+        """Fused branch-free modular kernels for the cupy gate path.
+
+        Each does one in-register read-modify-write (no temp array, no
+        separate reduction pass). Operands must be in ``[0, d)``; a single
+        conditional add/subtract restores range after an add/sub of two
+        reduced values. This is what lets the gate path drop the periodic
+        ``% d`` sweep — the invariant is maintained per op instead.
+        """
+        cp = self.xp
+        self._add_cs = cp.ElementwiseKernel(
+            "int64 a, int64 b, int64 d",
+            "int64 out",
+            "long long t = a + b; if (t >= d) t -= d; out = t;",
+            "fs_add_cs",
+        )
+        self._sub_cs = cp.ElementwiseKernel(
+            "int64 a, int64 b, int64 d",
+            "int64 out",
+            "long long t = a - b; if (t < 0) t += d; out = t;",
+            "fs_sub_cs",
+        )
+        self._neg_cs = cp.ElementwiseKernel(
+            "int64 a, int64 d",
+            "int64 out",
+            "long long t = d - a; if (t >= d) t -= d; out = t;",
+            "fs_neg_cs",
+        )
+        self._mul_mod = cp.ElementwiseKernel(
+            "int64 x, int64 a, int64 d",
+            "int64 out",
+            "out = ((unsigned long long)a * (unsigned long long)x)"
+            " % (unsigned long long)d;",
+            "fs_mul_mod",
+        )
+
+    def _to_device(self, arr: Optional[np.ndarray]):
+        """Move a host array onto the active backend (no-op for numpy)."""
+        if arr is None or self.xp is np:
+            return arr
+        return self.xp.asarray(arr)
+
+    def _randint(self, high: int, size: int):
+        """Draw ``size`` integers in ``[0, high)`` on the active backend."""
+        return self._rng.integers(0, int(high), size=size)
+
+    def _reduce_rows(self, x_frame, z_frame, rows) -> None:
+        """Reduce specific frame rows mod d in place (fused-path repair).
+
+        Noise adds leave entries outside ``[0, d)``; the fused gate kernels
+        require reduced inputs, so we restore the invariant on just the
+        touched rows rather than sweeping the whole frame.
+        """
+        d = self.dimension
+        for r in rows:
+            self.xp.mod(x_frame[r], d, out=x_frame[r])
+            self.xp.mod(z_frame[r], d, out=z_frame[r])
+
     # qi is the primary/control qudit index, ti is the target qudit index (or None)
     def _op_H(
         self,
@@ -71,7 +202,7 @@ class PauliFrameSimulator:
         ti: Optional[int],
     ):
         tmp = x_frame[qi].copy()
-        x_frame[qi] = -z_frame[qi]
+        self._negm(z_frame[qi], x_frame[qi])  # x = -z
         z_frame[qi] = tmp
 
     def _op_H_INV(
@@ -83,7 +214,7 @@ class PauliFrameSimulator:
     ):
         tmp = x_frame[qi].copy()
         x_frame[qi] = z_frame[qi]
-        z_frame[qi] = -tmp
+        self._negm(tmp, z_frame[qi])  # z = -(old x)
 
     def _op_P(
         self,
@@ -92,7 +223,7 @@ class PauliFrameSimulator:
         qi: int,
         ti: Optional[int],
     ):
-        z_frame[qi] += x_frame[qi]
+        self._addm(z_frame[qi], x_frame[qi], z_frame[qi])
 
     def _op_P_INV(
         self,
@@ -101,7 +232,7 @@ class PauliFrameSimulator:
         qi: int,
         ti: Optional[int],
     ):
-        z_frame[qi] -= x_frame[qi]
+        self._subm(z_frame[qi], x_frame[qi], z_frame[qi])
 
     def _op_CNOT(
         self,
@@ -112,8 +243,8 @@ class PauliFrameSimulator:
     ):
         if ti is None:
             raise ValueError("CNOT target index (ti) cannot be None")
-        x_frame[ti] += x_frame[qi]
-        z_frame[qi] -= z_frame[ti]
+        self._addm(x_frame[ti], x_frame[qi], x_frame[ti])
+        self._subm(z_frame[qi], z_frame[ti], z_frame[qi])
 
     def _op_CNOT_INV(
         self,
@@ -124,8 +255,8 @@ class PauliFrameSimulator:
     ):
         if ti is None:
             raise ValueError("CNOT_INV target index (ti) cannot be None")
-        x_frame[ti] -= x_frame[qi]
-        z_frame[qi] += z_frame[ti]
+        self._subm(x_frame[ti], x_frame[qi], x_frame[ti])
+        self._addm(z_frame[qi], z_frame[ti], z_frame[qi])
 
     def _op_CZ(
         self,
@@ -136,8 +267,8 @@ class PauliFrameSimulator:
     ):
         if ti is None:
             raise ValueError("CZ target index (ti) cannot be None")
-        z_frame[ti] += x_frame[qi]
-        z_frame[qi] += x_frame[ti]
+        self._addm(z_frame[ti], x_frame[qi], z_frame[ti])
+        self._addm(z_frame[qi], x_frame[ti], z_frame[qi])
 
     def _op_CZ_INV(
         self,
@@ -148,8 +279,8 @@ class PauliFrameSimulator:
     ):
         if ti is None:
             raise ValueError("CZ_INV target index (ti) cannot be None")
-        z_frame[ti] -= x_frame[qi]
-        z_frame[qi] -= x_frame[ti]
+        self._subm(z_frame[ti], x_frame[qi], z_frame[ti])
+        self._subm(z_frame[qi], x_frame[ti], z_frame[qi])
 
     def _op_SWAP(
         self,
@@ -168,27 +299,25 @@ class PauliFrameSimulator:
         z_frame[ti] = tmp
 
     def _op_MUL(self, x, z, qi, ti, a, a_inv):
-        x[qi] = (a * x[qi]) % self.dimension
-        z[qi] = (a_inv * z[qi]) % self.dimension
+        self._mulm(x[qi], a, x[qi])
+        self._mulm(z[qi], a_inv, z[qi])
 
     def run_simulation_for_raw_measurements(
         self,
         shots: int,
         reference_sample: np.ndarray,
-        noise1_bank: np.ndarray,
-        noise2_bank: np.ndarray,
-        erased_bank: Optional[np.ndarray],
-        measurement_bank: Optional[np.ndarray],
     ) -> np.ndarray:
         """
         Performs the core noisy simulation.
 
+        Noise is streamed: each noisy gate draws its entropy inline from the
+        engine's RNG via ``sample_channel`` at the point of application, so no
+        pre-materialized noise banks are needed (memory is independent of
+        circuit depth).
+
         Args:
             shots: Number of shots to simulate.
             reference_sample: The noiseless reference measurement outcomes.
-            noise1_bank: Pre-sampled noise for single-qubit noise channels.
-            noise2_bank: Pre-sampled noise for two-qubit noise channels.
-            erased_bank: Pre-sampled erasure flags for HERALDED_ERASURE.
 
         Returns:
             A NumPy array of shape (shots, num_total_measurements) containing
@@ -200,37 +329,38 @@ class PauliFrameSimulator:
                 f"does not match expected total measurements ({self.num_total_measurements})."
             )
 
-        x_frame = np.zeros((self.num_qudits, shots), dtype=np.int64)
-        z_frame = np.zeros((self.num_qudits, shots), dtype=np.int64)
+        xp = self.xp
+        d = self.dimension
+        rng = self._rng
 
-        frame_results = np.empty(
-            (self.num_total_measurements, shots), dtype=np.int64
+        x_frame = xp.zeros((self.num_qudits, shots), dtype=xp.int64)
+        z_frame = xp.zeros((self.num_qudits, shots), dtype=xp.int64)
+
+        frame_results = xp.empty(
+            (self.num_total_measurements, shots), dtype=xp.int64
         )
 
-        noise1_counter = 0
-        noise2_counter = 0
-        erasure_events_counter = 0
         measurement_counter = 0
-        measurement_noise_counter = 0
         gate_counter = 0
+        no_target = np.iinfo(np.int64).max
 
         for inst in self.ir_array:
             gate_id = inst["gate_id"]
             q_idx = inst["qudit_index"]
             t_idx = inst["target_index"]
-            arg0 = inst["arg0"]
             gate_name = gate_id_to_name(gate_id)
+            arg_start = inst["arg_start"]
+            args = self.args_pool[arg_start : arg_start + inst["arg_len"]]
 
-            if gate_counter % 128 == 0:
-                np.mod(x_frame, self.dimension, out=x_frame)
-                np.mod(z_frame, self.dimension, out=z_frame)
+            if not self._fused and gate_counter % 128 == 0:
+                xp.mod(x_frame, self.dimension, out=x_frame)
+                xp.mod(z_frame, self.dimension, out=z_frame)
 
-            if is_gate_noisy(gate_id) and is_gate_collapsing(gate_id):
-                reference_outcome = reference_sample[measurement_counter]
+            if is_gate_collapsing(gate_id):
                 if gate_name in ("M_X", "MR_X"):
                     self._op_H_INV(x_frame, z_frame, q_idx, None)
                 if is_gate_records(gate_id):
-                    assert measurement_bank is not None
+                    reference_outcome = reference_sample[measurement_counter]
                     record = (
                         self.measurement_records[measurement_counter]
                         if self.measurement_records is not None
@@ -241,41 +371,51 @@ class PauliFrameSimulator:
                         # the destabilizer S0^k into the frame so the choice
                         # propagates to correlated later measurements
                         eta, s, S0_z, S0_x = record
-                        k = np.random.randint(0, s, size=shots)
+                        k = self._randint(s, shots)
+                        S0_z = self._to_device(S0_z)
+                        S0_x = self._to_device(S0_x)
                         z_frame += S0_z[:, None] * k[None, :]
                         x_frame += S0_x[:, None] * k[None, :]
+                        if self._fused:
+                            # Injection breaks the [0,d) invariant the fused
+                            # gate kernels assume; restore it before any gate.
+                            xp.mod(x_frame, self.dimension, out=x_frame)
+                            xp.mod(z_frame, self.dimension, out=z_frame)
+                    flip, _ = sample_channel(
+                        gate_name, d, shots, args, xp=xp, rng=rng
+                    )
                     frame_results[measurement_counter, :] = (
-                        reference_outcome
-                        + x_frame[q_idx]
-                        + measurement_bank[measurement_noise_counter, :, 0]
+                        reference_outcome + x_frame[q_idx] + flip[:, 0]
                     ) % self.dimension
-                    measurement_noise_counter += 1
                 if gate_name in ("MR", "MR_X", "RESET"):
                     x_frame[q_idx, :] = 0
                     z_frame[q_idx, :] = 0
                 if gate_name in ("M_X", "MR_X"):
                     self._op_H(x_frame, z_frame, q_idx, None)
             elif is_gate_noisy(gate_id) and not is_gate_collapsing(gate_id):
+                noise, erased = sample_channel(
+                    gate_name, d, shots, args, xp=xp, rng=rng
+                )
                 if is_gate_two_qubit(gate_id):
-                    if t_idx is np.iinfo(np.int64).max:
+                    if t_idx == no_target:
                         raise ValueError(
                             f"Two-qubit noisy gate {gate_name} missing target."
                         )
-                    x_frame[q_idx] += noise2_bank[noise2_counter, :, 0]
-                    z_frame[q_idx] += noise2_bank[noise2_counter, :, 1]
-                    x_frame[t_idx] += noise2_bank[noise2_counter, :, 2]
-                    z_frame[t_idx] += noise2_bank[noise2_counter, :, 3]
-                    noise2_counter += 1
-                else:
-                    x_frame[q_idx] += noise1_bank[noise1_counter, :, 0]
-                    z_frame[q_idx] += noise1_bank[noise1_counter, :, 1]
-                    noise1_counter += 1
+                    if noise is not None:
+                        x_frame[q_idx] += noise[:, 0]
+                        z_frame[q_idx] += noise[:, 1]
+                        x_frame[t_idx] += noise[:, 2]
+                        z_frame[t_idx] += noise[:, 3]
+                        if self._fused:
+                            self._reduce_rows(x_frame, z_frame, (q_idx, t_idx))
+                elif noise is not None:
+                    x_frame[q_idx] += noise[:, 0]
+                    z_frame[q_idx] += noise[:, 1]
+                    if self._fused:
+                        self._reduce_rows(x_frame, z_frame, (q_idx,))
                 if is_gate_records(gate_id):
-                    assert erased_bank is not None
-                    frame_results[measurement_counter, :] = erased_bank[
-                        erasure_events_counter, :
-                    ]
-                    erasure_events_counter += 1
+                    # HERALDED_ERASURE records its per-shot erasure flags.
+                    frame_results[measurement_counter, :] = erased
 
             elif not is_gate_annotating(gate_id) and not is_gate_noisy(
                 gate_id
@@ -346,12 +486,12 @@ class PauliFrameSimulator:
                                 f"Gate {gate_name} expects quantum target but got measurement record rec({t_idx})."
                             )
                     elif gate_name == "MULTIPLY":
-                        a = int(arg0)
+                        a = int(self.args_pool[inst["arg_start"]])
                         a_inv = pow(a, -1, self.dimension)
                         self._op_MUL(x_frame, z_frame, q_idx, t_idx, a, a_inv)
                         is_std_quantum_op = True
                     elif gate_name == "MULTIPLY_INV":
-                        a = int(arg0)
+                        a = int(self.args_pool[inst["arg_start"]])
                         a_inv = pow(a, -1, self.dimension)
                         self._op_MUL(x_frame, z_frame, q_idx, t_idx, a_inv, a)
                         is_std_quantum_op = True
@@ -376,7 +516,11 @@ class PauliFrameSimulator:
 
             gate_counter += 1
 
-        np.mod(x_frame, self.dimension, out=x_frame)
-        np.mod(z_frame, self.dimension, out=z_frame)
+        xp.mod(x_frame, self.dimension, out=x_frame)
+        xp.mod(z_frame, self.dimension, out=z_frame)
 
-        return frame_results.T
+        result = frame_results.T
+        if xp is not np:
+            # Copy back only the (shots, nmeas) measurement bits, not frames.
+            result = xp.asnumpy(result)
+        return result

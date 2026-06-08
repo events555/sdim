@@ -19,6 +19,7 @@ class CompiledCircuit:
 
     circuit: "Circuit"
     ir_array: np.ndarray
+    args_pool: np.ndarray
     reference_sample: np.ndarray
     num_qudits: int
     dimension: int

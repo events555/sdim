@@ -17,23 +17,44 @@ if TYPE_CHECKING:
     from ..circuit import Circuit
 
 
-def lower_to_ir(circuit: "Circuit") -> np.ndarray:
-    """Flatten circuit operations into a structured numpy IR array."""
-    ir_list: list[tuple[int, int, int, float]] = []
+def lower_to_ir(circuit: "Circuit") -> tuple[np.ndarray, np.ndarray]:
+    """Flatten circuit operations into a structured IR array + args pool.
+
+    Each gate's float args are concatenated into a flat ``args_pool``; every IR
+    row carries an ``(arg_start, arg_len)`` span into it. All IR rows
+    expanded from one multi-target instruction share that instruction's span.
+    """
+    ir_list: list[tuple[int, int, int, int, int]] = []
+    args_pool: list[float] = []
 
     for instruction in circuit.operations:
         gate_id = instruction.gate_type
-        arg0 = float(instruction.args[0]) if instruction.args else np.nan
+        if instruction.args:
+            arg_start = len(args_pool)
+            arg_len = len(instruction.args)
+            args_pool.extend(float(a) for a in instruction.args)
+        else:
+            arg_start = 0
+            arg_len = 0
         if is_gate_two_qubit(gate_id):
             for i in range(0, len(instruction.targets), 2):
                 if i + 1 < len(instruction.targets):
                     control = instruction.targets[i]
                     target = instruction.targets[i + 1]
-                    ir_list.append((gate_id, control.value, target.value, arg0))
+                    ir_list.append(
+                        (
+                            gate_id,
+                            control.value,
+                            target.value,
+                            arg_start,
+                            arg_len,
+                        )
+                    )
         else:
+            no_target = np.iinfo(np.int64).max
             for target in instruction.targets:
                 ir_list.append(
-                    (gate_id, target.value, np.iinfo(np.int64).max, arg0)
+                    (gate_id, target.value, no_target, arg_start, arg_len)
                 )
 
     ir_dtype = np.dtype(
@@ -41,16 +62,21 @@ def lower_to_ir(circuit: "Circuit") -> np.ndarray:
             ("gate_id", np.int64),
             ("qudit_index", np.int64),
             ("target_index", np.int64),
-            ("arg0", np.float64),
+            ("arg_start", np.int64),
+            ("arg_len", np.int64),
         ]
     )
-    return np.array(ir_list, dtype=ir_dtype)
+    return (
+        np.array(ir_list, dtype=ir_dtype),
+        np.array(args_pool, dtype=np.float64),
+    )
 
 
 def reference_sample(
     ir: np.ndarray,
     num_qudits: int,
     dimension: int,
+    args_pool: np.ndarray,
     *,
     records: list | None = None,
 ) -> np.ndarray:
@@ -70,7 +96,7 @@ def reference_sample(
         gate_id = inst["gate_id"]
         qudit_index = inst["qudit_index"]
         target_index = inst["target_index"]
-        arg0 = inst["arg0"]
+        arg0 = args_pool[inst["arg_start"]] if inst["arg_len"] else np.nan
         gate_name = gate_id_to_name(gate_id)
 
         if gate_name == "HERALDED_ERASURE":
