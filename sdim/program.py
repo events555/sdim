@@ -3,6 +3,7 @@ from .circuit import CircuitInstruction, Circuit
 from .tableau.tableau_composite import WeylTableau
 from .tableau.tableau_prime import ExtendedTableau
 from .tableau.tableau_gates import *
+from itertools import product
 from sympy import isprime
 from numba import njit, prange
 from numba.core import types
@@ -298,7 +299,7 @@ class Program:
             force_tableau (bool): Whether to force the use of the tableau method.
             exact (bool): Whether to use the Diophantine solver instead of column reduction.
                 Much slower but fails less often.
-            building_error_mechanim (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
+            building_error_mechanism (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
                 Not for manual use
             options (SimulationOptions): An optional SimulationOptions object.
 
@@ -329,14 +330,16 @@ class Program:
             ref_array = self._results_to_array(self.measurement_results)
             
             # Build IR and noise arrays
-            ir_array, noise, detector_info = self._build_ir(self.circuits, options.shots - 1)
+            num_shots = options.shots - 1 if not building_error_mechanism else options.shots
+
+            ir_array, noise, detector_info = self._build_ir(self.circuits, num_shots, building_error_mechanism)
             
             # Run frame simulation
             frame_results, detection_results = simulate_frame(
                 ir_array, ref_array, 
                 self.stabilizer_tableau.num_qudits,
                 self.stabilizer_tableau.dimension,
-                options.shots - 1,
+                num_shots,
                 noise, 
                 detector_info
             )
@@ -613,6 +616,9 @@ class Program:
         # Offset to organize error mechanism sampler
         error_skip_offset = 0
 
+        # # If we're building a DEM out of this circuit, then we add 1 shot as our reference shot simulates trivial noise
+        # extra_shots = extra_shots if not building_error_mechanism else extra_shots + 1
+
         for circuit in circuits:
 
             #TODO: Repeater blocks for detectors that link detectors to earlier detector expressions
@@ -660,17 +666,38 @@ class Program:
                         zero_vec = [0,] * extra_shots
                         pair = np.stack((a, b, zero_vec, zero_vec), axis=1)
                         noise_list.append(pair)
-
+                    
                     else:
-                        print("TODO")
-                        # if channel == 'd':
-                        #     powers = list(np.ndindex((dimension, ) * 4))
 
-                        # elif channel == 'f':
+                        num_noise_events = 0
+                        short_a = []
+                        short_b = []
 
-                        # elif channel == 'p':
+                        if channel == 'd':
+                            num_noise_events = dimension**2 - 1    
+                            r = np.array( list( product(range(dimension), repeat=2) ) )
+                            r = r[1:]
+                            short_a = r[:, 0]
+                            short_b = r[:, 1]
 
+                        
+                        elif channel in ('f', 'p'):
+                            num_noise_events = dimension - 1
+                            r = np.array( range(1, dimension) )
+                            short_a, short_b = (r, np.zeros(dimension - 1, dtype=np.int64)) if channel == 'f' else (np.zeros(dimension - 1, dtype=np.int64), r)
+                            
 
+                        front_zero_pad =  np.zeros(error_skip_offset, dtype=np.int64)
+                        back_zero_pad = np.zeros(extra_shots - (error_skip_offset + num_noise_events), dtype=np.int64) 
+                        a = np.concatenate((front_zero_pad, short_a, back_zero_pad))
+                        b = np.concatenate((front_zero_pad, short_b, back_zero_pad))
+
+                        zero_vec = [0,] * extra_shots
+
+                        pair = np.stack((a, b, zero_vec, zero_vec), axis=1)
+                        noise_list.append(pair)
+
+                        error_skip_offset += num_noise_events  
 
 
 
@@ -739,6 +766,7 @@ class Program:
             noise_array = np.array(noise_list, dtype=np.int64)
         else:
             noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
+
 
         detection_info = DetectorData(
             detector_data=detector_data,
