@@ -10,43 +10,36 @@ import shlex
 import numpy as np
 
 class DEMInstructionType(Enum):
+    """
+    Enum that lists the valid lines types in a DEM.  Repeat instructions envelop their block with curly braces {...}.
+    """
     DIMENSION = 0
     ERROR = 1
     DETECTOR = 2
     LOGICAL_OBSERVABLE = 3
-    COORD_SHIFT = 4
+    SHIFT_DETECTORS = 4
     REPEAT = 5
 
 class DEMTargetType(Enum):
+    """
+    Enum that lists the valid types of positional targets and symbols in a DEM line.
+    """
     DETECTOR = 1
     LOGICAL_OBSERVABLE = 2
     SEPARATOR = 3
-
-# @dataclass
-# class DEMTarget(slots=True):
-#     argument_type : DEMArgType
-#     index : int = 0
-#     shift : int = 0
-
-#     def __eq__(self, other):
-#         return self.argument_type == other.argument_type and self.index == other.index and self.shift == other.shift
-
-#     def __lt__(self, other):
-#         """
-#         Less than operator for target data.  The order of precedence is: argument_type, then index, and then shift.
-#         """
-#         if self.argument_type < other.argument_type:
-#             return True
-#         elif self.index < other.index:
-#             return True
-#         elif self.shift < other.shift:
-#             return True
-
-#         return False
     
 
 @dataclass
 class DEMInstruction:
+        """
+        Stores the information in a single line or block of a DEM.
+
+        Attributes:
+            instruction_type (DEMInstructionType): Indicates the type of entry (e.g. an error mechanism)
+            id_num  (int | None): Sequential or positional data identifying a target (e.g. a logical observable or shift declaration) type.  The id is absolute compared to the relative indices and shift instructions within an .sdem file.  This entry is None by default for error mechanisms.
+            argument (float | Tuple[int, int, int, int] | None): 
+
+        """
         instruction_type : DEMInstructionType
         id_num : int | None = None      #Error mechanisms have no id numbers, only detectors and logicals do
         argument : float | Tuple[int, int, int, int] | None = None      #Coordinates for detection events, probabilities for errors
@@ -55,6 +48,7 @@ class DEMInstruction:
         repeat_count : int = 0
         #TODO: Build REPEAT blocks
         # repeat_block : DEMInstruction = None
+
 
         def add_packed_pair(self, target_type: DEMTargetType, target : int, flip : int):
 
@@ -90,6 +84,7 @@ class DEMInstruction:
 
             return pairs
         
+
         def __iter__(self):
 
             if self.instruction_type == DEMInstructionType.ERROR:
@@ -117,13 +112,18 @@ class DEMInstruction:
 
                 return f"ERROR prob={self.argument} {flip_string}"
             
-            elif self.instruction_type in (DEMInstruction.DETECTOR, DEMInstruction.LOGICAL_OBSERVABLE):
+            elif self.instruction_type in (DEMInstructionType.DETECTOR, DEMInstructionType.LOGICAL_OBSERVABLE):
                 #TODO
+                name= "DETECTOR" if self.instruction_type == DEMInstructionType.DETECTOR else "LOGICAL_OBSERVABLE"
+                coord = "" if self.argument == None else f"coord={self.argument}"
 
-                return NotImplemented
+                return f"{name} {coord} {name[:1]}{self.id_num}"
+            
+            elif self.instruction_type == "REPEAT":
+                raise NotImplementedError
             
             else:
-                raise NotImplemented
+                raise NotImplementedError
 
             return
         
@@ -166,8 +166,7 @@ class DetectorErrorModel:
                     instruction_type=DEMInstructionType.ERROR,
                     argument=probability,
                     detector_packed_target_flip_pairs=set(),
-                    logical_observable_packed_target_flip_pairs=set(),
-                    repeat_count=0
+                    logical_observable_packed_target_flip_pairs=set()
                     )
         
         for target, flip in detector_event_pairs:
@@ -187,9 +186,17 @@ class DetectorErrorModel:
         return error
     
 
-    def add_detector_label(self, target_type : DEMTargetType, id_num : int):
+    def add_detector_label(self, target_type : DEMTargetType, coord : Tuple[int, int, int, int] | None = None, id_num : int = 0):
 
-        return NotImplemented
+        event = DEMInstruction(
+            instruction_type=target_type, 
+            argument=coord,
+            id_num=id_num
+        )
+
+        self.instructions.append(event)
+
+        return event
 
 
     def read_from_file(self, filepath : str, overwrite : bool = False):
@@ -235,49 +242,15 @@ class DetectorErrorModel:
             instr_name = parts[0].upper()
             params = [text for text in parts[1:] if '=' in text]
             argument = None
-            target_flip_pairs = []
-            tag = ''
+
+            # Instruction string to type dictionary
+            
+
+            # Used to calculate absolute detector indices and coordinates
+            relative_offset = 0
 
             # Cases for DEM instructions
-            if instr_name == "DIMENSION":
-                self.dimension = int(parts[1])
-
-            elif instr_name in ("DETECTOR", "LOGICAL"):
-                instr_type = DEMInstructionType.DETECTOR if instr_name == "DETECTOR" else DEMInstructionType.LOGICAL
-
-                for arg in params:
-                    arg_parts = arg.split('=')
-
-                    if arg_parts[0] == "coord":
-                        #Check that the coordinate matches (x, y, z, t) format
-                        if match := re.fullmatch(r"^\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$", arg_parts[1]):
-                            x, y, z, t = map(int, match.groups())
-                            argument = (x, y, z, t)
-                        else:
-                            raise ValueError(f"The string f{arg_parts[1]} on line {start_index + j + 1} is an invalid spacetime coordinate, which must take the form (x, y, z, t).")
-
-                    # Checking if the entry matches a detector or logical to a shift, e.g. D0=2, L5=7
-                    elif match := re.fullmatch(r"^[LD](\d+)", arg_parts[0]):
-                        target = int(match.group(1))
-
-                    else:
-                        raise ValueError(f"The string f{arg} on line {start_index + j + 1} is not a valid parameter line of paramters for a detector or logical observable.")
-
-                    # Right now, declaring detectors and logicals doesn't really do anything to alter a DEM
-                    # Processing space-time data would likely change this
-                    # self.instructions.append(
-                    #     DEMInstruction(
-                    #     instruction_type=instr_name,
-                    #     argument=argument,
-                    #     detector_packed_target_flip_pairs=None,
-                    #     logical_observable_packed_target_flip_pairs=None,
-                    #     repeat_count=0
-                    #     )
-                    # )
-                        
-
-            elif instr_name == "ERROR":
-
+            if instr_name == "ERROR":
                 error = DEMInstruction(
                     instruction_type=DEMInstructionType.ERROR,
                     argument=0,
@@ -303,6 +276,39 @@ class DetectorErrorModel:
 
                 # Append error mechanism here
                 self.instructions.append(error)
+
+
+
+            elif instr_name in ("DETECTOR", "LOGICAL_OBSERVABLE", "SHIFT_DETECTORS"):
+
+                for arg in params:
+                    arg_parts = arg.split('=')
+
+                    if arg_parts[0] == "coord":
+                        #Check that the coordinate matches (x, y, z, t) format
+                        if match := re.fullmatch(r"^\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$", arg_parts[1]):
+                            x, y, z, t = map(int, match.groups())
+                            argument = (x, y, z, t)
+                        else:
+                            raise ValueError(f"The string f{arg_parts[1]} on line {start_index + j + 1} is an invalid spacetime coordinate, which must take the form (x, y, z, t).")
+
+                    # Checking if the entry matches a detector or logical to a flip, e.g. D0=2, L5=7
+                    elif match := re.fullmatch(r"^[LD](\d+)", arg_parts[0]):
+                        target = int(match.group(1))
+
+                    # Checking if the entry matches a shift in detector indices
+                    elif match := re.fullmatch(r"(\d+)", arg_parts[0]):
+                        target = int(match.group(1))
+                        relative_offset += target
+
+
+                    else:
+                        raise ValueError(f"The string f{arg} on line {start_index + j + 1} is not a valid parameter line of paramters for a detector or logical observable.")
+
+                self.add_detector_label(target_type=DEMInstructionType[instr_name], coord=argument, id_num=target)
+            
+            elif instr_name == "DIMENSION":
+                self.dimension = int(parts[1])
 
             else:
                 raise ValueError(f"Instruction {instr_name} on line {start_index + j + 1} not recognized.")
@@ -354,6 +360,7 @@ class DetectorErrorModel:
 
         # Linearly process the circuit instructions for any noise events, mark down the probabilities
         # TODO: Support for 2-qudit noise channels
+        print(f"Sweeping for error instructions...")
         for instr in circuit.operations:
             if instr.gate_name == "N1":
                 channel_prob = float(instr.params['prob']) 
@@ -364,12 +371,19 @@ class DetectorErrorModel:
                     for _ in range(dimension - 1):
                         noise_probabilities.append(channel_prob / (dimension - 1))
 
-        shots = len(noise_probabilities)
+            if instr.gate_name == "N2":
+                channel_probs = instr.params['prob_dist']
+                noise_probabilities.extend(channel_probs[1:])
+                
         # Use the Pauli frame sampler to generate detector and logical flip events
+        shots = len(noise_probabilities)
+        print(f"Sampling {shots} shots to build the DEM...")
         error_enumerator = Program(circuit)
+        results = error_enumerator.simulate(shots=shots, building_error_mechanism=True)
         _, detection_events = error_enumerator.simulate(shots=shots, building_error_mechanism=True)
 
         # Read out the target index and flip pairs into the circuit
+        print(f"Building DEM...")
         for mechanism in range(shots):
             detector_pairs = []
             logical_pairs = []
@@ -383,10 +397,11 @@ class DetectorErrorModel:
                     logical_pairs.append((target, d['data'][mechanism]))
 
             if len(detector_pairs) > 0 or len(logical_pairs) > 0:
-                error = dem_from_circuit.add_error_mechanism(noise_probabilities[mechanism], detector_pairs, logical_pairs)
+                dem_from_circuit.add_error_mechanism(noise_probabilities[mechanism], detector_pairs, logical_pairs)
 
         dem_from_circuit.merge_errors()
 
+        print("Done.")
         return dem_from_circuit
 
 
@@ -412,23 +427,22 @@ class DetectorErrorModel:
 
         return
     
+
     def sample(self, shots : int):
         # TODO: Multithread or parallelize this
         samples = []
 
-       # print(self.shift_list)
-
-        for s in range(shots):
+        for _ in range(shots):
             detector_shift = np.zeros(self.num_detectors, dtype=np.int64)
             logical_shift = np.zeros(self.num_logicals, dtype=np.int64)
 
             for e in self.shift_list:
                 select = np.random.choice([0, 1], p=[1 - e[0], e[0]])
-                detector_shift += (select * e[1]) % self.dimension
+                detector_shift = (detector_shift + select * e[1]) % self.dimension
                 # print(f"The select was {select} with probability {e[0]}")
-                logical_shift += (select * e[2]) % self.dimension
+                logical_shift = (logical_shift + select * e[2]) % self.dimension
 
-            # print(f"Total shifts were detector: {detector_shift} and logical: {logical_shift}")
+            print(f"Sample reads with detector shifts: {detector_shift} and logical shifs : {logical_shift}")
             samples.append((detector_shift, logical_shift))
 
         return samples

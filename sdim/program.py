@@ -200,7 +200,6 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             noise_counter += 1
 
         elif gate_id == 18: # 2 qudit noise
-            #print(f" {noise_array[noise_counter, :, 0]} \n {noise_array[noise_counter, :, 1]} \n {noise_array[noise_counter, :, 2]} \n {noise_array[noise_counter, :, 3]} \n\n")
             x_frame[qudit_index] += noise_array[noise_counter, :, 0]
             z_frame[qudit_index] += noise_array[noise_counter, :, 1]
             x_frame[target_index] += noise_array[noise_counter, :, 2]
@@ -615,6 +614,12 @@ class Program:
 
         # Offset to organize error mechanism sampler
         error_skip_offset = 0
+        
+        # Common arrays used and re-used during computation
+        two_qudit_event_pauli_powers = list(np.ndindex((dimension, ) * 4))
+        two_qudit_number_of_noise_events = (dimension ** 4)
+        two_qudit_trivial_event = np.zeros(4, dtype=np.int64)
+        
 
         # # If we're building a DEM out of this circuit, then we add 1 shot as our reference shot simulates trivial noise
         # extra_shots = extra_shots if not building_error_mechanism else extra_shots + 1
@@ -703,18 +708,25 @@ class Program:
 
                 if instruction.gate_id == 18:
                     distribution = instruction.params['prob_dist']
-                    
-                    powers = list(np.ndindex((dimension, ) * 4))
 
-                    if len(distribution) == (dimension ** 4):
-                        powers = list(np.ndindex((dimension, ) * 4))
-                        noise_indices = np.random.choice(a=len(powers), size=extra_shots, p=distribution)
-                        noise = np.array( [powers[i] for i in noise_indices] )
+                    if not building_error_mechanism:
+
+                        if len(distribution) == (dimension ** 4):
+                            noise_indices = np.random.choice(a=len(two_qudit_event_pauli_powers), size=extra_shots, p=distribution)
+                            noise = np.array( [two_qudit_event_pauli_powers[i] for i in noise_indices] )
+                            noise_list.append(noise)
+                        else: # If the list doesn't have a valid shape, then the channel acts as identity.
+                            zero_vec = [0,] * extra_shots
+                            noise = np.stack((zero_vec, ) * 4, axis=1)
+                            noise_list.append(noise)
+
+                    else:
+                        nontrivial_noise_events = np.array( two_qudit_event_pauli_powers[1:] )
+                        front_zero_pad =  np.tile(two_qudit_trivial_event, (error_skip_offset, 1)) 
+                        back_zero_pad = np.tile(two_qudit_trivial_event, (extra_shots - (error_skip_offset + two_qudit_number_of_noise_events - 1), 1)) 
+                        noise = np.vstack([front_zero_pad, nontrivial_noise_events, back_zero_pad])
                         noise_list.append(noise)
-                    else: # If the list doesn't have a valid shape, then the channel acts as identity.
-                        zero_vec = [0,] * extra_shots
-                        noise = np.stack((zero_vec, ) * 4, axis=1)
-                        noise_list.append(noise)
+                        error_skip_offset += two_qudit_number_of_noise_events - 1
 
                 if instruction.gate_id in (19, 20):
 

@@ -23,7 +23,7 @@ def generate_and_test_circuit(depth, dimension, num_qudits):
 
     # Simulate all shots at once
     program = Program(circuit)
-    measurements = program.simulate(shots=num_samples)
+    measurements, _ = program.simulate(shots=num_samples)
 
 
     for shot_index in range(num_samples):
