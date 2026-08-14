@@ -351,7 +351,7 @@ class DetectorErrorModel:
         return
     
     @classmethod
-    def from_circuit(cls, circuit : Circuit):
+    def from_circuit(cls, circuit : Circuit, merge_initial_errors : bool = True):
         dimension = circuit.dimension
         noise_probabilities = []
 
@@ -379,7 +379,6 @@ class DetectorErrorModel:
         shots = len(noise_probabilities)
         print(f"Sampling {shots} shots to build the DEM...")
         error_enumerator = Program(circuit)
-        results = error_enumerator.simulate(shots=shots, building_error_mechanism=True)
         _, detection_events = error_enumerator.simulate(shots=shots, building_error_mechanism=True)
 
         # Read out the target index and flip pairs into the circuit
@@ -399,11 +398,11 @@ class DetectorErrorModel:
             if len(detector_pairs) > 0 or len(logical_pairs) > 0:
                 dem_from_circuit.add_error_mechanism(noise_probabilities[mechanism], detector_pairs, logical_pairs)
 
-        dem_from_circuit.merge_errors()
+        if merge_initial_errors:
+            dem_from_circuit.merge_errors()
 
-        print("Done.")
         return dem_from_circuit
-
+    
 
     def update_sampler(self):
 
@@ -430,22 +429,28 @@ class DetectorErrorModel:
 
     def sample(self, shots : int):
         # TODO: Multithread or parallelize this
-        samples = []
+        detector_samples = []
+        logical_samples = []
+        
+        if not self.shift_list:
+            self.update_sampler()
 
         for _ in range(shots):
             detector_shift = np.zeros(self.num_detectors, dtype=np.int64)
             logical_shift = np.zeros(self.num_logicals, dtype=np.int64)
 
             for e in self.shift_list:
+                # print(f"The error mechanism has with probability {e[0]} to fire")
                 select = np.random.choice([0, 1], p=[1 - e[0], e[0]])
                 detector_shift = (detector_shift + select * e[1]) % self.dimension
                 # print(f"The select was {select} with probability {e[0]}")
                 logical_shift = (logical_shift + select * e[2]) % self.dimension
 
-            print(f"Sample reads with detector shifts: {detector_shift} and logical shifs : {logical_shift}")
-            samples.append((detector_shift, logical_shift))
+            # print(f"Sample reads with detector shifts: {detector_shift} and logical shifts : {logical_shift}")
+            detector_samples.append(detector_shift)
+            logical_samples.append(logical_shift)
 
-        return samples
+        return detector_samples, logical_samples
 
     def __str__(self):
         lines = f"DIMENSION {self.dimension}\n"

@@ -214,8 +214,13 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             function_index, label, arguments, _ = detector_info.detector_data[detector_counter + lo_counter]
             # Compute and store the data appropriately
             shift_params = [shift_data[a] for a in arguments]
+
+            #print(f"total shift matrix is \n\n {shift_data} \n\n")
+
+            #print(f"shift data is: \n\n {shift_params} \n\n")
             detector = detector_info.detector_functions[function_index]
             detector_collection_bin[position] = detector(shift_params)
+            #print(f"detector output is is: {detector_collection_bin[position]}")
 
             if gate_id == 19:
                 detector_counter += 1
@@ -244,6 +249,7 @@ class SimulationOptions:
     verbose: bool = False
     show_gate: bool = False
     exact: bool = False
+    raw_detector_output : bool = False
 
 
 class Program:
@@ -281,7 +287,7 @@ class Program:
 
     def simulate(self, shots: int = 1, show_measurement: bool = False, record_tableau: bool = False, force_tableau: bool = False,
                  verbose: bool = False, show_gate: bool = False, exact: bool = False, 
-                 building_error_mechanism : bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]] | tuple[list[list[list[MeasurementResult]]], dict[str, list(dict[str, str | np.ndarray])]]:
+                 building_error_mechanism : bool = False, raw_detector_output : bool = False, options: SimulationOptions = None) -> list[list[list[MeasurementResult]]] | tuple[list[list[list[MeasurementResult]]], dict[str, list(dict[str, str | np.ndarray])]]:
         """
         Runs the list of `Circuit` and applies the gates to the `stabilizer_tableau`.
         
@@ -300,6 +306,7 @@ class Program:
                 Much slower but fails less often.
             building_error_mechanism (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
                 Not for manual use
+            raw_detector_output (bool): Flag for returning 2D matrices for detection events indexed as (sequential detector index, shot)
             options (SimulationOptions): An optional SimulationOptions object.
 
         Returns:
@@ -318,7 +325,8 @@ class Program:
                 force_tableau=force_tableau,
                 verbose=verbose,
                 show_gate=show_gate,
-                exact=exact
+                exact=exact,
+                raw_detector_output=raw_detector_output
             )
         if options.shots > 1 and not options.record_tableau and not options.force_tableau:
             tableau_options = copy.copy(options)
@@ -344,7 +352,7 @@ class Program:
             )
             
             # Combine results
-            return self._combine_results(frame_results), self._combine_detector_results(detector_info, detection_results)
+            return self._combine_results(frame_results), self._combine_detector_results(detector_info, detection_results, options.raw_detector_output)
         else:
             return self._simulate_tableau(options)
 
@@ -543,41 +551,46 @@ class Program:
                 self.measurement_results[qudit_index][meas_round].extend(new_results)
         return self.measurement_results
 
-    def _combine_detector_results(self, info : DetectorData, raw_results : DetectorResults) -> dict[str, list(dict[str, str | np.ndarray])]:
+    def _combine_detector_results(self, info : DetectorData, raw_results : DetectorResults, raw_detector_output : bool = False) -> dict[str, list(dict[str, str | np.ndarray])] | tuple[np.array, np.array]:
         """
         Combines all detector mechanism results into a single dictionary organized by their quantitative (e.g. order in the circuit) and qualitative information (e.g. label).
         The topmost dictionary has keys: 'detectors', 'logicals'.
         The list enumerates the detectors / frame change data in order of occurence in the circuit.  
         Finally, the bottom most dictionary has keys: 'label', 'data'
         (unique-index, label, arguments)
+        Alternatively, the user may have the 
         """
 
-        d_ind = 0
-        l_ind = 0
-        results = {'detectors' : list(), 'logicals' : list()}
         detector_events = raw_results.detection_events
         logical_events = raw_results.logical_operator_shifts
 
-        for j, d_data in enumerate(info.detector_data):
-            label = d_data[1]
-            args = d_data[2]
-            is_logical = d_data[3]
+        if raw_detector_output:
+            return detector_events, logical_events
 
-            entry_type, data, index = ('logicals', logical_events, l_ind) if is_logical else ('detectors', detector_events, d_ind)
+        else:
+            d_ind = 0
+            l_ind = 0
+            results = {'detectors' : list(), 'logicals' : list()}
 
-            event_info = {
-                'label' : label, 
-                'data' : data[index]
-            }
+            for d_data in info.detector_data:
+                label = d_data[1]
+                is_logical = d_data[3]
 
-            results[entry_type].append(event_info)
+                entry_type, data, index = ('logicals', logical_events, l_ind) if is_logical else ('detectors', detector_events, d_ind)
 
-            if is_logical:
-                l_ind += 1
-            else:
-                d_ind += 1
+                event_info = {
+                    'label' : label, 
+                    'data' : data[index]
+                }
 
-        return results
+                results[entry_type].append(event_info)
+
+                if is_logical:
+                    l_ind += 1
+                else:
+                    d_ind += 1
+
+            return results
         
     def _build_ir(self, circuits: list[Circuit], extra_shots: int, 
     building_error_mechanism : bool = False) -> tuple[np.ndarray, np.ndarray, DetectorData]:
@@ -739,19 +752,38 @@ class Program:
                     # TODO: Sanitize input.
                     # Extract argument indices and turn detector expression into a general lambda
                     # Pattern match for "(+/-)? [index]"
-                    # If the first term is positive, leave the sign field blank to avoid unnecessary copying
+                    # Replace every instance "rec[-x]" with "rec[pj]", where j is the sequentially found index
+                    # Then replace every instance of "rec[y]" with "rec[pj]" , where y = x % dimension
+                    # After processing everything, delete all instances of "p"
                     j = 0
                     matches = list(re.finditer(r"\[(-?\d+)\]", source))
                     seen_args = set()
                     for match in matches:
                         match_string = match.group()
                         arg = int(match_string[1:-1]) % seen_measurements
+
+                        if arg >= seen_measurements:
+                            raise ValueError(f"Measurement event {arg} hasn't been seen at this point in the circuit.  We currently do not support defining detector instructions with future measurement indices.")
+                        
+                        #print(f"We found arg {arg}")
+
                         if arg not in seen_args:
-                            arguments.append(arg)
+                            absolute_arg = arg % seen_measurements if arg < 0 else arg
+                            #print(f"Processing arg {arg}, which is {absolute_arg} in absolute coords")
+                            arguments.append(absolute_arg)
+
+                            # Replace both the seen argument and absolute coord if applicable
+                            source = source.replace(match_string, '[p' + str(j) + ']')
+                            source = source.replace('[' + str(absolute_arg) + ']', '[p' + str(j) + ']')
+
+                            #print(f"source is now {source}")
                             seen_args.add(arg)
-                            source = source.replace(match_string, '[' + str(j) + ']')
+                            seen_args.add(absolute_arg)
                             j += 1
             
+                    #print('raw DETECTOR HERE IS lambda rec : (' + str(source) + ") % " + str(dimension))
+                    source = source.replace('p', '')
+                    #print(f'DETECTOR HERE IS lambda rec : ({source}) % {dimension} with arguments \n {arguments}')
                     detector = eval('lambda rec : (' + str(source) + ") % " + str(dimension))
                     # Store lambdas in a map
                     detector_list.append(detector)
@@ -778,7 +810,6 @@ class Program:
             noise_array = np.array(noise_list, dtype=np.int64)
         else:
             noise_array = np.empty((1, extra_shots, 2), dtype=np.int64)
-
 
         detection_info = DetectorData(
             detector_data=detector_data,
