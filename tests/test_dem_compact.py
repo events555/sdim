@@ -9,6 +9,7 @@ import pytest
 from sdim.circuit import Circuit
 from sdim.dem import (
     DetectorErrorModel,
+    ErrorMechanism,
     compile_unit_responses,
     depolarizing_subgroup_probability,
     line_probability,
@@ -314,3 +315,155 @@ def test_matches_stim_at_qubit_dimension():
     assert set(ours) == set(expected)
     for key in expected:
         assert math.isclose(ours[key], expected[key], rel_tol=1e-9), key
+
+
+# --------------------------------------------------------------------------
+# Regression tests for edge cases
+
+
+def test_sampler_handles_tiny_probabilities():
+    """The geometric skip used to overflow int64 below pi ~ 4e-18 and write out of bounds."""
+    for pi in (1e-20, 1e-25, 1e-300):
+        dem = DetectorErrorModel(3, 1, 0, [ErrorMechanism(pi, [{0: 1}], "tiny")])
+        for seed in range(5):
+            det, obs = dem.sample(1000, seed=seed)
+            assert not det.any()
+
+
+def test_sampler_with_no_mechanisms():
+    det, obs = DetectorErrorModel(3, 2, 1).sample(5, seed=1)
+    assert det.shape == (5, 2) and obs.shape == (5, 1)
+    assert not det.any() and not obs.any()
+    c = Circuit(1, 3)
+    c.add_gate("M", 0)
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    det, _ = DetectorErrorModel.from_circuit(c).sample(4)
+    assert det.shape == (4, 1) and not det.any()
+
+
+def test_sample_seeds_are_not_truncated():
+    dem = DetectorErrorModel.from_circuit(_small_css_circuit(3, 0.2))
+    assert not np.array_equal(dem.sample(2000, seed=5)[0], dem.sample(2000, seed=5 + 2 ** 32)[0])
+    np.testing.assert_array_equal(dem.sample(50, seed=9)[0], dem.sample(50, seed=9)[0])
+
+
+def _flip_circuit(d, *probs):
+    c = Circuit(1, d)
+    c.add_gate("RESET", 0)
+    for p in probs:
+        c.add_gate("N1", 0, noise_channel="f", prob=p)
+    c.add_gate("M", 0)
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    return c
+
+
+def test_probability_above_full_mixing_is_rejected():
+    with pytest.raises(ValueError, match="fully mixing"):
+        DetectorErrorModel.from_circuit(_flip_circuit(2, 0.9))
+    with pytest.raises(ValueError, match="fully mixing"):
+        DetectorErrorModel.from_circuit(_flip_circuit(3, 0.9))
+
+
+def test_fully_mixing_probability_is_supported():
+    """pi = 1 exactly (X with probability 1/2 at d = 2) used to crash the merge."""
+    dem = DetectorErrorModel.from_circuit(_flip_circuit(2, 0.5, 0.01))
+    assert len(dem.mechanisms) == 1 and dem.mechanisms[0].probability == 1.0
+    lines = dem.to_lines()
+    assert lines.mechanisms[0].probability == 1.0
+    det, _ = dem.sample(20000, seed=3)
+    assert abs((det[:, 0] != 0).mean() - 0.5) < 0.02
+
+
+def test_legacy_channel_key_is_respected():
+    c = Circuit(1, 3)
+    c.add_gate("N1", 0, channel="p", prob=0.3)
+    assert c.operations[0].params["noise_channel"] == "p"
+    c.add_gate("M", 0)
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    assert DetectorErrorModel.from_circuit(c).mechanisms == []   # phase noise before M is invisible
+
+
+def test_invalid_noise_parameters_are_rejected():
+    c = Circuit(1, 3)
+    with pytest.raises(ValueError, match="noise_channel"):
+        c.add_gate("N1", 0, noise_channel="x", prob=0.1)
+    with pytest.raises(ValueError, match="prob"):
+        c.add_gate("N1", 0, noise_channel="d", prob=1.5)
+    with pytest.raises(ValueError, match="prob"):
+        Circuit(2, 3).add_gate("N2", 0, 1, prob=-0.1)
+    with pytest.raises(ValueError, match="2\\*\\*31"):
+        Circuit(1, 2 ** 31 + 11)
+
+
+def test_non_deterministic_detector_is_rejected():
+    c = Circuit(1, 3)
+    c.add_gate("RESET", 0)
+    c.add_gate("H", 0)
+    c.add_gate("N1", 0, noise_channel="f", prob=0.01)
+    c.add_gate("M", 0)
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    with pytest.raises(ValueError, match="not deterministic"):
+        DetectorErrorModel.from_circuit(c)
+
+
+def test_non_linear_detector_is_rejected():
+    c = Circuit(2, 2)
+    c.add_gate("N1", 0, noise_channel="f", prob=0.1)
+    c.add_gate("M", [0, 1])
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    c.add_gate("DETECTOR", expr="rec[-1] * rec[-2]")   # a single random probe used to miss this one
+    with pytest.raises(ValueError, match="not linear"):
+        DetectorErrorModel.from_circuit(c)
+
+
+def test_from_circuit_leaves_global_rng_alone():
+    c = _small_css_circuit(3, 0.05)
+    np.random.seed(123)
+    expected = np.random.random(3)
+    np.random.seed(123)
+    DetectorErrorModel.from_circuit(c)
+    np.testing.assert_array_equal(np.random.random(3), expected)
+
+
+def test_wide_fan_out_compiles():
+    """One fault reaching more than 512 qudits at once used to exhaust memory."""
+    n = 700
+    c = Circuit(n + 1, 3)
+    c.add_gate("RESET", list(range(n + 1)))
+    c.add_gate("N1", 0, noise_channel="f", prob=0.01)
+    c.add_gate("CNOT", 0, list(range(1, n + 1)))
+    c.add_gate("M", list(range(n + 1)))
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    dem = DetectorErrorModel.from_circuit(c)
+    assert [m.generators for m in dem.mechanisms] == [[{0: 1}]]
+
+
+def test_read_from_file_validation(tmp_path):
+    def read(text):
+        path = tmp_path / "m.qdem"
+        path.write_text(text)
+        return DetectorErrorModel.read_from_file(path)
+
+    with pytest.raises(ValueError, match="out of range"):
+        read("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1) D5=1\n")
+    with pytest.raises(ValueError, match="bad target"):
+        read("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 1\nERROR(0.1) X0=1\n")
+    with pytest.raises(ValueError, match="DIMENSION"):
+        read("DETECTORS 1\nERROR(0.1) D0=1\n")
+    with pytest.raises(ValueError, match="probability"):
+        read("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nERROR(1.5) D0=1\n")
+    dem = read("DIMENSION 3\nDETECTORS 2\nOBSERVABLES 0\nERROR(0.1) D0=3 D1=1\nERROR(0.2) D0=3\n")
+    assert [m.generators for m in dem.mechanisms] == [[{1: 1}]]   # zero coefficients are dropped
+    dem.merge_lines()
+
+
+def test_file_roundtrip_with_labels_and_numpy_floats(tmp_path):
+    dem = DetectorErrorModel(5, 1, 1, [ErrorMechanism(np.float64(0.1), [{0: 2, 1: 4}], "src")],
+                             ["Z#1 round 0"], ["logical # 0"])
+    path = tmp_path / "m.qdem"
+    dem.write_to_file(path)
+    again = DetectorErrorModel.read_from_file(path)
+    assert again.detector_labels == ["Z#1 round 0"]
+    assert again.observable_labels == ["logical # 0"]
+    assert again.mechanisms[0].probability == 0.1
+    assert again.mechanisms[0].generators == [{0: 2, 1: 4}]

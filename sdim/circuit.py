@@ -70,6 +70,9 @@ class Circuit:
             raise ValueError("Number of qudits must be greater than 0")
         if self.dimension < 2:
             raise ValueError("Dimension must be greater than 1")
+        if self.dimension >= 2 ** 31:
+            # Products of two values mod d must fit in int64 throughout the simulators.
+            raise ValueError("Dimension must be less than 2**31")
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
@@ -101,10 +104,23 @@ class Circuit:
         primary_name = self.gate_data.aliasMap.get(gate_name_upper, gate_name_upper)
         gate = self.gate_data.gateMap.get(primary_name)
 
+        # Accept the older N1 parameter name.  This has to happen before the defaults are filled in,
+        # otherwise the default noise_channel would shadow it.
+        if primary_name == "N1" and "channel" in kwargs and "noise_channel" not in kwargs:
+            kwargs["noise_channel"] = kwargs.pop("channel")
+
         if gate and gate.defaults:
             for key, value in gate.defaults.items():
                 kwargs.setdefault(key, value)
 
+        if primary_name == "N1":
+            if kwargs["noise_channel"] not in ("d", "f", "p"):
+                raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {kwargs['noise_channel']!r}.")
+            if not 0.0 <= float(kwargs["prob"]) <= 1.0:
+                raise ValueError(f"N1 prob must be between 0 and 1, not {kwargs['prob']}.")
+        elif primary_name == "N2" and kwargs.get("prob_dist") is None:
+            if not 0.0 <= float(kwargs["prob"]) <= 1.0:
+                raise ValueError(f"N2 prob must be between 0 and 1, not {kwargs['prob']}.")
 
         if control is None and target is None: # Detectors only
             self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), None, None, params=kwargs))

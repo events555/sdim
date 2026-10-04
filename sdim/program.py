@@ -616,7 +616,8 @@ class Program:
 
             return results
         
-    def _build_ir(self, circuits: list[Circuit], extra_shots: int, 
+    @staticmethod
+    def _build_ir(circuits: list[Circuit], extra_shots: int, 
     building_error_mechanism : bool = False) -> tuple[np.ndarray, np.ndarray, DetectorData]:
         """
         Builds an intermediate representation (IR) for the given circuits and also precomputes
@@ -642,7 +643,7 @@ class Program:
         noise_list = []
         detector_list = []
         detector_data = []
-        dimension = self.stabilizer_tableau.dimension
+        dimension = circuits[0].dimension
 
         # Detector related counters
         seen_measurements = 0
@@ -704,6 +705,8 @@ class Program:
                 if instruction.gate_id == 17:
                     # Always add a noise sample, but only actually sample non-identity with some probability.
                     channel = instruction.params.get('noise_channel', instruction.params.get('channel', 'd'))
+                    if channel not in ('d', 'f', 'p'):
+                        raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {channel!r}.")
                     if not building_error_mechanism:
                         if channel == 'd':
                             # Sample integer r from 1 to dimension**2 - 1 for each extra shot.

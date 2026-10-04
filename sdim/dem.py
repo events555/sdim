@@ -99,8 +99,12 @@ detector expressions.
   `sdim.dem_legacy` handles those for small d.
 - Detector and observable expressions must be linear in their measurement
   records, with no constant term.
-- A single fault can spread to at most 512 qudits at a time during
-  propagation.
+- Every detector and observable must be deterministic without noise.
+  `from_circuit` checks this.
+- Noise probabilities can go up to the fully mixing value (`1 - 1/d` for
+  N1 'f' and 'p', `1 - 1/d**2` for N1 'd', `1 - 1/d**4` for N2), where
+  pi = 1. Stronger noise biases away from the identity and has no subgroup
+  form, so `from_circuit` rejects it.
 """
 
 from __future__ import annotations
@@ -177,10 +181,13 @@ def line_probability(pi: float, dimension: int, subgroup_rank: int) -> float:
         float: Probability of each line mechanism.
 
     Raises:
-        ValueError: If pi >= 1, which has no such decomposition.
+        ValueError: If pi > 1.
     """
-    if pi >= 1.0:
-        raise ValueError("pi >= 1 (maximally mixing) cannot be decorrelated into independent lines")
+    if pi > 1.0:
+        raise ValueError(f"pi = {pi} is above 1")
+    if pi == 1.0:
+        # Uniform on the subgroup: every line is uniform too, and their sum is uniform again.
+        return 1.0
     # expm1/log1p keep full precision when pi is tiny.
     exponent = float(dimension) ** (1 - subgroup_rank)
     return -math.expm1(exponent * math.log1p(-pi))
@@ -200,6 +207,8 @@ def merge_subgroup_probabilities(*pis: float) -> float:
     Returns:
         float: Probability of the merged mechanism.
     """
+    if any(pi >= 1.0 for pi in pis):
+        return 1.0
     log_keep = sum(math.log1p(-pi) for pi in pis)
     return -math.expm1(log_keep)
 
@@ -278,7 +287,9 @@ class DetectorErrorModel:
 
         Raises:
             ValueError: If the dimension is not prime, an N2 gate uses
-                `prob_dist`, or a detector expression is not linear.
+                `prob_dist`, a noise probability is above the fully mixing
+                value, or a detector or observable is not linear in its
+                records or not deterministic without noise.
         """
         d = circuit.dimension
         if check_dimension_prime and not _is_prime(d):
@@ -411,25 +422,27 @@ class DetectorErrorModel:
 
         Args:
             shots (int): Number of samples.
-            seed (int, optional): Seed for the sampler. A random seed is used if None.
+            seed (int, optional): Seed for the sampler. Fresh entropy is used if None.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: Detector values with shape
                 (shots, num_detectors) and observable values with shape
                 (shots, num_observables), as int64 residues mod d.
         """
+        n_targets = self.num_detectors + self.num_observables
+        out = np.zeros((shots, n_targets), dtype=np.int64)
+        if not self.mechanisms or shots == 0:
+            return out[:, :self.num_detectors], out[:, self.num_detectors:]
         mech_prob, gen_ptr, ent_ptr, ent_tgt, ent_val = self._flatten()
         order = np.argsort(mech_prob, kind="stable")
         sorted_prob = mech_prob[order]
         bounds = np.flatnonzero(np.diff(sorted_prob)) + 1
         class_start = np.concatenate(([0], bounds)).astype(np.int64)
         class_end = np.concatenate((bounds, [len(sorted_prob)])).astype(np.int64)
-        class_prob = sorted_prob[class_start] if len(sorted_prob) else np.zeros(0)
-        n_targets = self.num_detectors + self.num_observables
-        out = np.zeros((shots, n_targets), dtype=np.int64)
-        # The kernel seeds numba's own generator, which is separate from NumPy's global state.
-        if seed is None:
-            seed = int(np.random.SeedSequence().generate_state(1)[0] & 0x7FFFFFFF)
+        class_prob = sorted_prob[class_start]
+        # The kernel seeds numba's own generator, which is separate from NumPy's global state and
+        # takes a 32-bit seed.  Hash the user's seed down to 32 bits instead of truncating it.
+        seed = int(np.random.SeedSequence(seed).generate_state(1)[0])
         _sample_kernel(out, order.astype(np.int64), class_start, class_end, class_prob,
                        gen_ptr, ent_ptr, ent_tgt, ent_val, self.dimension, seed)
         return out[:, :self.num_detectors], out[:, self.num_detectors:]
@@ -450,7 +463,7 @@ class DetectorErrorModel:
             gens = " | ".join(" ".join(self._target_name(t) + f"={v}" for t, v in sorted(g.items()))
                               for g in m.generators)
             tag = f" # {m.source}" if m.source else ""
-            lines.append(f"ERROR({m.probability!r}) {gens}{tag}")
+            lines.append(f"ERROR({float(m.probability)!r}) {gens}{tag}")
         return "\n".join(lines) + "\n"
 
     def _target_name(self, t: int) -> str:
@@ -472,6 +485,9 @@ class DetectorErrorModel:
         ]
         if comment:
             header += ["# " + line for line in comment.splitlines()]
+        for label in list(self.detector_labels) + list(self.observable_labels):
+            if "\n" in (label or ""):
+                raise ValueError(f"label {label!r} contains a newline")
         Path(path).write_text("\n".join(header) + "\n#\n" + str(self))
 
     @classmethod
@@ -486,46 +502,63 @@ class DetectorErrorModel:
             DetectorErrorModel: The model in the file.
 
         Raises:
-            ValueError: On a line that is not part of the format.
+            ValueError: If the file is not in the format, or refers to a
+                detector or observable outside the declared counts.
         """
         dem = None
         det_labels: dict = {}
         obs_labels: dict = {}
         mechanisms = []
-        for raw in Path(path).read_text().splitlines():
+        for number, raw in enumerate(Path(path).read_text().splitlines(), start=1):
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            head = stripped.split()[0]
+            if head != "DIMENSION" and dem is None:
+                raise ValueError(f"line {number}: DIMENSION must come first")
+            if head in ("DETECTOR", "LOGICAL_OBSERVABLE"):
+                # Labels are read verbatim, so they may contain '#'.
+                parts = stripped.split(maxsplit=2)
+                prefix, labels = ("D", det_labels) if head == "DETECTOR" else ("L", obs_labels)
+                if len(parts) < 2 or not parts[1].startswith(prefix) or not parts[1][1:].isdigit():
+                    raise ValueError(f"line {number}: expected {head} {prefix}<index> <label>")
+                labels[int(parts[1][1:])] = parts[2] if len(parts) > 2 else ""
+                continue
             line, _, source = raw.partition("#")
             line, source = line.strip(), source.strip()
-            if not line:
-                continue
-            head = line.split()[0]
             if head == "DIMENSION":
                 dem = cls(int(line.split()[1]))
             elif head == "DETECTORS":
                 dem.num_detectors = int(line.split()[1])
             elif head == "OBSERVABLES":
                 dem.num_observables = int(line.split()[1])
-            elif head == "DETECTOR":
-                parts = line.split(maxsplit=2)
-                det_labels[int(parts[1][1:])] = parts[2] if len(parts) > 2 else ""
-            elif head == "LOGICAL_OBSERVABLE":
-                parts = line.split(maxsplit=2)
-                obs_labels[int(parts[1][1:])] = parts[2] if len(parts) > 2 else ""
             elif head.startswith("ERROR("):
                 prob_text, rest = line[len("ERROR("):].split(")", 1)
+                probability = float(prob_text)
+                if not 0.0 <= probability <= 1.0:
+                    raise ValueError(f"line {number}: probability {probability} is not in [0, 1]")
                 gens = []
                 for chunk in rest.split("|"):
                     gen = {}
                     for item in chunk.split():
-                        name, value = item.split("=")
+                        name, _, value = item.partition("=")
+                        if name[:1] not in ("D", "L") or not name[1:].isdigit() or not value:
+                            raise ValueError(f"line {number}: bad target {item!r}")
                         idx = int(name[1:])
+                        limit = dem.num_detectors if name[0] == "D" else dem.num_observables
+                        if idx >= limit:
+                            raise ValueError(f"line {number}: {name} is out of range")
                         t = idx if name[0] == "D" else dem.num_detectors + idx
-                        gen[t] = int(value) % dem.dimension
+                        gen[t] = (gen.get(t, 0) + int(value)) % dem.dimension
+                    gen = {t: v for t, v in gen.items() if v}
                     if gen:
                         gens.append(gen)
-                mechanisms.append(ErrorMechanism(float(prob_text), gens, source))
+                mechanisms.append(ErrorMechanism(probability, gens, source))
             else:
-                raise ValueError(f"unrecognized DEM line: {raw}")
-        dem.mechanisms = mechanisms
+                raise ValueError(f"line {number}: unrecognized DEM line: {raw}")
+        if dem is None:
+            raise ValueError("no DIMENSION line")
+        dem.mechanisms = [m for m in mechanisms if m.generators]
         dem.detector_labels = [det_labels.get(i, "") for i in range(dem.num_detectors)]
         dem.observable_labels = [obs_labels.get(i, "") for i in range(dem.num_observables)]
         return dem
@@ -604,19 +637,42 @@ def _detector_coefficients(detector_info, dimension: int):
         base = int(fn([0] * n)) % dimension
         if base != 0:
             raise ValueError(f"detector {label!r} has a non-zero constant term")
-        coeffs = {}
-        for j, rec in enumerate(arguments):
+        def at(values):
+            return int(fn(list(values))) % dimension
+
+        position_coeffs = []
+        for j in range(n):
             unit = [0] * n
             unit[j] = 1
-            c = int(fn(unit)) % dimension
+            position_coeffs.append(at(unit))
+
+        def linear(values):
+            return sum(c * v for c, v in zip(position_coeffs, values)) % dimension
+
+        # Linearity checks: every pair of positions (catches products of two records), doubled
+        # unit vectors (catches squares), and random inputs (anything of higher degree).
+        probes = []
+        if n <= 40:
+            for i in range(n):
+                for j in range(i + 1, n):
+                    v = [0] * n
+                    v[i] = v[j] = 1
+                    probes.append(v)
+        for j in range(n):
+            v = [0] * n
+            v[j] = 2 % dimension
+            probes.append(v)
+        rng = np.random.default_rng(1234 + unique_index)
+        probes += [[int(x) for x in rng.integers(0, dimension, size=n)] for _ in range(16)]
+        for v in probes:
+            if at(v) != linear(v):
+                raise ValueError(f"detector {label!r} is not linear in its records")
+
+        coeffs = {}
+        for rec, c in zip(arguments, position_coeffs):
             if c:
                 coeffs[int(rec)] = (coeffs.get(int(rec), 0) + c) % dimension
-        # Check linearity on one random input. Skipped when a record appears twice.
-        rng = np.random.default_rng(1234 + unique_index)
-        vals = [int(v) for v in rng.integers(0, dimension, size=n)]
-        expected = sum(coeffs.get(int(r), 0) * v for r, v in zip(arguments, vals)) % dimension
-        if len(set(arguments)) == n and int(fn(vals)) % dimension != expected:
-            raise ValueError(f"detector {label!r} is not linear in its records")
+        coeffs = {r: c for r, c in coeffs.items() if c}
         (obs if is_logical else dets).append(coeffs)
         (obs_labels if is_logical else det_labels).append(label or "")
     return dets, obs, det_labels, obs_labels
@@ -643,8 +699,12 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
             is not linear.
     """
     d = circuit.dimension
-    program = Program(circuit)
-    ir_array, _, detector_info = program._build_ir([circuit], 1)
+    # _build_ir also samples one shot of noise; keep the caller's global RNG state untouched.
+    rng_state = np.random.get_state()
+    try:
+        ir_array, _, detector_info = Program._build_ir([circuit], 1)
+    finally:
+        np.random.set_state(rng_state)
     gid = np.ascontiguousarray(ir_array["gate_id"], dtype=np.int64)
     qa = np.ascontiguousarray(ir_array["qudit_index"], dtype=np.int64)
     qb = np.ascontiguousarray(ir_array["target_index"], dtype=np.int64)
@@ -720,6 +780,8 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
             channel = instr.params.get("noise_channel", instr.params.get("channel", "d"))
             p = float(instr.params.get("prob", 0.0))
             q0 = int(instr.qudit_index)
+            if channel not in ("d", "f", "p"):
+                raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {channel!r}.")
             kinds = {"d": [(q0, 0), (q0, 1)], "f": [(q0, 0)], "p": [(q0, 1)]}[channel]
             rank = len(kinds)
             pi = p / (1.0 - float(d) ** (-rank))
@@ -733,11 +795,16 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
             q0, q1 = int(instr.qudit_index), int(instr.target_index)
             kinds = [(q0, 0), (q0, 1), (q1, 0), (q1, 1)]
             channel = "d2"
+            rank = 4
             pi = p / (1.0 - float(d) ** (-4))
             qudits = (q0, q1)
             name = f"N2@{ir_index}:q{q0},q{q1}"
         else:
             continue
+        if pi > 1.0 + 1e-12:
+            raise ValueError(f"{name}: prob={p} is above the fully mixing value {1.0 - float(d) ** (-rank)}. "
+                             "The compact DEM can only represent noise up to full mixing.")
+        pi = min(pi, 1.0)
         first_probe = len(probe_op)
         for (qq, kind) in kinds:
             probe_op.append(ir_index)
@@ -746,12 +813,31 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
         locations.append(NoiseLocation(ir_index, instr.gate_id, qudits, channel, p, pi,
                                        list(range(first_probe, len(probe_op))), name))
 
+    # Determinism probes.  The frame simulator randomizes the Z frame at the start and after every
+    # M, M_X and RESET, and the unit-fault responses above assume those random parts cancel.  A unit
+    # Z fault at each of those points must therefore reach no detector or observable.
+    n_noise_probes = len(probe_op)
+    for q in range(n_qudits):
+        probe_op.append(-1)
+        probe_qudit.append(q)
+        probe_kind.append(1)
+    for i in np.flatnonzero((gid == _M) | (gid == _M_X) | (gid == _RESET)):
+        probe_op.append(int(i))
+        probe_qudit.append(int(qa[i]))
+        probe_kind.append(1)
+
     probe_op = np.array(probe_op, dtype=np.int64)
     probe_qudit = np.array(probe_qudit, dtype=np.int64)
     probe_kind = np.array(probe_kind, dtype=np.int64)
     n_targets = n_det + len(obs)
     responses = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                            probe_op, probe_qudit, probe_kind, d, n_targets)
+                            probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits)
+    random_targets = sorted({t for r in responses[n_noise_probes:] for t in r})
+    if random_targets:
+        names = [(f"D{t}" if t < n_det else f"L{t - n_det}") for t in random_targets]
+        raise ValueError("These detectors / observables are not deterministic without noise, so they "
+                         f"have no detector error model: {', '.join(names[:20])}"
+                         + (" ..." if len(names) > 20 else ""))
     # Until now loc.responses held probe indices. Swap in the actual responses.
     for loc in locations:
         loc.responses = [responses[i] for i in loc.responses]
@@ -759,12 +845,13 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
 
 
 def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                probe_op, probe_qudit, probe_kind, d, n_targets, chunk=1 << 15):
+                probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits, chunk=1 << 15):
     """
     Runs `_probe_kernel` over all probes in chunks.
 
     The kernel writes into preallocated output buffers sized for `cap` entries
-    per probe. When it returns False the chunk is rerun with buffers 4x larger.
+    per probe. When they fill up the chunk is rerun with buffers 4x larger. A
+    probe never has more than `n_targets` entries, so this always terminates.
 
     Returns:
         list[dict[int, int]]: Sparse response {target: coefficient} of each probe.
@@ -777,12 +864,14 @@ def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, 
             ptr = np.zeros(stop - start + 1, dtype=np.int64)
             tgt = np.zeros((stop - start) * cap, dtype=np.int64)
             val = np.zeros((stop - start) * cap, dtype=np.int64)
-            ok = _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                               probe_op[start:stop], probe_qudit[start:stop], probe_kind[start:stop],
-                               d, n_targets, ptr, tgt, val)
-            if ok:
+            status = _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+                                   probe_op[start:stop], probe_qudit[start:stop], probe_kind[start:stop],
+                                   d, n_targets, max(n_qudits, 1), ptr, tgt, val)
+            if status == 0:
                 break
-            cap *= 4
+            if status != 1 or cap >= n_targets:
+                raise RuntimeError(f"unit-fault propagation failed with status {status}")
+            cap = min(cap * 4, max(n_targets, 1))
         for i in range(stop - start):
             a, b = ptr[i], ptr[i + 1]
             out.append({int(t): int(v) for t, v in zip(tgt[a:b], val[a:b])})
@@ -791,7 +880,7 @@ def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, 
 
 @njit(cache=True)
 def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                  probe_op, probe_qudit, probe_kind, d, n_targets, out_ptr, out_tgt, out_val):
+                  probe_op, probe_qudit, probe_kind, d, n_targets, max_slots, out_ptr, out_tgt, out_val):
     """
     Pushes unit faults through the circuit, one probe at a time.
 
@@ -810,10 +899,11 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
     (1 for every other op).
 
     Returns:
-        bool: False if the output buffers fill up or a fault reaches more than
-            512 qudits at once, True otherwise.
+        int: 0 on success, 1 if the output buffers filled up, 2 if a fault
+            reached more than `max_slots` qudits (impossible when `max_slots`
+            is the number of qudits).
     """
-    smax = 512
+    smax = max_slots
     sq = np.empty(smax, dtype=np.int64)
     sx = np.empty(smax, dtype=np.int64)
     sz = np.empty(smax, dtype=np.int64)
@@ -909,7 +999,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                         sb = s
                 if sa < 0:
                     if nslot >= smax:
-                        return False
+                        return 2
                     sa = nslot
                     sq[sa] = a
                     sx[sa] = 0
@@ -918,7 +1008,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                     nslot += 1
                 if sb < 0:
                     if nslot >= smax:
-                        return False
+                        return 2
                     sb = nslot
                     sq[sb] = b
                     sx[sb] = 0
@@ -969,14 +1059,14 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
             t = touched[i]
             if acc[t] != 0:
                 if w >= cap_total:
-                    return False
+                    return 1
                 out_tgt[w] = t
                 out_val[w] = acc[t]
                 w += 1
             acc[t] = 0
             is_touched[t] = False
     out_ptr[probe_op.shape[0]] = w
-    return True
+    return 0
 
 
 @njit(cache=True)
@@ -1007,7 +1097,11 @@ def _sample_kernel(out, order, class_start, class_end, class_prob, gen_ptr, ent_
                 u = np.random.random()
                 while u <= 0.0:
                     u = np.random.random()
-                pos += 1 + np.int64(np.floor(np.log(u) / log_keep))
+                skip = np.floor(np.log(u) / log_keep)
+                # For tiny pi the skip can exceed int64; anything past the end just means "done".
+                if skip >= total - 1 - pos:
+                    break
+                pos += 1 + np.int64(skip)
             if pos >= total:
                 break
             shot = pos // n
