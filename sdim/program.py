@@ -310,12 +310,18 @@ class Program:
             options (SimulationOptions): An optional SimulationOptions object.
 
         Returns:
-            list or 3D list: Depending on the value of `shots`:
+            list, 3D list, or tuple: Depending on how the circuit is simulated:
                 - If `shots == 1`, returns a list of `MeasurementResult` instances.
-                - If `shots > 1`, returns a 3D list of `MeasurementResult` objects.
-                The first axis is the qudit position,
+                - If `shots > 1` with `record_tableau=True` or `force_tableau=True`, returns a 3D list of
+                `MeasurementResult` objects.  The first axis is the qudit position,
                 the second axis is the measurement index (number of times a qudit was measured in a Circuit),
                 and the third axis is the shot number.
+                - Otherwise (`shots > 1` with the Pauli frame sampler), returns a tuple `(measurements, detectors)`.
+                `measurements` is the 3D list described above, with shot 0 being the reference tableau shot.
+                `detectors` is a dict with keys 'detectors' and 'logicals', each a list of {'label', 'data'} entries
+                in circuit order, or a pair of 2D arrays indexed as (detector index, shot) when `raw_detector_output=True`.
+                Detector data covers the `shots - 1` frame shots and does not include the reference shot.
+                RESET also adds a measurement round for its qudit, since it is applied as a measurement followed by a correction.
         """
         if options is None:
             options = SimulationOptions(
@@ -512,7 +518,6 @@ class Program:
             for q, shots_list in enumerate(measurements):
                 for m, measurement in enumerate(shots_list):
                     reference_results[q, m] = measurement_to_tuple(measurement, meas_round=m, shot=0)
-            print(reference_results)
             return reference_results
 
         else:

@@ -118,7 +118,7 @@ def generic_single_error_type(testing_X : bool = True):
 
     c.add_gate("M", 0)
 
-    result = Program(c).simulate(shots=shots)
+    result, _ = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):
@@ -150,7 +150,7 @@ def test_single_qudit_depolarizing():
     c.add_gate("N1", 0, prob=p, noise_channel='d')
     c.add_gate("M", 0)
 
-    result = Program(c).simulate(shots=shots)
+    result, _ = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):
@@ -191,7 +191,7 @@ def test_deterministic_gates():
         c.add_gate(g, 0)
     c.add_gate("M", 0)
     # Run circuit
-    result = Program(c).simulate(shots=shots)
+    result, _ = Program(c).simulate(shots=shots)
     measurement_counts = [0 for _ in range(dimension)]
 
     for s in range(shots):

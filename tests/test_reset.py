@@ -27,7 +27,7 @@ def test_reset_skip():
     c.add_gate("M", 0)
 
     # 3D array as (num_qudit, num_measurement, shot)
-    result = Program(c).simulate(shots=shots)
+    result, _ = Program(c).simulate(shots=shots)
 
     measurement_counts = [0 for _ in range(dimension)]
 

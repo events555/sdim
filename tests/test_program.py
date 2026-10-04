@@ -121,28 +121,28 @@ def test_build_ir():
     c.add_gate("M", [0, 1])
     p = Program(c)
     extra_shots = 1
-    ir, noise = p._build_ir(p.circuits, extra_shots)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
 
-    ir, noise = p._build_ir(p.circuits, extra_shots+1)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots+1)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
 
     c.add_gate("N1", 0, prob=1.0, noise_channel='f')
-    ir, noise = p._build_ir(p.circuits, extra_shots)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[0][0][0])
 
     c.add_gate("N1", 1, prob=1.0, noise_channel='p')
-    ir, noise = p._build_ir(p.circuits, extra_shots)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[1][0][1])
 
     c.add_gate("N1", 1, prob=1.0, noise_channel='d')
-    ir, noise = p._build_ir(p.circuits, extra_shots)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots)
     test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1), (17, 1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[2][0])
