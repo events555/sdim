@@ -43,6 +43,8 @@ Measured qudit (3) as (1) and was deterministic
 - **tableau**: Submodule for working with tableau representations of quantum states.
 - **diophantine**: NumPy-based implementation of the Diophantine solver.
 - **unitary**: Functions for generating and working with unitary matrices.
+- **dem**: Compact detector error models (DEMs) for noisy qudit circuits.
+- **dem_legacy**: The original DEM, which lists every Pauli error explicitly. Small dimensions only.
 
 ## Classes
 

@@ -83,9 +83,9 @@ class Circuit:
             target (int, List[int], or None, optional): The index or indices of the target qudit(s).
 
         Optional parameters:
-            channel (str): Channel type for a single qudit noise event.  Valid channels are "f", "p", and "d" for flip errors, phase errors, and depolarizing noise, respectively.
-            prob (float): Probability associated with the single qudit noise channel.
-            prob_dist (List[float]): Probability distribution associated with a general Pauli channel.  An n-qudit Pauli channel applies powers of Pauli X and Pauli Z to n distinct qudits, which can be written as a tuple of powers (x_1, z_1,   x_2, x_2,   ...,  x_n, z_n).  The j-th entry in the distribution is the probability that the channel applies an n-qudit Pauli corresponding to the j-th tuple in lexicographic order of n-qudit tuples of Pauli powers.
+            noise_channel (str): Channel type for N1.  Valid channels are "f", "p", and "d" for flip errors, phase errors, and depolarizing noise, respectively.  Defaults to "d".  The older key `channel` is still accepted.
+            prob (float): Error probability for N1, and for N2 when no prob_dist is given.  For N2 it is two-qudit depolarizing: with probability prob, a uniformly random non-identity two-qudit Pauli is applied.  Defaults to 0.01.
+            prob_dist (List[float]): Probability distribution for a general two-qudit Pauli channel on N2, used instead of prob.  An n-qudit Pauli channel applies powers of Pauli X and Pauli Z to n distinct qudits, which can be written as a tuple of powers (x_1, z_1,   x_2, z_2,   ...,  x_n, z_n).  The j-th entry in the distribution is the probability that the channel applies an n-qudit Pauli corresponding to the j-th tuple in lexicographic order of n-qudit tuples of Pauli powers.  It has d**4 entries, so it is only practical for small d, and sdim.dem.DetectorErrorModel does not accept it (use sdim.dem_legacy).
 
         Returns:
             Circuit: The current Circuit object with the added operation(s).

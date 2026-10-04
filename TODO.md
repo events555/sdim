@@ -3,7 +3,7 @@
 ## Features
 
 ### Circuits
-- [ ] DEPOLARIZE two-qudit
+- [x] DEPOLARIZE two-qudit (`N2` with `prob=`)
 - [ ] MEASUREMENT error
 - [ ] RESET error
 - [ ] DETECTOR

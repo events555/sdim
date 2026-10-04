@@ -628,10 +628,24 @@ class Program:
         # Offset to organize error mechanism sampler
         error_skip_offset = 0
         
-        # Common arrays used and re-used during computation
-        two_qudit_event_pauli_powers = list(np.ndindex((dimension, ) * 4))
+        # Common arrays used and re-used during computation.  The list of all d**4
+        # two-qudit Pauli powers is only built when something needs it: an N2 gate
+        # with an explicit prob_dist, or building error mechanisms for the legacy DEM.
+        two_qudit_event_pauli_powers = None
         two_qudit_number_of_noise_events = (dimension ** 4)
         two_qudit_trivial_event = np.zeros(4, dtype=np.int64)
+
+        def _two_qudit_powers():
+            # Build the d**4 list on first use, and refuse when it would be huge.
+            nonlocal two_qudit_event_pauli_powers
+            if two_qudit_event_pauli_powers is None:
+                if dimension ** 4 > 10 ** 7:
+                    raise ValueError(
+                        f"Listing all {dimension}**4 two-qudit Pauli operators would take too much memory. "
+                        "Use N2 with prob= and sdim.dem.DetectorErrorModel.from_circuit instead."
+                    )
+                two_qudit_event_pauli_powers = list(np.ndindex((dimension, ) * 4))
+            return two_qudit_event_pauli_powers
         
 
         # # If we're building a DEM out of this circuit, then we add 1 shot as our reference shot simulates trivial noise
@@ -657,7 +671,7 @@ class Program:
 
                 if instruction.gate_id == 17:
                     # Always add a noise sample, but only actually sample non-identity with some probability.
-                    channel = instruction.params['noise_channel']
+                    channel = instruction.params.get('noise_channel', instruction.params.get('channel', 'd'))
                     if not building_error_mechanism:
                         if channel == 'd':
                             # Sample integer r from 1 to dimension**2 - 1 for each extra shot.
@@ -720,13 +734,26 @@ class Program:
 
 
                 if instruction.gate_id == 18:
-                    distribution = instruction.params['prob_dist']
+                    distribution = instruction.params.get('prob_dist', None)
 
                     if not building_error_mechanism:
 
-                        if len(distribution) == (dimension ** 4):
-                            noise_indices = np.random.choice(a=len(two_qudit_event_pauli_powers), size=extra_shots, p=distribution)
-                            noise = np.array( [two_qudit_event_pauli_powers[i] for i in noise_indices] )
+                        if distribution is None:
+                            # Two-qudit depolarizing: with probability prob, apply a uniformly random
+                            # non-identity Pauli (a, b, c, d).  Redraw any all-zero rows, then zero out
+                            # the shots where no error happens.
+                            probability = float(instruction.params.get('prob', 0.0))
+                            noise = np.random.randint(0, dimension, size=(extra_shots, 4)).astype(np.int64)
+                            zero_rows = ~noise.any(axis=1)
+                            while zero_rows.any():
+                                noise[zero_rows] = np.random.randint(0, dimension, size=(int(zero_rows.sum()), 4))
+                                zero_rows = ~noise.any(axis=1)
+                            noise[np.random.uniform(0.0, 1.0, size=extra_shots) >= probability] = 0
+                            noise_list.append(noise)
+                        elif len(distribution) == (dimension ** 4):
+                            powers = _two_qudit_powers()
+                            noise_indices = np.random.choice(a=len(powers), size=extra_shots, p=distribution)
+                            noise = np.array( [powers[i] for i in noise_indices] )
                             noise_list.append(noise)
                         else: # If the list doesn't have a valid shape, then the channel acts as identity.
                             zero_vec = [0,] * extra_shots
@@ -734,7 +761,7 @@ class Program:
                             noise_list.append(noise)
 
                     else:
-                        nontrivial_noise_events = np.array( two_qudit_event_pauli_powers[1:] )
+                        nontrivial_noise_events = np.array( _two_qudit_powers()[1:] )
                         front_zero_pad =  np.tile(two_qudit_trivial_event, (error_skip_offset, 1)) 
                         back_zero_pad = np.tile(two_qudit_trivial_event, (extra_shots - (error_skip_offset + two_qudit_number_of_noise_events - 1), 1)) 
                         noise = np.vstack([front_zero_pad, nontrivial_noise_events, back_zero_pad])

@@ -14,7 +14,7 @@ import datetime
 from matplotlib import pyplot as plt
 from typing import Tuple, Optional, Callable
 import csv
-from sdim.dem import DetectorErrorModel
+from sdim.dem_legacy import DetectorErrorModel  # enumerating model; see sdim.dem for the compact one
 from pathlib import Path
 
 

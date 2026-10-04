@@ -34,6 +34,34 @@ program = Program(circuit) # Must be given an initial circuit as a constructor a
 result = program.simulate(show_measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
 ```
 
+## Detector error models
+`sdim.dem` turns a circuit with noise, detectors and logical observables into a detector error model (DEM). Each noise gate becomes one independent error mechanism, so the model is the same size for any qudit dimension. The tests run it up to d = 1000003.
+```python
+from sdim import Circuit
+from sdim.dem import DetectorErrorModel
+
+circuit = Circuit(3, 1000003)
+circuit.add_gate('RESET', [0, 1, 2])
+circuit.add_gate('N1', [0, 1], noise_channel='f', prob=0.01) # Flip errors on the two data qudits
+circuit.add_gate('CNOT', 0, 2)
+circuit.add_gate('CNOT_INV', 1, 2) # Ancilla 2 now holds x0 - x1
+circuit.add_gate('N2', 1, 2, prob=0.001) # Two-qudit depolarizing
+circuit.add_gate('M', [2, 0, 1])
+circuit.add_gate('DETECTOR', expr='rec[-3]')
+circuit.add_gate('DETECTOR', expr='rec[-3] - rec[-2] + rec[-1]')
+circuit.add_gate('LOGICAL_OBSERVABLE', expr='rec[-1]')
+
+dem = DetectorErrorModel.from_circuit(circuit)
+detectors, observables = dem.sample(100_000) # int64 arrays of values mod d, one row per shot
+dem.write_to_file('model.qdem')
+```
+
+Noise gates take these parameters:
+- `N1`: `noise_channel` (`'d'` depolarizing, `'f'` flip, `'p'` phase) and `prob`.
+- `N2`: `prob` for two-qudit depolarizing. A full `prob_dist` over all d^4 Paulis also works for small d, but `sdim.dem` rejects it. Use the older `sdim.dem_legacy` model for those circuits.
+
+The dimension has to be prime. For small d, `dem.to_lines()` splits every mechanism into independent single-shift mechanisms. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](sdim/dem.py) explains the math and the file format.
+
 ## Primary References
 <a id="1">[1]
 </a> Aaronson, Scott, and Daniel Gottesman. “Improved Simulation of Stabilizer Circuits.” Physical Review A, vol. 70, no. 5, Nov. 2004, p. 052328. arXiv.org, https://doi.org/10.1103/PhysRevA.70.052328.

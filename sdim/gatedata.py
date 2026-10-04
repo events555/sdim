@@ -100,12 +100,14 @@ class GateData:
     def add_gate_noise(self, d):
         self.add_gate("N1", 1)
         self.add_gate_alias("N1", ["NOISE1"])
-        self.gateMap["N1"].defaults = {"channel": "d", "prob": 0.01}
+        self.gateMap["N1"].defaults = {"noise_channel": "d", "prob": 0.01}
 
         self.add_gate("N2", 2)
         self.add_gate_alias("N2", ["NOISE2"])
-        default_dist = np.ones(d ** 4) / (d ** 4)
-        self.gateMap["N2"].defaults = {"prob_dist": default_dist}
+        # N2 defaults to two-qudit depolarizing with probability prob.  A full prob_dist
+        # over all d**4 Paulis can still be passed, but it is not built by default since
+        # it gets too big quickly (10**24 floats at d = 1000003).
+        self.gateMap["N2"].defaults = {"prob": 0.01}
 
     def add_gate_detectors(self, d):
         
