@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import random
 from dataclasses import dataclass
@@ -94,6 +95,22 @@ class ExtendedTableau(Tableau):
         self.destab_z_block %= self.dimension
         self.destab_phase_vector %= self.order
     
+    def _reduce_rows(self, *rows: int):
+        """
+        Reduces the given qudit rows mod the dimension and both phase vectors mod the order.
+
+        The gate kernels don't reduce, and the full `modulo()` only runs every 64 gates.  Without this,
+        a few chained CNOTs at large d overflow int64, since CNOT adds z * (d - 1).  Reducing after
+        every gate keeps all intermediate values below about d**2.
+        """
+        for row in rows:
+            self.x_block[row] %= self.dimension
+            self.z_block[row] %= self.dimension
+            self.destab_x_block[row] %= self.dimension
+            self.destab_z_block[row] %= self.dimension
+        self.phase_vector %= self.order
+        self.destab_phase_vector %= self.order
+
     def hadamard(self, qudit_index: int):
         """
         Applies the Hadamard gate to the qudit at the specified index.
@@ -119,6 +136,7 @@ class ExtendedTableau(Tableau):
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
         )
+        self._reduce_rows(qudit_index)
 
     def hadamard_inv(self, qudit_index: int):
         """
@@ -139,6 +157,7 @@ class ExtendedTableau(Tableau):
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
             qudit_index, self.num_qudits, self.phase_order
         )
+        self._reduce_rows(qudit_index)
 
     def phase(self, qudit_index: int):
         """
@@ -177,6 +196,7 @@ class ExtendedTableau(Tableau):
                        qudit_index,
                        self.num_qudits,
                        self.even)
+        self._reduce_rows(qudit_index)
 
     def phase_inv(self, qudit_index: int):
         """
@@ -207,6 +227,7 @@ class ExtendedTableau(Tableau):
                        qudit_index,
                        self.num_qudits,
                        self.even)
+        self._reduce_rows(qudit_index)
         
     def cnot(self, control: int, target: int):
         """
@@ -229,6 +250,7 @@ class ExtendedTableau(Tableau):
         cnot_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
                        self.num_qudits, self.dimension,
                        control, target)
+        self._reduce_rows(control, target)
     
     def cnot_inv(self, control: int, target: int):
         """
@@ -258,6 +280,7 @@ class ExtendedTableau(Tableau):
         cnot_inv_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
                        self.num_qudits, self.dimension,
                        control, target)
+        self._reduce_rows(control, target)
 
     def multiply(self, qudit_index: int, scalar: int):
         """
@@ -267,7 +290,8 @@ class ExtendedTableau(Tableau):
             qudit_index (int): Index of the qudit.
             scalar (int): Multiplicative factor modulo the qudit dimension.
         """
-        if scalar not in self.coprime_dimension:
+        scalar = int(scalar) % self.dimension
+        if math.gcd(scalar, self.dimension) != 1:
             raise ValueError(f"Scalar {scalar} is not coprime with the dimension {self.dimension}.")
 
         inverse = pow(scalar, -1, self.dimension)
@@ -308,6 +332,24 @@ class ExtendedTableau(Tableau):
             return self._random_measurement(qudit_index, first_xpow)
         return self._det_measurement(qudit_index)
     
+    def _mod_dot(self, a: np.ndarray, b: np.ndarray) -> int:
+        """
+        Dot product of two integer vectors mod the order, without int64 overflow.
+
+        Phases only matter mod the order, and reducing every term first keeps each product below
+        order**2.  A plain np.dot can overflow at large d, where the entries are up to about d**2.
+        """
+        return int(np.sum((a % self.order) * (b % self.order) % self.order)) % self.order
+
+    def _power_phase(self, x_col: np.ndarray, z_col: np.ndarray, exponent: int) -> int:
+        """
+        Phase term ab * n(n-1)/2 * phase_order (mod order) from raising X^a Z^b to the power n.
+
+        Computed with exact Python integers so it cannot overflow at large d.
+        """
+        n = int(exponent)
+        return (self._mod_dot(x_col, z_col) * ((n * (n - 1) // 2) % self.order) % self.order) * self.phase_order
+
     def _random_measurement(self, qudit_index: int, first_xpow: int) -> MeasurementResult:
         """
         Make Tableau commute with Z measurement operator at qudit_index using the generator at first_xpow
@@ -325,15 +367,15 @@ class ExtendedTableau(Tableau):
         for i in range(self.num_qudits):
             if self.destab_x_block[qudit_index, i] != 0:
                 destab_factor = -self.destab_x_block[qudit_index, i] % self.dimension
-                commute_phase = np.dot(self.destab_z_block[:, i], self.x_block[:, first_xpow]*destab_factor) # phase factor from commuting
-                commute_phase += np.dot(self.x_block[:, first_xpow], self.z_block[:, first_xpow]) * destab_factor*(destab_factor-1)//2 * self.phase_order # phase factor from exponentiation
+                commute_phase = self._mod_dot(self.destab_z_block[:, i], self.x_block[:, first_xpow]*destab_factor) # phase factor from commuting
+                commute_phase += self._power_phase(self.x_block[:, first_xpow], self.z_block[:, first_xpow], destab_factor) # phase factor from exponentiation
                 self.destab_x_block[:, i] = (self.destab_x_block[:, i] + self.x_block[:, first_xpow] * destab_factor) % self.dimension
                 self.destab_z_block[:, i] = (self.destab_z_block[:, i] + self.z_block[:, first_xpow] * destab_factor) % self.dimension
                 self.destab_phase_vector[i] = (self.destab_phase_vector[i] + self.phase_vector[first_xpow]*destab_factor + self.phase_order * commute_phase) % self.order
             if self.x_block[qudit_index, i] != 0 and i != first_xpow:
                 stab_factor = -self.x_block[qudit_index, i] % self.dimension
-                commute_phase = np.dot(self.z_block[:, i], self.x_block[:, first_xpow]*stab_factor)
-                commute_phase += np.dot(self.x_block[:, first_xpow], self.z_block[:, first_xpow]) * stab_factor*(stab_factor-1)//2 * self.phase_order
+                commute_phase = self._mod_dot(self.z_block[:, i], self.x_block[:, first_xpow]*stab_factor)
+                commute_phase += self._power_phase(self.x_block[:, first_xpow], self.z_block[:, first_xpow], stab_factor)
                 self.x_block[:, i] = (self.x_block[:, i] + self.x_block[:, first_xpow] * stab_factor) % self.dimension
                 self.z_block[:, i] = (self.z_block[:, i] + self.z_block[:, first_xpow] * stab_factor) % self.dimension
                 self.phase_vector[i] = (self.phase_vector[i] + self.phase_vector[first_xpow]*stab_factor + self.phase_order * commute_phase) % self.order
@@ -368,11 +410,13 @@ class ExtendedTableau(Tableau):
         for i in range(self.num_qudits):
             factor = self.destab_x_block[qudit_index, i] % self.dimension
             if factor != 0:
-                commute_phase = np.dot(ancilla_z, factor * self.x_block[:, i]) # phase factor from commuting
-                commute_phase += np.dot(self.x_block[:, i], self.z_block[:, i]) * factor*(factor-1)//2 * self.phase_order # phase factor from exponentiation
-                ancilla_x += self.x_block[:, i] * factor
-                ancilla_z += self.z_block[:, i] * factor
-                ancilla_phase += (factor * self.phase_vector[i] + self.phase_order * commute_phase)
+                commute_phase = self._mod_dot(ancilla_z, factor * self.x_block[:, i]) # phase factor from commuting
+                commute_phase += self._power_phase(self.x_block[:, i], self.z_block[:, i], factor) # phase factor from exponentiation
+                # Reduce as we go (mod the order, which keeps every phase below the same) so the
+                # running sums can't overflow at large d.
+                ancilla_x = (ancilla_x + self.x_block[:, i] * factor) % self.order
+                ancilla_z = (ancilla_z + self.z_block[:, i] * factor) % self.order
+                ancilla_phase = (ancilla_phase + int(factor) * int(self.phase_vector[i]) + self.phase_order * commute_phase) % self.order
         ancilla_x %= self.dimension
         ancilla_z %= self.dimension
         ancilla_phase %= self.order
@@ -390,8 +434,8 @@ class ExtendedTableau(Tableau):
             col (int): The column index of the Pauli string to exponentiate.
             exponent (int): The exponent to raise the Pauli string to.
         """
-        self.phase_vector[col] *= exponent
-        self.phase_vector[col] += np.dot(self.x_block[:, col], self.z_block[:, col]) * exponent*(exponent-1)//2 * self.phase_order
+        self.phase_vector[col] = (int(self.phase_vector[col]) * int(exponent)
+                                  + self._power_phase(self.x_block[:, col], self.z_block[:, col], exponent)) % self.order
         self.x_block[:, col] *=  exponent 
         self.z_block[:, col] *= exponent
         self.phase_vector[col] %= self.order

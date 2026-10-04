@@ -26,15 +26,43 @@ def apply_I(tableau: Tableau, qudit_index: int, *_) -> None:
 
 def _apply_pauli_powers(tableau: Tableau, qudit_index: int, x_exp: int, z_exp: int) -> None:
     """
-    Apply X and Z powers to a single qudit.
-    """
-    x_exp %= tableau.dimension
-    z_exp %= tableau.dimension
+    Apply X^x_exp Z^z_exp to a single qudit.
 
-    for _ in range(x_exp):
+    The cost does not grow with the exponents, which matters for large dimensions where
+    applying X one power at a time would take up to d gate calls.
+
+    Args:
+        tableau (Tableau): The quantum tableau.
+        qudit_index (int): The qudit to act on.
+        x_exp (int): Power of X.
+        z_exp (int): Power of Z.
+    """
+    x_exp = int(x_exp) % tableau.dimension
+    z_exp = int(z_exp) % tableau.dimension
+
+    if isinstance(tableau, WeylTableau):
+        # X adds the qudit's Z row to the phases and Z subtracts its X row, so powers just scale the rows.
+        tableau.phase_vector += x_exp * tableau.z_block[qudit_index, :] - z_exp * tableau.x_block[qudit_index, :]
+        tableau.phase_vector %= tableau.dimension
+        return None
+
+    # Prime dimension: the multiplication gate M_a satisfies M_a X M_a^-1 = X^a and M_a Z M_a^-1 = Z^(a^-1),
+    # so X^k = M_k X M_k^-1 and Z^k = M_k^-1 Z M_k.  Only a power of 1 is possible at d = 2.
+    if x_exp == 1 or x_exp == 0:
+        if x_exp:
+            apply_X(tableau=tableau, qudit_index=qudit_index)
+    else:
+        tableau.multiply(qudit_index, pow(x_exp, -1, tableau.dimension))
         apply_X(tableau=tableau, qudit_index=qudit_index)
-    for _ in range(z_exp):
+        tableau.multiply(qudit_index, x_exp)
+    if z_exp == 1 or z_exp == 0:
+        if z_exp:
+            apply_Z(tableau=tableau, qudit_index=qudit_index)
+    else:
+        tableau.multiply(qudit_index, z_exp)
         apply_Z(tableau=tableau, qudit_index=qudit_index)
+        tableau.multiply(qudit_index, pow(z_exp, -1, tableau.dimension))
+    return None
 
 def _get_noise_channel(params: dict) -> str:
     """

@@ -605,7 +605,8 @@ class WeylTableau(Tableau):
         Raises:
             ValueError: If the scalar is not coprime with the order.
         """
-        if scalar not in self.coprime_order:
+        scalar = int(scalar) % self.order
+        if gcd(scalar, self.order) != 1:
             raise ValueError(f"Scalar {scalar} is not coprime with the order {self.order}.")
         self.z_block[qudit_index, :] = (self.z_block[qudit_index, :] * pow(scalar, -1, self.order)) % self.order
         self.x_block[qudit_index, :] = (self.x_block[qudit_index, :] * scalar) % self.order

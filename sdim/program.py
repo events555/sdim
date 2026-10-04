@@ -5,6 +5,7 @@ from .circuit import CircuitInstruction, Circuit
 from .tableau.tableau_composite import WeylTableau
 from .tableau.tableau_prime import ExtendedTableau
 from .tableau.tableau_gates import *
+from .tableau.tableau_gates import _apply_pauli_powers
 from itertools import product
 from sympy import isprime
 from numba import njit, prange
@@ -446,10 +447,9 @@ class Program:
 
                         # Handle reset gate (gate_id == 16)
                         if gate.gate_id == 16:
-                            # Apply X gates until reaching the computational basis state.
+                            # Shift the measured value back to |0> with a single power of X.
                             steps_to_zero = (-measurement_result.measurement_value) % self.stabilizer_tableau.dimension
-                            for _ in range(steps_to_zero):
-                                apply_X(self.stabilizer_tableau, gate.qudit_index, None)
+                            _apply_pauli_powers(self.stabilizer_tableau, gate.qudit_index, steps_to_zero, 0)
 
                     if options.show_gate:
                         gate_info = gate.target_index if gate.target_index is not None else ""
@@ -787,10 +787,10 @@ class Program:
                             noise_indices = np.random.choice(a=len(powers), size=extra_shots, p=distribution)
                             noise = np.array( [powers[i] for i in noise_indices] )
                             noise_list.append(noise)
-                        else: # If the list doesn't have a valid shape, then the channel acts as identity.
-                            zero_vec = [0,] * extra_shots
-                            noise = np.stack((zero_vec, ) * 4, axis=1)
-                            noise_list.append(noise)
+                        else:
+                            raise ValueError(
+                                f"N2 prob_dist has length {len(distribution)} instead of the required {dimension ** 4}."
+                            )
 
                     else:
                         nontrivial_noise_events = np.array( _two_qudit_powers()[1:] )
