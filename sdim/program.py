@@ -192,8 +192,10 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
             ref_val = reference_results[q, m]['measurement_value']
             deterministic = reference_results[q, m]['deterministic']
 
+            # RESET measures before correcting to |0>, so its recorded outcome carries the X frame
+            # like any other measurement.
             for shot in range(extra_shots):
-                frame_results[q, m, shot] = (q, m, shot, deterministic, ref_val)
+                frame_results[q, m, shot] = (q, m, shot, deterministic, (ref_val + x_frame[q, shot]) % dimension)
 
             x_frame[q] = 0
             z_frame[q] = np.random.randint(0, dimension, size=extra_shots)
