@@ -136,11 +136,14 @@ class Circuit:
             if not 0.0 <= float(kwargs["prob"]) <= 1.0:
                 raise ValueError(f"N2 prob must be between 0 and 1, not {kwargs['prob']}.")
         elif primary_name == "N2":
-            dist = np.asarray(kwargs["prob_dist"], dtype=float).reshape(-1)
-            if dist.size != self.dimension ** 4:
-                raise ValueError(f"N2 prob_dist has length {dist.size} instead of the required {self.dimension ** 4}.")
-            if (dist < 0).any() or not np.isclose(dist.sum(), 1.0, rtol=0.0, atol=1e-8):
-                raise ValueError("N2 prob_dist must be non-negative and sum to 1.")
+            # Same checks (and messages) as the simulators.  A (d, d, d, d) array is accepted and
+            # stored flat, in the (x1, z1, x2, z2) lexicographic order the simulators use.
+            from .program import _prob_dist_cdf
+            dist = np.asarray(kwargs["prob_dist"], dtype=float)
+            if dist.ndim != 1:
+                # Flat inputs are stored as given, so gates sharing one distribution keep sharing it.
+                kwargs["prob_dist"] = dist = dist.reshape(-1)
+            _prob_dist_cdf(dist, self.dimension)
 
         if control is None and target is None: # Detectors only
             self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), None, None, params=kwargs))

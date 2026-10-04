@@ -114,5 +114,5 @@ def test_malformed_prob_dist_is_rejected():
     c = Circuit(2, 3)
     with pytest.raises(ValueError, match="prob_dist"):
         c.add_gate("N2", 0, 1, prob_dist=[1.0, 0.0])
-    with pytest.raises(ValueError, match="prob_dist"):
+    with pytest.raises(ValueError, match="sum to 1"):
         c.add_gate("N2", 0, 1, prob_dist=np.full(81, 0.5))
