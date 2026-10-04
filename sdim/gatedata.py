@@ -49,6 +49,8 @@ class GateData:
         self.add_gate_collapsing(dimension)
         self.add_gate_noise(dimension)
         self.add_gate_detectors(dimension)
+        # MUL is registered after the detector gates so DETECTOR/LOGICAL_OBSERVABLE/TICK keep ids 19-21.
+        self.add_gate_multiplication(dimension)
 
     def __str__(self):
         return "\n".join(str(gate) for gate in self.gateMap.values())
@@ -122,6 +124,10 @@ class GateData:
         self.add_gate("TICK", 0)
 
         
+
+    def add_gate_multiplication(self, d):
+        self.add_gate("MUL", 1)
+        self.add_gate_alias("MUL", ["MULT", "MULTIPLY"])
 
     def get_gate_id(self, gate_name):
         if gate_name in self.gateMap:

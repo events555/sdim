@@ -218,6 +218,30 @@ class GeneralizedPhaseShiftGateInverse(cirq.Gate):
     def _circuit_diagram_info_(self, args):
         return f"P_{self.d}†"
 
+class GeneralizedMultiplicationGate(cirq.Gate):
+    def __init__(self, d, a):
+        super(GeneralizedMultiplicationGate, self).__init__()
+        self.d = d
+        self.a = a
+
+    def _qid_shape_(self):
+        return (self.d,)
+
+    def _unitary_(self):
+        return generate_m_matrix(self.d, self.a)
+
+    def __pow__(self, exponent):
+        if exponent == 0:
+            return IdentityGate(self.d)
+        if exponent == 1:
+            return self
+        if exponent == -1:
+            return GeneralizedMultiplicationGate(self.d, pow(self.a, -1, self.d))
+        return NotImplemented
+
+    def _circuit_diagram_info_(self, args):
+        return f"MUL_{self.a}"
+
 class GeneralizedXPauliGate(cirq.Gate):
     def __init__(self, d):
         super(GeneralizedXPauliGate, self).__init__()

@@ -258,6 +258,23 @@ class ExtendedTableau(Tableau):
         cnot_inv_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
                        self.num_qudits, self.dimension,
                        control, target)
+
+    def multiply(self, qudit_index: int, scalar: int):
+        """
+        Apply a multiplicative Clifford gate to the specified qudit.
+
+        Args:
+            qudit_index (int): Index of the qudit.
+            scalar (int): Multiplicative factor modulo the qudit dimension.
+        """
+        if scalar not in self.coprime_dimension:
+            raise ValueError(f"Scalar {scalar} is not coprime with the dimension {self.dimension}.")
+
+        inverse = pow(scalar, -1, self.dimension)
+        self.z_block[qudit_index, :] = (self.z_block[qudit_index, :] * inverse) % self.dimension
+        self.x_block[qudit_index, :] = (self.x_block[qudit_index, :] * scalar) % self.dimension
+        self.destab_z_block[qudit_index, :] = (self.destab_z_block[qudit_index, :] * inverse) % self.dimension
+        self.destab_x_block[qudit_index, :] = (self.destab_x_block[qudit_index, :] * scalar) % self.dimension
             
     def measure(self, qudit_index: int) -> MeasurementResult:
         """

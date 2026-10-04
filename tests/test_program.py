@@ -113,7 +113,8 @@ def test_build_ir():
     ir_dtype = np.dtype([
         ('gate_id', np.int64),
         ('qudit_index', np.int64),
-        ('target_index', np.int64)
+        ('target_index', np.int64),
+        ('scalar', np.int64)
     ])
     c = Circuit(dimension=3, num_qudits=2)
     c.add_gate("H", 0)
@@ -122,31 +123,104 @@ def test_build_ir():
     p = Program(c)
     extra_shots = 1
     ir, noise, _ = p._build_ir(p.circuits, extra_shots)
-    test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1)], dtype=ir_dtype)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
 
     ir, noise, _ = p._build_ir(p.circuits, extra_shots+1)
-    test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1)], dtype=ir_dtype)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
 
     c.add_gate("N1", 0, prob=1.0, noise_channel='f')
     ir, noise, _ = p._build_ir(p.circuits, extra_shots)
-    test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1)], dtype=ir_dtype)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1), (17, 0, -1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[0][0][0])
 
     c.add_gate("N1", 1, prob=1.0, noise_channel='p')
     ir, noise, _ = p._build_ir(p.circuits, extra_shots)
-    test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1)], dtype=ir_dtype)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1), (17, 0, -1, -1), (17, 1, -1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[1][0][1])
 
     c.add_gate("N1", 1, prob=1.0, noise_channel='d')
     ir, noise, _ = p._build_ir(p.circuits, extra_shots)
-    test_ir = np.array([(5, 0, -1), (9, 0, 1), (14, 0, -1), (14, 1, -1), (17, 0, -1), (17, 1, -1), (17, 1, -1)], dtype=ir_dtype)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1), (17, 0, -1, -1), (17, 1, -1, -1), (17, 1, -1, -1)], dtype=ir_dtype)
     np.testing.assert_array_equal(ir, test_ir)
     assert np.any(noise[2][0])
+
+    c.add_gate("MUL", 0, a=2)
+    ir, noise, _ = p._build_ir(p.circuits, extra_shots)
+    test_ir = np.array([(5, 0, -1, -1), (9, 0, 1, -1), (14, 0, -1, -1), (14, 1, -1, -1), (17, 0, -1, -1), (17, 1, -1, -1), (17, 1, -1, -1), (22, 0, -1, 2)], dtype=ir_dtype)
+    np.testing.assert_array_equal(ir, test_ir)
+
+@pytest.mark.parametrize(("dimension", "scalar"), [(4, 3), (5, 2)])
+def test_multiplication_gate_simulation(dimension, scalar):
+    circuit = Circuit(dimension=dimension, num_qudits=1)
+    circuit.add_gate("X", 0)
+    circuit.add_gate("MUL", 0, a=scalar)
+    circuit.add_gate("M", 0)
+
+    result = Program(circuit).simulate()
+    assert result == [MeasurementResult(0, True, scalar % dimension)]
+
+def test_tableau_noise_gate_is_not_replaced_by_identity():
+    circuit = Circuit(dimension=5, num_qudits=1)
+    circuit.add_gate("N1", 0, prob=1.0, noise_channel='f')
+    circuit.add_gate("M", 0)
+
+    result = Program(circuit).simulate(shots=6, force_tableau=True)
+    measured_values = [shot.measurement_value for shot in result[0][0]]
+
+    assert all(value != 0 for value in measured_values)
+
+def test_two_qudit_tableau_noise_gate_is_not_replaced_by_identity():
+    distribution = np.zeros(3 ** 4)
+    distribution[3 ** 3] = 1.0  # (x1, z1, x2, z2) = (1, 0, 0, 0)
+
+    circuit = Circuit(dimension=3, num_qudits=2)
+    circuit.add_gate("N2", 0, 1, prob_dist=distribution)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+
+    result = Program(circuit).simulate(shots=3, force_tableau=True)
+
+    assert all(shot.measurement_value == 1 for shot in result[0][0])
+    assert all(shot.measurement_value == 0 for shot in result[1][0])
 
    
 
     
+
+def test_two_qudit_tableau_noise_with_prob():
+    # N2 defaults to prob= (uniform non-identity two-qudit Pauli), with no prob_dist.
+    np.random.seed(0)
+    circuit = Circuit(dimension=3, num_qudits=2)
+    circuit.add_gate("N2", 0, 1, prob=1.0)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+    assert circuit.operations[0].params.get("prob_dist") is None
+
+    result = Program(circuit).simulate(shots=10, force_tableau=True)
+    values = [(m0.measurement_value, m1.measurement_value) for m0, m1 in zip(result[0][0], result[1][0])]
+
+    assert len(values) == 10
+    # Each shot has x1 = x2 = 0 with probability (d**2 - 1) / (d**4 - 1) = 0.1.
+    assert any(v != (0, 0) for v in values)
+
+def test_two_qudit_tableau_noise_with_zero_prob_is_identity():
+    circuit = Circuit(dimension=3, num_qudits=2)
+    circuit.add_gate("N2", 0, 1, prob=0.0)
+    circuit.add_gate("M", 0)
+    circuit.add_gate("M", 1)
+
+    result = Program(circuit).simulate(shots=5, force_tableau=True)
+
+    assert all(shot.measurement_value == 0 for shot in result[0][0])
+    assert all(shot.measurement_value == 0 for shot in result[1][0])
+
+def test_two_qudit_tableau_noise_requires_prob_or_prob_dist():
+    from sdim.tableau.tableau_gates import apply_two_qudit_noise
+    from sdim.tableau.tableau_prime import ExtendedTableau
+
+    with pytest.raises(ValueError, match="prob"):
+        apply_two_qudit_noise(ExtendedTableau(2, 3), 0, 1, {})

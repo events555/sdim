@@ -121,7 +121,8 @@ _H, _H_INV, _P, _P_INV = 5, 6, 7, 8
 _CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP = 9, 10, 11, 12, 13
 _M, _M_X, _RESET = 14, 15, 16
 _N1, _N2, _DETECTOR, _OBSERVABLE = 17, 18, 19, 20
-_FRAME_GATES = {_H, _H_INV, _P, _P_INV, _CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP, _M, _M_X, _RESET}
+_MUL = 22
+_FRAME_GATES = {_H, _H_INV, _P, _P_INV, _CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP, _M, _M_X, _RESET, _MUL}
 
 
 def _is_prime(n: int) -> bool:
@@ -650,6 +651,14 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
     n_ops = len(gid)
     n_qudits = circuit.num_qudits
 
+    # MUL multiplies X by a and Z by a^-1 mod d. Only MUL ops use these; every other op holds 1.
+    scalar = np.asarray(ir_array["scalar"], dtype=np.int64)
+    mul_a = np.ones(n_ops, dtype=np.int64)
+    mul_inv = np.ones(n_ops, dtype=np.int64)
+    for i in np.flatnonzero(gid == _MUL):
+        mul_a[i] = int(scalar[i]) % d
+        mul_inv[i] = pow(int(mul_a[i]), -1, d)
+
     # Measurement record index of each measuring op (sdim counts M and M_X only).
     is_meas = (gid == _M) | (gid == _M_X)
     rec_of_op = np.full(n_ops, -1, dtype=np.int64)
@@ -741,7 +750,7 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
     probe_qudit = np.array(probe_qudit, dtype=np.int64)
     probe_kind = np.array(probe_kind, dtype=np.int64)
     n_targets = n_det + len(obs)
-    responses = _run_probes(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+    responses = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
                             probe_op, probe_qudit, probe_kind, d, n_targets)
     # Until now loc.responses held probe indices. Swap in the actual responses.
     for loc in locations:
@@ -749,7 +758,7 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
     return CompiledResponses(n_det, len(obs), det_labels, obs_labels, locations)
 
 
-def _run_probes(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
                 probe_op, probe_qudit, probe_kind, d, n_targets, chunk=1 << 15):
     """
     Runs `_probe_kernel` over all probes in chunks.
@@ -768,7 +777,7 @@ def _run_probes(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoe
             ptr = np.zeros(stop - start + 1, dtype=np.int64)
             tgt = np.zeros((stop - start) * cap, dtype=np.int64)
             val = np.zeros((stop - start) * cap, dtype=np.int64)
-            ok = _probe_kernel(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+            ok = _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
                                probe_op[start:stop], probe_qudit[start:stop], probe_kind[start:stop],
                                d, n_targets, ptr, tgt, val)
             if ok:
@@ -781,7 +790,7 @@ def _run_probes(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoe
 
 
 @njit(cache=True)
-def _probe_kernel(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
                   probe_op, probe_qudit, probe_kind, d, n_targets, out_ptr, out_tgt, out_val):
     """
     Pushes unit faults through the circuit, one probe at a time.
@@ -796,6 +805,9 @@ def _probe_kernel(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rc
     qudit's op list (scur). Each step advances the slot whose next op comes
     first in the circuit. A slot is freed once its frame is back to zero, and
     the probe ends when no slots are left or no ops remain.
+
+    `mul_a` and `mul_inv` hold, per op, the MUL scalar a mod d and its inverse
+    (1 for every other op).
 
     Returns:
         bool: False if the output buffers fill up or a fault reaches more than
@@ -857,6 +869,9 @@ def _probe_kernel(gid, qa, qb, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rc
                 elif g == 8:  # P_INV
                     nx = x
                     nz = (z + d - x) % d
+                elif g == 22:  # MUL
+                    nx = (x * mul_a[op]) % d
+                    nz = (z * mul_inv[op]) % d
                 elif g == 14 or g == 15:  # M, M_X
                     if g == 15:
                         nx = z

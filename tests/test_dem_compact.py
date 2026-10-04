@@ -132,6 +132,8 @@ def _small_css_circuit(d, p):
 def _sdim_frame(circuit, shots, noise=None, seed=0):
     np.random.seed(seed)
     prog = Program(circuit)
+    # Noiseless reference shot, as in Program.simulate's frame mode.
+    prog._tableau_noise_enabled = False
     prog._simulate_tableau(SimulationOptions(shots=1))
     ref = prog._results_to_array(prog.measurement_results)
     ir, sampled, info = prog._build_ir(prog.circuits, shots)
@@ -160,6 +162,65 @@ def test_unit_responses_match_frame_simulator(d):
         ref = {i: int(v) for i, v in enumerate(det[:, j]) if v}
         ref.update({nd + i: int(v) for i, v in enumerate(obs[:, j]) if v})
         assert ref == resp, (j, probes[j])
+
+
+def _mul_circuit(d, a, p):
+    """A deterministic circuit that puts MUL by a and by a^-1 between noise and detectors.
+
+    Uses MUL, CNOT, H, H_INV, RESET, M, N1 with all three channels, and N2. Every
+    qudit ends in |0>, so all detectors are deterministic. The H / MUL / H_INV
+    sandwich on qudit 1 sends X faults through the Z part of MUL (a^-1).
+    """
+    a_inv = pow(a, -1, d)
+    c = Circuit(3, d)
+    anc = 2
+    for q in (0, 1, anc):
+        c.add_gate("RESET", q)
+        c.add_gate("N1", q, noise_channel="d", prob=p)
+    c.add_gate("MUL", 0, a=a)
+    c.add_gate("N1", 0, noise_channel="f", prob=p)
+    c.add_gate("H", 1)
+    c.add_gate("MUL", 1, a=a)
+    c.add_gate("N1", 1, noise_channel="p", prob=p)
+    c.add_gate("H_INV", 1)
+    c.add_gate("CNOT", 0, anc)
+    c.add_gate("N2", 0, anc, prob=p)
+    c.add_gate("MUL", 0, a=a_inv)
+    c.add_gate("MUL", anc, a=a)
+    c.add_gate("CNOT", 1, anc)
+    c.add_gate("N2", 1, anc, prob=p)
+    c.add_gate("M", anc)
+    c.add_gate("M", 0)
+    c.add_gate("M", 1)
+    c.add_gate("DETECTOR", expr="rec[-3]")
+    c.add_gate("DETECTOR", expr="rec[-2]")
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    c.add_gate("LOGICAL_OBSERVABLE", expr="rec[-2] + rec[-1]")
+    return c
+
+
+@pytest.mark.parametrize("d,a", [(3, 2), (7, 3), (1000003, 2)])
+def test_unit_responses_with_mul_match_frame_simulator(d, a):
+    c = _mul_circuit(d, a, 0.01)
+    compiled = compile_unit_responses(c)
+    probes, mine = [], []
+    for g, loc in enumerate(compiled.locations):
+        comps = {"d": [0, 1], "f": [0], "p": [1], "d2": [0, 1, 2, 3]}[loc.channel]
+        for k, comp in enumerate(comps):
+            probes.append((g, comp))
+            mine.append(loc.responses[k])
+    noise = np.zeros((len(compiled.locations), len(probes), 4), dtype=np.int64)
+    for j, (g, comp) in enumerate(probes):
+        noise[g, j, comp] = 1
+    det, obs = _sdim_frame(c, len(probes), noise)
+    nd = compiled.num_detectors
+    for j, resp in enumerate(mine):
+        ref = {i: int(v) for i, v in enumerate(det[:, j]) if v}
+        ref.update({nd + i: int(v) for i, v in enumerate(obs[:, j]) if v})
+        assert ref == resp, (j, probes[j])
+    if d > 3:
+        # MUL really scales the faults: a or a^-1 shows up as a coefficient, not just +-1.
+        assert any(v in (a % d, pow(a, -1, d)) for resp in mine for v in resp.values())
 
 
 def test_large_dimension_circuit_and_frame_sampling():
