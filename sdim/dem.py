@@ -111,14 +111,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import contextlib
+import copy
+import dis
+import gc
 import itertools
 import math
+import threading
+import types
 
+import numba
 import numpy as np
 from numba import njit
 
 from .circuit import Circuit
-from .program import Program
+from .program import Program, _detector_mod
 
 # Gate ids, in the order GateData registers the gates.
 _H, _H_INV, _P, _P_INV = 5, 6, 7, 8
@@ -127,6 +134,122 @@ _M, _M_X, _RESET = 14, 15, 16
 _N1, _N2, _DETECTOR, _OBSERVABLE = 17, 18, 19, 20
 _MUL = 22
 _FRAME_GATES = {_H, _H_INV, _P, _P_INV, _CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP, _M, _M_X, _RESET, _MUL}
+_TWO_QUDIT_FRAME_GATES = (_CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP)
+
+# Shots per independently seeded sampler block.
+_SAMPLE_CHUNK = 256
+# Below this estimated amount of work, sample on the calling thread rather than start worker threads.
+_SAMPLE_PARALLEL_WORK = 200_000
+# Sampler tasks per thread. Each task is a run of consecutive blocks; more tasks balance the load better.
+_SAMPLE_TASKS_PER_THREAD = 8
+# The sampler's arithmetic needs d < 2**31 (see `_sample_chunks`).
+_MAX_SAMPLE_DIMENSION = 2 ** 31 - 1
+# With fewer unit-fault probes than this, `from_circuit` propagates them on the calling thread.
+_PROBE_PARALLEL_MIN = 2048
+
+
+def _thread_count() -> int:
+    """
+    Number of threads for the unit-fault pass and the sampler.
+
+    This is numba's thread count: `numba.get_num_threads()` once numba's own
+    thread pool is running (so `numba.set_num_threads` applies), and
+    otherwise `numba.config.NUMBA_NUM_THREADS`, which the NUMBA_NUM_THREADS
+    environment variable sets. Reading it never starts numba's pool.
+    """
+    try:
+        from numba.np.ufunc import parallel as numba_parallel
+        if getattr(numba_parallel, "_is_initialized", False):
+            return max(1, int(numba.get_num_threads()))
+    except Exception:
+        pass
+    try:
+        return max(1, int(numba.config.NUMBA_NUM_THREADS))
+    except Exception:
+        return 1
+
+
+def _run_tasks(task, n_tasks: int, n_threads: int) -> None:
+    """
+    Calls task(i) for every i in range(n_tasks), on up to n_threads threads.
+
+    Each task should spend its time in a `nogil` numba kernel so the threads
+    run at the same time. Threads take the next task as they finish one, and
+    the calling thread works too. Every task writes only its own output, so
+    the result does not depend on the number of threads or on scheduling.
+
+    These are plain Python threads, started for this call and joined before it
+    returns. numba's `parallel=True` thread pool is not used: under the GNU
+    OpenMP layer it aborts processes forked after it has run, and under the
+    workqueue layer it aborts when two Python threads use it at once.
+
+    Raises:
+        BaseException: The first exception a task raised. The other threads
+            stop taking tasks, and all of them are joined first.
+    """
+    n_threads = min(n_threads, n_tasks)
+    if n_threads <= 1:
+        for i in range(n_tasks):
+            task(i)
+        return
+    lock = threading.Lock()
+    next_task = [0]
+    failures = []
+
+    def work():
+        try:
+            while True:
+                with lock:
+                    i = next_task[0]
+                    if i >= n_tasks or failures:
+                        return
+                    next_task[0] = i + 1
+                task(i)
+        except BaseException as e:
+            with lock:
+                failures.append(e)
+
+    threads = []
+    for _ in range(n_threads - 1):
+        thread = threading.Thread(target=work, name="sdim-dem-worker", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError:
+            # No more threads can be started (for example at interpreter shutdown). The threads
+            # already running and this one share the remaining tasks.
+            break
+        threads.append(thread)
+    try:
+        work()
+    finally:
+        try:
+            for thread in threads:
+                thread.join()
+        except BaseException as e:
+            # Interrupted while waiting: make the workers stop after their current task.
+            with lock:
+                failures.append(e)
+            raise
+    if failures:
+        raise failures[0]
+
+
+@contextlib.contextmanager
+def _gc_paused():
+    """
+    Pauses Python's cyclic garbage collector.
+
+    Building a model creates many small dicts and mechanisms and no reference
+    cycles, and every full collection that this allocation triggers walks the
+    whole heap. Pausing the collector changes nothing but the time taken.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def _is_prime(n: int) -> bool:
@@ -213,6 +336,18 @@ def merge_subgroup_probabilities(*pis: float) -> float:
     return -math.expm1(log_keep)
 
 
+def _merge_pair(a: float, b: float) -> float:
+    """
+    `merge_subgroup_probabilities(a, b)` for two floats, bit for bit.
+
+    For 0 < a, b < 1 neither log1p is -0.0, so summing the two terms directly
+    gives exactly what `sum` does; other inputs go through the general function.
+    """
+    if 0.0 < a < 1.0 and 0.0 < b < 1.0:
+        return -math.expm1(math.log1p(-a) + math.log1p(-b))
+    return merge_subgroup_probabilities(a, b)
+
+
 @dataclass
 class ErrorMechanism:
     """
@@ -294,20 +429,16 @@ class DetectorErrorModel:
         d = circuit.dimension
         if check_dimension_prime and not _is_prime(d):
             raise ValueError("Compact qudit DEMs require a prime dimension (Z_d must be a field).")
-        compiled = compile_unit_responses(circuit)
-        dem = cls(dimension=d,
-                  num_detectors=compiled.num_detectors,
-                  num_observables=compiled.num_observables,
-                  detector_labels=compiled.detector_labels,
-                  observable_labels=compiled.observable_labels)
-        for loc in compiled.locations:
-            # A unit fault that no detector or observable sees adds nothing.
-            generators = [g for g in loc.responses if g]
-            if not generators or loc.probability <= 0.0:
-                continue
-            dem.mechanisms.append(ErrorMechanism(loc.subgroup_probability, generators, loc.source))
-        if merge:
-            dem.merge_lines()
+        with _gc_paused():
+            compiled = _compile(circuit)
+            dem = cls(dimension=d,
+                      num_detectors=compiled.num_detectors,
+                      num_observables=compiled.num_observables,
+                      detector_labels=compiled.detector_labels,
+                      observable_labels=compiled.observable_labels)
+            # Same result as keeping every noise gate with prob > 0 and a visible unit fault, then
+            # calling merge_lines(), but built from flat arrays.
+            dem.mechanisms = compiled.mechanisms(merge)
         return dem
 
     def merge_lines(self) -> None:
@@ -322,21 +453,28 @@ class DetectorErrorModel:
         """
         d = self.dimension
         merged: dict = {}
-        order: list = []
+        sources: dict = {}
         others: list = []
-        for mech in self.mechanisms:
-            if mech.rank != 1:
-                others.append(mech)
-                continue
-            key, scaled = _canonical_line(mech.generators[0], d)
-            if key in merged:
-                prev = merged[key]
-                prev.probability = merge_subgroup_probabilities(prev.probability, mech.probability)
-                prev.source = prev.source + "+" + mech.source
-            else:
-                merged[key] = ErrorMechanism(mech.probability, [scaled], mech.source)
-                order.append(key)
-        self.mechanisms = [merged[k] for k in order] + others
+        with _gc_paused():
+            for mech in self.mechanisms:
+                if mech.rank != 1:
+                    others.append(mech)
+                    continue
+                key, scaled = _canonical_line(mech.generators[0], d)
+                prev = merged.get(key)
+                if prev is not None:
+                    prev.probability = _merge_pair(prev.probability, mech.probability)
+                    parts = sources.get(key)
+                    if parts is None:
+                        sources[key] = [prev.source, mech.source]
+                    else:
+                        parts.append(mech.source)
+                else:
+                    merged[key] = ErrorMechanism(mech.probability, [scaled], mech.source)
+            # Joining once gives the same string as appending "+" + source on every merge.
+            for key, parts in sources.items():
+                merged[key].source = "+".join(parts)
+            self.mechanisms = list(merged.values()) + others
 
     # -------------------------------------------------------- decorrelation
     def to_lines(self, max_lines_per_mechanism: int = 10 ** 6) -> "DetectorErrorModel":
@@ -367,23 +505,33 @@ class DetectorErrorModel:
         d = self.dimension
         out = DetectorErrorModel(d, self.num_detectors, self.num_observables, [],
                                  list(self.detector_labels), list(self.observable_labels))
-        for mech in self.mechanisms:
-            k = mech.rank
-            num_lines = (d ** k - 1) // (d - 1)
-            if num_lines > max_lines_per_mechanism:
-                raise ValueError(f"{num_lines} lines for one mechanism; use the compact form for this dimension")
-            pl = line_probability(mech.probability, d, k)
-            for direction in _projective_points(d, k):
-                combined: dict = {}
-                for coeff, gen in zip(direction, mech.generators):
-                    if coeff == 0:
-                        continue
-                    for t, v in gen.items():
-                        combined[t] = (combined.get(t, 0) + coeff * v) % d
-                combined = {t: v for t, v in combined.items() if v}
-                if combined:
-                    out.mechanisms.append(ErrorMechanism(pl, [combined], mech.source))
-        out.merge_lines()
+        mechs = self.mechanisms
+        with _gc_paused():
+            # The checks and line probabilities, mechanism by mechanism.
+            pls = []
+            for mech in mechs:
+                k = mech.rank
+                num_lines = (d ** k - 1) // (d - 1)
+                if num_lines > max_lines_per_mechanism:
+                    raise ValueError(f"{num_lines} lines for one mechanism; use the compact form for this dimension")
+                pls.append(line_probability(mech.probability, d, k))
+            lines = _lines_from_arrays(mechs, pls, d)
+            if lines is not None:
+                out.mechanisms = lines
+                return out
+            # Targets or coefficients that are not plain ints: expand one dict at a time.
+            for mech, pl in zip(mechs, pls):
+                for direction in _projective_points(d, mech.rank):
+                    combined: dict = {}
+                    for coeff, gen in zip(direction, mech.generators):
+                        if coeff == 0:
+                            continue
+                        for t, v in gen.items():
+                            combined[t] = (combined.get(t, 0) + coeff * v) % d
+                    combined = {t: v for t, v in combined.items() if v}
+                    if combined:
+                        out.mechanisms.append(ErrorMechanism(pl, [combined], mech.source))
+            out.merge_lines()
         return out
 
     # ---------------------------------------------------------------- sample
@@ -391,34 +539,36 @@ class DetectorErrorModel:
         """
         Packs the mechanisms into flat arrays for the numba sampler.
 
-        Mechanism i has probability mech_prob[i] and generators
-        gen_ptr[i]:gen_ptr[i + 1]. Generator g has entries
-        ent_ptr[g]:ent_ptr[g + 1] in ent_tgt (targets) and ent_val (coefficients).
+        Returns mech_prob (probability of each mechanism), n_gens (number of
+        generators of each mechanism), sizes (number of entries of each
+        generator), and ent_tgt / ent_val (targets and coefficients of all
+        entries, generator by generator, in dict order).
         """
-        mech_prob = np.array([m.probability for m in self.mechanisms], dtype=np.float64)
-        gen_ptr = np.zeros(len(self.mechanisms) + 1, dtype=np.int64)
-        ent_ptr = [0]
-        ent_tgt = []
-        ent_val = []
-        g = 0
-        for i, m in enumerate(self.mechanisms):
-            for gen in m.generators:
-                for t, v in sorted(gen.items()):
-                    ent_tgt.append(t)
-                    ent_val.append(v)
-                ent_ptr.append(len(ent_tgt))
-                g += 1
-            gen_ptr[i + 1] = g
-        return (mech_prob, gen_ptr, np.array(ent_ptr, dtype=np.int64),
-                np.array(ent_tgt, dtype=np.int64), np.array(ent_val, dtype=np.int64))
+        mechs = self.mechanisms
+        mech_prob = np.array([m.probability for m in mechs], dtype=np.float64)
+        n_gens = np.fromiter((len(m.generators) for m in mechs), dtype=np.int64, count=len(mechs))
+        gens = [g for m in mechs for g in m.generators]
+        sizes = np.fromiter(map(len, gens), dtype=np.int64, count=len(gens))
+        n_ent = int(sizes.sum())
+        ent_tgt = np.fromiter(itertools.chain.from_iterable(gens), dtype=np.int64, count=n_ent)
+        ent_val = np.fromiter(itertools.chain.from_iterable(g.values() for g in gens), dtype=np.int64, count=n_ent)
+        return mech_prob, n_gens, sizes, ent_tgt, ent_val
 
     def sample(self, shots: int, seed: int | None = None):
         """
         Samples detector and observable values.
 
-        Mechanisms with the same probability are grouped, and within a group
-        the sampler jumps straight to the next mechanism that fires. The cost
+        Mechanisms are grouped into bins of similar probability. Within a bin
+        the sampler jumps straight to the next candidate firing with a
+        geometric skip, and a mechanism whose probability is below the bin's
+        maximum keeps each candidate with probability pi / pi_max. The cost
         grows with the number of firings, not with shots * len(mechanisms).
+
+        Shots are split into fixed blocks of 256, and large jobs spread the
+        blocks over several threads (numba's thread count, see
+        `_thread_count`). Each block has its own random stream
+        (xoshiro256**) seeded from `seed` through NumPy's SeedSequence, so a
+        given seed gives the same samples whatever the number of threads.
 
         Args:
             shots (int): Number of samples.
@@ -428,24 +578,52 @@ class DetectorErrorModel:
             tuple[np.ndarray, np.ndarray]: Detector values with shape
                 (shots, num_detectors) and observable values with shape
                 (shots, num_observables), as int64 residues mod d.
+
+        Raises:
+            ValueError: If the dimension is not between 1 and 2**31 - 1, a
+                mechanism probability is NaN, or a generator refers to a
+                target outside the model.
         """
-        n_targets = self.num_detectors + self.num_observables
-        out = np.zeros((shots, n_targets), dtype=np.int64)
+        nd = self.num_detectors
+        det = np.zeros((shots, nd), dtype=np.int64)
+        obs = np.zeros((shots, self.num_observables), dtype=np.int64)
         if not self.mechanisms or shots == 0:
-            return out[:, :self.num_detectors], out[:, self.num_detectors:]
-        mech_prob, gen_ptr, ent_ptr, ent_tgt, ent_val = self._flatten()
-        order = np.argsort(mech_prob, kind="stable")
-        sorted_prob = mech_prob[order]
-        bounds = np.flatnonzero(np.diff(sorted_prob)) + 1
-        class_start = np.concatenate(([0], bounds)).astype(np.int64)
-        class_end = np.concatenate((bounds, [len(sorted_prob)])).astype(np.int64)
-        class_prob = sorted_prob[class_start]
-        # The kernel seeds numba's own generator, which is separate from NumPy's global state and
-        # takes a 32-bit seed.  Hash the user's seed down to 32 bits instead of truncating it.
-        seed = int(np.random.SeedSequence(seed).generate_state(1)[0])
-        _sample_kernel(out, order.astype(np.int64), class_start, class_end, class_prob,
-                       gen_ptr, ent_ptr, ent_tgt, ent_val, self.dimension, seed)
-        return out[:, :self.num_detectors], out[:, self.num_detectors:]
+            return det, obs
+        d = int(self.dimension)
+        if not 1 <= d <= _MAX_SAMPLE_DIMENSION:
+            raise ValueError(f"sample() needs a dimension between 1 and 2**31 - 1, not {d}")
+        mech_prob, n_gens, sizes, ent_tgt, ent_val = self._flatten()
+        n_targets = nd + self.num_observables
+        montgomery = d % 2 == 1
+        # int32 pack entries halve the sampler's memory traffic; they hold targets below n_targets and
+        # residues below d.
+        pack_like = np.empty(0, dtype=np.int32 if n_targets <= np.iinfo(np.int32).max else np.int64)
+        status, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost = _sample_plan(
+            mech_prob, mech_prob.view(np.int64), n_gens, sizes, ent_tgt, ent_val, d, n_targets, montgomery,
+            pack_like)
+        if status == -2:
+            raise ValueError("a mechanism probability is NaN")
+        if status >= 0:
+            raise ValueError(f"a generator refers to target {int(ent_tgt[status])}, but the model has "
+                             f"{nd} detectors and {self.num_observables} observables")
+        n_chunks = -(-shots // _SAMPLE_CHUNK)
+        states = np.random.SeedSequence(seed).generate_state(4 * n_chunks, dtype=np.uint64).reshape(n_chunks, 4)
+        # xoshiro256** must not start from the all-zero state.
+        states[~states.any(axis=1), 0] = 1
+        # -d^-1 mod 2**32 for Montgomery multiplication (odd d); 0 selects plain % for even d.
+        nprime = np.uint64((-pow(d, -1, 1 << 32)) % (1 << 32) if montgomery else 0)
+        thresh = np.uint64((1 << 32) % d)
+        info_p = info.view(np.float64)
+        n_threads = _thread_count() if n_chunks > 1 and shots * cost > _SAMPLE_PARALLEL_WORK else 1
+        n_tasks = min(n_chunks, n_threads * _SAMPLE_TASKS_PER_THREAD) if n_threads > 1 else 1
+        bounds = [n_chunks * i // n_tasks for i in range(n_tasks + 1)]
+
+        def task(i):
+            _sample_chunks(bounds[i], bounds[i + 1], det, obs, _SAMPLE_CHUNK, states, bin_ptr, bin_pmax,
+                           bin_log_keep, info, info_p, always_off, pack, d, thresh, nprime)
+
+        _run_tasks(task, n_tasks, n_threads)
+        return det, obs
 
     # -------------------------------------------------------------------- io
     def __str__(self) -> str:
@@ -613,14 +791,218 @@ class CompiledResponses:
     locations: list
 
 
+class _LinearForm:
+    """
+    An affine form c_0 + c_1 rec[0] + ... + c_n rec[n - 1], coefficients mod d.
+
+    `_detector_coefficients` calls a compiled detector expression once on a
+    list of these forms. The operations below are the only ones defined, and
+    each one turns values congruent mod d to its operands into a value
+    congruent mod d to its result: + and -, multiplication by a constant (or
+    by a form with no record terms), and % by a non-zero multiple of d. So
+    when the call succeeds, the expression is congruent mod d to the returned
+    form for every integer input. Any other operation raises TypeError, and
+    the caller falls back to evaluating the expression on numeric probes.
+    """
+
+    __slots__ = ("c", "d")
+
+    def __init__(self, c: tuple, d: int):
+        self.c = c
+        self.d = d
+
+    def _coeffs(self, other) -> tuple:
+        if type(other) is _LinearForm and len(other.c) == len(self.c):
+            return other.c
+        if type(other) is int:
+            return (other % self.d,) + (0,) * (len(self.c) - 1)
+        raise TypeError("not a linear operation")
+
+    def __add__(self, other):
+        d = self.d
+        return _LinearForm(tuple((a + b) % d for a, b in zip(self.c, self._coeffs(other))), d)
+
+    __radd__ = __add__
+
+    def __sub__(self, other):
+        d = self.d
+        return _LinearForm(tuple((a - b) % d for a, b in zip(self.c, self._coeffs(other))), d)
+
+    def __rsub__(self, other):
+        d = self.d
+        return _LinearForm(tuple((b - a) % d for a, b in zip(self.c, self._coeffs(other))), d)
+
+    def __neg__(self):
+        d = self.d
+        return _LinearForm(tuple((-a) % d for a in self.c), d)
+
+    def __pos__(self):
+        return self
+
+    def __mul__(self, other):
+        d = self.d
+        if type(other) is int:
+            k = other % d
+            form = self
+        elif type(other) is _LinearForm and len(other.c) == len(self.c):
+            if not any(other.c[1:]):
+                k, form = other.c[0], self
+            elif not any(self.c[1:]):
+                k, form = self.c[0], other
+            else:
+                raise TypeError("product of two records")
+        else:
+            raise TypeError("not a linear operation")
+        return _LinearForm(tuple((a * k) % d for a in form.c), d)
+
+    __rmul__ = __mul__
+
+    def __mod__(self, other):
+        if type(other) is int and other != 0 and other % self.d == 0:
+            return self
+        raise TypeError("not a linear operation")
+
+    # Anything that could branch on a value or turn it into something else is refused.
+    def _refuse(self, *args):
+        raise TypeError("not a linear operation")
+
+    __bool__ = __index__ = __int__ = __float__ = __str__ = __format__ = _refuse
+    __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = _refuse
+    __hash__ = None
+
+
+# Bytecode a detector expression may contain for the single symbolic evaluation: loading the
+# record list and integer constants, indexing, unary minus, and the binary operators +, -, * and %.
+# Anything else (calls, names, branches, comparisons, ...) takes the numeric path.
+_LINEAR_OPNAMES = frozenset({
+    "RESUME", "NOP", "CACHE", "EXTENDED_ARG", "RETURN_VALUE",
+    "LOAD_FAST", "LOAD_FAST_CHECK", "LOAD_FAST_LOAD_FAST", "LOAD_FAST_BORROW",
+    "LOAD_FAST_BORROW_LOAD_FAST_BORROW", "LOAD_CONST", "LOAD_SMALL_INT",
+    "BINARY_SUBSCR", "UNARY_NEGATIVE", "BINARY_OP",
+    "BINARY_ADD", "BINARY_SUBTRACT", "BINARY_MULTIPLY", "BINARY_MODULO",
+})
+_LINEAR_BINARY_OPS = frozenset({"+", "-", "*", "%", "[]"})
+
+
+_CALL_OPNAMES = frozenset({"LOAD_GLOBAL", "PUSH_NULL", "PRECALL", "CALL"})
+
+
+def _is_straight_line_arithmetic(fn) -> bool:
+    """True if `fn` is a one-argument function whose bytecode only uses `_LINEAR_OPNAMES`.
+
+    sdim.program compiles detectors as `lambda rec : _detector_mod((expr), d)`, and
+    `_detector_mod(x, d)` is `x % d` for anything but int64 arrays. Calls to that one helper are
+    allowed too, when the name really refers to sdim's own function.
+    """
+    if type(fn) is not types.FunctionType or fn.__defaults__ or fn.__kwdefaults__ or fn.__closure__:
+        return False
+    code = fn.__code__
+    wraps_mod = (code.co_names == ("_detector_mod",)
+                 and fn.__globals__.get("_detector_mod") is _detector_mod)
+    if (code.co_argcount != 1 or code.co_kwonlyargcount or (code.co_names and not wraps_mod) or code.co_freevars
+            or code.co_cellvars or code.co_flags & (0x04 | 0x08)):   # *args, **kwargs
+        return False
+    for ins in dis.get_instructions(code):
+        name = ins.opname
+        if wraps_mod and name in _CALL_OPNAMES:
+            if name == "LOAD_GLOBAL" and ins.argval != "_detector_mod":
+                return False
+            continue
+        if name not in _LINEAR_OPNAMES:
+            return False
+        if name == "BINARY_OP" and ins.argrepr not in _LINEAR_BINARY_OPS:
+            return False
+        if name in ("LOAD_CONST", "LOAD_SMALL_INT") and type(ins.argval) is not int:
+            return False
+    return True
+
+
+def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict):
+    """
+    Coefficients (c_0, c_1, ..., c_n) mod d of a detector function, from one symbolic call.
+
+    Returns None when the function is not plain straight-line arithmetic or uses an operation
+    that `_LinearForm` refuses; the caller then probes it numerically. The result depends only
+    on the code object and n, so it is cached on them.
+    """
+    key = (fn.__code__, n) if type(fn) is types.FunctionType else None
+    if key is not None and key in cache:
+        return cache[key]
+    result = None
+    if _is_straight_line_arithmetic(fn):
+        zero = (0,) * (n + 1)
+        rec = [_LinearForm(zero[:j + 1] + (1 % dimension,) + zero[j + 2:], dimension) for j in range(n)]
+        try:
+            value = fn(rec)
+        except Exception:
+            value = None
+        if type(value) is _LinearForm:
+            result = value.c
+        elif type(value) is int:
+            result = (value % dimension,) + (0,) * n
+    if key is not None:
+        cache[key] = result
+    return result
+
+
+def _probed_coefficients(fn, n: int, unique_index: int, label, dimension: int) -> list:
+    """
+    Coefficient of each record position, read by evaluating the detector function on probes.
+
+    Evaluating on unit vectors gives the coefficients, and further probes check that the
+    function really is linear.
+
+    Raises:
+        ValueError: If the function has a constant term or is not linear.
+    """
+    base = int(fn([0] * n)) % dimension
+    if base != 0:
+        raise ValueError(f"detector {label!r} has a non-zero constant term")
+
+    def at(values):
+        return int(fn(list(values))) % dimension
+
+    position_coeffs = []
+    for j in range(n):
+        unit = [0] * n
+        unit[j] = 1
+        position_coeffs.append(at(unit))
+
+    def linear(values):
+        return sum(c * v for c, v in zip(position_coeffs, values)) % dimension
+
+    # Linearity checks: every pair of positions (catches products of two records), doubled
+    # unit vectors (catches squares), and random inputs (anything of higher degree).
+    probes = []
+    if n <= 40:
+        for i in range(n):
+            for j in range(i + 1, n):
+                v = [0] * n
+                v[i] = v[j] = 1
+                probes.append(v)
+    for j in range(n):
+        v = [0] * n
+        v[j] = 2 % dimension
+        probes.append(v)
+    rng = np.random.default_rng(1234 + unique_index)
+    probes += [[int(x) for x in rng.integers(0, dimension, size=n)] for _ in range(16)]
+    for v in probes:
+        if at(v) != linear(v):
+            raise ValueError(f"detector {label!r} is not linear in its records")
+    return position_coeffs
+
+
 def _detector_coefficients(detector_info, dimension: int):
     """
     Reads the linear coefficients of each detector and logical observable.
 
     sdim compiles each DETECTOR / LOGICAL_OBSERVABLE expression into a
-    function of its measurement records. Evaluating it on unit vectors gives
-    the coefficient of each record, and one random input checks that the
-    expression really is linear.
+    function of its measurement records. When the function is plain
+    arithmetic on its records (+, -, * by constants, % by a multiple of d),
+    one call on symbolic `_LinearForm` records gives its coefficients exactly
+    and proves it linear mod d. Otherwise it is evaluated on unit vectors to
+    get the coefficients, and on pairs, doubled unit vectors and random inputs
+    to check that it really is linear.
 
     Returns:
         tuple: Detector coefficients and observable coefficients (lists of
@@ -631,42 +1013,18 @@ def _detector_coefficients(detector_info, dimension: int):
         ValueError: If an expression has a constant term or is not linear.
     """
     dets, obs, det_labels, obs_labels = [], [], [], []
+    cache: dict = {}
     for unique_index, label, arguments, is_logical in detector_info.detector_data:
         fn = detector_info.detector_functions[unique_index]
         n = len(arguments)
-        base = int(fn([0] * n)) % dimension
-        if base != 0:
-            raise ValueError(f"detector {label!r} has a non-zero constant term")
-        def at(values):
-            return int(fn(list(values))) % dimension
-
-        position_coeffs = []
-        for j in range(n):
-            unit = [0] * n
-            unit[j] = 1
-            position_coeffs.append(at(unit))
-
-        def linear(values):
-            return sum(c * v for c, v in zip(position_coeffs, values)) % dimension
-
-        # Linearity checks: every pair of positions (catches products of two records), doubled
-        # unit vectors (catches squares), and random inputs (anything of higher degree).
-        probes = []
-        if n <= 40:
-            for i in range(n):
-                for j in range(i + 1, n):
-                    v = [0] * n
-                    v[i] = v[j] = 1
-                    probes.append(v)
-        for j in range(n):
-            v = [0] * n
-            v[j] = 2 % dimension
-            probes.append(v)
-        rng = np.random.default_rng(1234 + unique_index)
-        probes += [[int(x) for x in rng.integers(0, dimension, size=n)] for _ in range(16)]
-        for v in probes:
-            if at(v) != linear(v):
-                raise ValueError(f"detector {label!r} is not linear in its records")
+        form = _symbolic_coefficients(fn, n, dimension, cache)
+        if form is None:
+            position_coeffs = _probed_coefficients(fn, n, unique_index, label, dimension)
+        else:
+            # The same checks, in the same order, as the numeric path; every probe would agree.
+            if form[0] != 0:
+                raise ValueError(f"detector {label!r} has a non-zero constant term")
+            position_coeffs = form[1:]
 
         coeffs = {}
         for rec, c in zip(arguments, position_coeffs):
@@ -676,6 +1034,409 @@ def _detector_coefficients(detector_info, dimension: int):
         (obs if is_logical else dets).append(coeffs)
         (obs_labels if is_logical else det_labels).append(label or "")
     return dets, obs, det_labels, obs_labels
+
+
+def _plain_noise_gate(instr) -> bool:
+    """
+    True if `Program._build_ir` handles this N1 / N2 gate without raising.
+
+    Such gates only add to the IR's noise samples, which the DEM does not use,
+    so `_compile` can leave them out of the circuit it hands to `_build_ir`.
+    """
+    try:
+        params = instr.params
+        if instr.gate_id == _N1:
+            if params.get("noise_channel", params.get("channel", "d")) not in ("d", "f", "p"):
+                return False
+            float(params["prob"])
+        else:
+            if params.get("prob_dist", None) is not None:
+                return False
+            float(params.get("prob", 0.0))
+    except Exception:
+        return False
+    return True
+
+
+def _qudit_op_lists(gid, qa, qb, n_qudits: int):
+    """
+    For each qudit, the IR ops that can change its frame, in circuit order.
+
+    Returns (qb, qptr, qops, posa, posb). Qudit q's ops are qops[qptr[q]:qptr[q + 1]],
+    so the probe kernel only visits ops on qudits a fault has reached. posa / posb hold an
+    op's position in qops within the list of its first / second qudit. qb is a copy with
+    -1 for every single-qudit frame op, so the kernel takes its one-qudit branch.
+
+    Raises:
+        IndexError: If a frame op acts on a qudit outside 0 .. n_qudits - 1.
+    """
+    n_ops = len(gid)
+    frame_mask = np.isin(gid, np.array(sorted(_FRAME_GATES), dtype=np.int64))
+    two_mask = frame_mask & np.isin(gid, np.array(_TWO_QUDIT_FRAME_GATES, dtype=np.int64)) & (qb >= 0)
+    qb = np.where(frame_mask & ~two_mask, -1, qb)
+    frame_ops = np.flatnonzero(frame_mask)
+    two_ops = np.flatnonzero(two_mask)
+    ent_q = np.concatenate((qa[frame_ops], qb[two_ops]))
+    if len(ent_q) and (ent_q.min() < 0 or ent_q.max() >= n_qudits):
+        bad = int(ent_q.min() if ent_q.min() < 0 else ent_q.max())
+        raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
+    ent_op = np.concatenate((frame_ops, two_ops))
+    # An op's first-qudit entry comes before its second-qudit entry, which matters only if they coincide.
+    ent_second = np.concatenate((np.zeros(len(frame_ops), dtype=np.int64), np.ones(len(two_ops), dtype=np.int64)))
+    order = np.lexsort((ent_second, ent_op, ent_q))
+    qops = ent_op[order].astype(np.int64)
+    qptr = np.zeros(n_qudits + 1, dtype=np.int64)
+    qptr[1:] = np.cumsum(np.bincount(ent_q, minlength=n_qudits))
+    where = np.empty(len(order), dtype=np.int64)
+    where[order] = np.arange(len(order), dtype=np.int64)
+    posa = np.full(n_ops, -1, dtype=np.int64)
+    posb = np.full(n_ops, -1, dtype=np.int64)
+    posa[frame_ops] = where[:len(frame_ops)]
+    posb[two_ops] = where[len(frame_ops):]
+    return np.ascontiguousarray(qb, dtype=np.int64), qptr, qops, posa, posb
+
+
+# Unit faults of each noise-gate code: 0 = N1 'd', 1 = N1 'f', 2 = N1 'p', 3 = N2. Probe j of a
+# gate is a fault of kind _PROBE_KIND (0 = X, 1 = Z) on its first (_PROBE_QUDIT = 0) or second qudit.
+_N1_CODES = {"d": 0, "f": 1, "p": 2}
+_PROBE_COUNT = np.array([2, 1, 1, 4], dtype=np.int64)
+_PROBE_QUDIT = np.array([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 1]], dtype=np.int64)
+_PROBE_KIND = np.array([[0, 1, 0, 0], [0, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 1]], dtype=np.int64)
+
+
+def _merge_groups(group, probs, sources, ct, cv, cp) -> list:
+    """
+    Merges lines with the same canonical form, as `DetectorErrorModel.merge_lines` does.
+
+    Line j has group number group[j] (numbered in order of first appearance), probability
+    probs[j], source sources[j] and canonical entries cp[j]:cp[j + 1] of ct / cv. Each group
+    becomes one mechanism, in group order, whose probability merges its lines' in order and
+    whose source joins theirs with "+".
+    """
+    merged = []        # [probability, first line, member sources or None]
+    for j, g in enumerate(group):
+        if g == len(merged):
+            merged.append([probs[j], j, None])
+        else:
+            entry = merged[g]
+            entry[0] = _merge_pair(entry[0], probs[j])
+            if entry[2] is None:
+                entry[2] = [sources[entry[1]]]
+            entry[2].append(sources[j])
+    return [ErrorMechanism(probability, [dict(zip(ct[cp[j]:cp[j + 1]], cv[cp[j]:cp[j + 1]]))],
+                           sources[j] if parts is None else "+".join(parts))
+            for probability, j, parts in merged]
+
+
+def _lines_from_arrays(mechs: list, pls: list, d: int):
+    """
+    The mechanisms of `DetectorErrorModel.to_lines`, expanded and merged in numba.
+
+    pls[i] is the line probability of mechs[i]. Returns None if a target or
+    coefficient is not a Python int that fits in int64; the caller then
+    expands one dict at a time.
+    """
+    gens = [g for m in mechs for g in m.generators]
+    kinds = set(map(type, itertools.chain.from_iterable(gens)))
+    kinds |= set(map(type, itertools.chain.from_iterable(g.values() for g in gens)))
+    if not kinds <= {int}:
+        return None
+    gen_ptr = np.zeros(len(mechs) + 1, dtype=np.int64)
+    gen_ptr[1:] = np.cumsum(np.fromiter((len(m.generators) for m in mechs), dtype=np.int64, count=len(mechs)))
+    ent_ptr = np.zeros(len(gens) + 1, dtype=np.int64)
+    ent_ptr[1:] = np.cumsum(np.fromiter(map(len, gens), dtype=np.int64, count=len(gens)))
+    n_ent = int(ent_ptr[-1])
+    try:
+        ent_tgt = np.fromiter(itertools.chain.from_iterable(gens), dtype=np.int64, count=n_ent)
+    except OverflowError:
+        return None
+    ent_val = np.fromiter((v % d for g in gens for v in g.values()), dtype=np.int64, count=n_ent)
+    line_mech, lptr, ltgt, lval, bad = _expand_lines(gen_ptr, ent_ptr, ent_tgt, ent_val, d)
+    if bad >= 0:
+        # A leading coefficient with no inverse mod d (composite d). Raise what merge_lines raises.
+        lead = int(lval[lptr[bad]])
+        pow(lead, -1, d)
+        raise ValueError(f"{lead} is not invertible mod {d}")
+    group = np.empty(len(line_mech), dtype=np.int64)
+    _group_lines(lptr, ltgt, lval, group)
+    line_mech = line_mech.tolist()
+    return _merge_groups(group.tolist(), [pls[i] for i in line_mech], [mechs[i].source for i in line_mech],
+                         ltgt.tolist(), lval.tolist(), lptr.tolist())
+
+
+class _Compiled:
+    """
+    Unit-fault responses of every noise gate, as flat arrays.
+
+    Noise gate i has unit-fault probes probe_start[i]:probe_start[i + 1], and
+    probe k has response entries ptr[k]:ptr[k + 1] in tgt (targets, in the
+    order the kernel first touched them) and val (coefficients mod d).
+    """
+
+    def __init__(self, dimension, num_detectors, num_observables, detector_labels, observable_labels,
+                 ir_index, gate_id, codes, channels, q0, q1, prob, pi, probe_start, ptr, tgt, val):
+        self.dimension = dimension
+        self.num_detectors = num_detectors
+        self.num_observables = num_observables
+        self.detector_labels = detector_labels
+        self.observable_labels = observable_labels
+        self.ir_index = ir_index          # lists, one entry per noise gate
+        self.gate_id = gate_id
+        self.codes = codes
+        self.channels = channels
+        self.q0 = q0
+        self.q1 = q1
+        self.prob = prob
+        self.pi = pi
+        self.probe_start = probe_start    # arrays
+        self.ptr = ptr
+        self.tgt = tgt
+        self.val = val
+
+    def source(self, i: int) -> str:
+        if self.codes[i] == 3:
+            return f"N2@{self.ir_index[i]}:q{self.q0[i]},q{self.q1[i]}"
+        return f"N1[{self.channels[i]}]@{self.ir_index[i]}:q{self.q0[i]}"
+
+    def locations(self) -> list:
+        """The `NoiseLocation` list that `compile_unit_responses` returns."""
+        tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
+        responses = [dict(zip(tgt[a:b], val[a:b])) for a, b in zip(ptr[:-1], ptr[1:])]
+        start = self.probe_start.tolist()
+        out = []
+        for i in range(len(self.codes)):
+            if self.codes[i] == 3:
+                qudits, channel = (self.q0[i], self.q1[i]), "d2"
+            else:
+                qudits, channel = (self.q0[i],), self.channels[i]
+            out.append(NoiseLocation(self.ir_index[i], self.gate_id[i], qudits, channel, self.prob[i], self.pi[i],
+                                     responses[start[i]:start[i + 1]], self.source(i)))
+        return out
+
+    def mechanisms(self, merge: bool) -> list:
+        """
+        The mechanisms of `DetectorErrorModel.from_circuit`.
+
+        Every noise gate with prob > 0 and a visible unit fault gives one mechanism whose
+        generators are its non-empty responses. With `merge`, the result is the one
+        `DetectorErrorModel.merge_lines` gives: rank-1 mechanisms scaled so their first
+        coefficient is 1 and merged by line in order of first appearance, then the others.
+        """
+        n_loc = len(self.codes)
+        if n_loc == 0:
+            return []
+        d = self.dimension
+        nonempty = np.diff(self.ptr) > 0
+        start = self.probe_start
+        # Every noise gate has at least one probe, so reduceat sees no empty segment.
+        rank = np.add.reduceat(nonempty.astype(np.int64), start[:-1])
+        prob = np.array(self.prob, dtype=np.float64)
+        keep = (rank > 0) & ~(prob <= 0.0)
+        tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
+        nonempty_list = nonempty.tolist()
+        start_list = start.tolist()
+        pi = self.pi
+
+        def generators(i):
+            return [dict(zip(tgt[ptr[k]:ptr[k + 1]], val[ptr[k]:ptr[k + 1]]))
+                    for k in range(start_list[i], start_list[i + 1]) if nonempty_list[k]]
+
+        if not merge:
+            return [ErrorMechanism(pi[i], generators(i), self.source(i)) for i in np.flatnonzero(keep).tolist()]
+
+        ones = np.flatnonzero(keep & (rank == 1))
+        higher = np.flatnonzero(keep & (rank > 1)).tolist()
+        # The one non-empty probe of each rank-1 gate (only read for those gates).
+        probe_loc = np.repeat(np.arange(n_loc, dtype=np.int64), np.diff(start))
+        nonempty_probe = np.full(n_loc, -1, dtype=np.int64)
+        hits = np.flatnonzero(nonempty)
+        nonempty_probe[probe_loc[hits]] = hits
+        probes = nonempty_probe[ones]
+        n_entries = int((self.ptr[probes + 1] - self.ptr[probes]).sum())
+        cptr = np.zeros(len(probes) + 1, dtype=np.int64)
+        ctgt = np.empty(n_entries, dtype=np.int64)
+        cval = np.empty(n_entries, dtype=np.int64)
+        group = np.empty(len(probes), dtype=np.int64)
+        bad = _canonical_lines(self.ptr, self.tgt, self.val, probes, d, cptr, ctgt, cval, group)
+        if bad >= 0:
+            # Not invertible mod d (only possible for a composite d). Raise what merge_lines raises.
+            k = int(probes[bad])
+            lead = min(zip(tgt[ptr[k]:ptr[k + 1]], val[ptr[k]:ptr[k + 1]]))[1]
+            pow(lead, -1, d)
+            raise ValueError(f"{lead} is not invertible mod {d}")
+
+        ones = ones.tolist()
+        out = _merge_groups(group.tolist(), [pi[i] for i in ones], [self.source(i) for i in ones],
+                            ctgt.tolist(), cval.tolist(), cptr.tolist())
+        out += [ErrorMechanism(pi[i], generators(i), self.source(i)) for i in higher]
+        return out
+
+
+def _compile(circuit: Circuit) -> _Compiled:
+    """
+    Computes the unit-fault responses of every noise gate. See `compile_unit_responses`.
+
+    The noise gates are left out of the circuit handed to `Program._build_ir`
+    when that does not change what it returns or raises, since it would
+    otherwise draw a noise sample for each of them.
+    """
+    d = circuit.dimension
+    n_qudits = circuit.num_qudits
+
+    # One pass over the circuit: the non-noise ops, and each noise gate with its IR index
+    # (_build_ir drops identity gates, id 0) and the number of non-noise ops before it.
+    kept = []
+    keep = kept.append
+    noise = []
+    add_noise = noise.append
+    plain = True
+    checked = checked_gate = None
+    ir_index = -1
+    for instr in circuit.operations:
+        g = instr.gate_id
+        if g == 0:
+            continue
+        ir_index += 1
+        if g == _N1 or g == _N2:
+            add_noise((instr, ir_index, len(kept)))
+            # add_gate gives all the gates of one call the same params dict; check it once.
+            if plain and (instr.params is not checked or g != checked_gate):
+                plain = _plain_noise_gate(instr)
+                checked, checked_gate = instr.params, g
+        else:
+            keep(instr)
+
+    # _build_ir also samples one shot of noise; keep the caller's global RNG state untouched.
+    rng_state = np.random.get_state()
+    try:
+        if plain:
+            stripped = copy.copy(circuit)
+            stripped.operations = kept
+            ir_array, _, detector_info = Program._build_ir([stripped], 1)
+        else:
+            ir_array, _, detector_info = Program._build_ir([circuit], 1)
+    finally:
+        np.random.set_state(rng_state)
+    gid = np.ascontiguousarray(ir_array["gate_id"], dtype=np.int64)
+    qa = np.ascontiguousarray(ir_array["qudit_index"], dtype=np.int64)
+    qb = np.ascontiguousarray(ir_array["target_index"], dtype=np.int64)
+    n_ops = len(gid)
+
+    # MUL multiplies X by a and Z by a^-1 mod d. Only MUL ops use these; every other op holds 1.
+    scalar = np.asarray(ir_array["scalar"], dtype=np.int64)
+    mul_a = np.ones(n_ops, dtype=np.int64)
+    mul_inv = np.ones(n_ops, dtype=np.int64)
+    for i in np.flatnonzero(gid == _MUL):
+        mul_a[i] = int(scalar[i]) % d
+        mul_inv[i] = pow(int(mul_a[i]), -1, d)
+
+    # Measurement record index of each measuring op (sdim counts M and M_X only).
+    is_meas = (gid == _M) | (gid == _M_X)
+    rec_of_op = np.full(n_ops, -1, dtype=np.int64)
+    n_recs = int(is_meas.sum())
+    rec_of_op[is_meas] = np.arange(n_recs, dtype=np.int64)
+
+    qb, qptr, qops, posa, posb = _qudit_op_lists(gid, qa, qb, n_qudits)
+
+    # For each measurement record, the detectors / observables that use it and their coefficients,
+    # detectors first and then observables, each in order.
+    dets, obs, det_labels, obs_labels = _detector_coefficients(detector_info, d)
+    n_det = len(dets)
+    inc_rec, inc_tgt, inc_coef = [], [], []
+    for t, coeffs in enumerate(dets + obs):
+        inc_rec += coeffs.keys()
+        inc_tgt += [t] * len(coeffs)
+        inc_coef += coeffs.values()
+    inc_rec = np.array(inc_rec, dtype=np.int64)
+    by_rec = np.argsort(inc_rec, kind="stable")
+    rptr = np.zeros(n_recs + 1, dtype=np.int64)
+    rptr[1:] = np.cumsum(np.bincount(inc_rec, minlength=n_recs))
+    rtgt = np.array(inc_tgt, dtype=np.int64)[by_rec]
+    rcoef = np.array(inc_coef, dtype=np.int64)[by_rec]
+
+    # Noise gates in IR order. Raise on the first bad one, as compile_unit_responses always has.
+    # Consecutive gates that share a params dict (one add_gate call) share its parsed values.
+    den = {1: 1.0 - float(d) ** (-1), 2: 1.0 - float(d) ** (-2), 4: 1.0 - float(d) ** (-4)}
+    rows = []
+    add_row = rows.append
+    parsed_params = parsed_gate = parsed = None
+    for instr, ir_index, before in noise:
+        params = instr.params
+        g = instr.gate_id
+        if params is not parsed_params or g != parsed_gate:
+            parsed = None
+        if g == _N1:
+            if parsed is None:
+                channel = params.get("noise_channel", params.get("channel", "d"))
+                p = float(params.get("prob", 0.0))
+                q0 = int(instr.qudit_index)
+                if channel not in ("d", "f", "p"):
+                    raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {channel!r}.")
+                code = _N1_CODES[channel]
+                rank = 2 if code == 0 else 1
+                pi = p / den[rank]
+            else:
+                q0 = int(instr.qudit_index)
+            q1 = -1
+        else:
+            if parsed is None:
+                if params.get("prob_dist", None) is not None:
+                    raise ValueError("Compact DEMs support N2 with prob=... (uniform non-identity depolarizing); "
+                                     "use sdim.dem_legacy for arbitrary prob_dist at small d.")
+                p = float(params.get("prob", 0.0))
+                channel, code, rank = "d2", 3, 4
+                pi = p / den[rank]
+            q0, q1 = int(instr.qudit_index), int(instr.target_index)
+        if parsed is None:
+            if pi > 1.0 + 1e-12:
+                name = f"N2@{ir_index}:q{q0},q{q1}" if code == 3 else f"N1[{channel}]@{ir_index}:q{q0}"
+                raise ValueError(f"{name}: prob={p} is above the fully mixing value {den[rank]}. "
+                                 "The compact DEM can only represent noise up to full mixing.")
+            parsed = (channel, code, p, min(pi, 1.0))
+            parsed_params, parsed_gate = params, g
+        # The fault sits right after the gate: the kernel starts at the first op after probe_op.
+        add_row((ir_index, g, q0, q1, before - 1 if plain else ir_index) + parsed)
+    if rows:
+        ir_indices, gate_ids, q0s, q1s, probe_ops, channels, codes, probs, pis = (list(col) for col in zip(*rows))
+    else:
+        ir_indices, gate_ids, q0s, q1s, probe_ops, channels, codes, probs, pis = ([] for _ in range(9))
+
+    # Unit-fault probes of the noise gates. A probe (qudit, 0) is an X fault and (qudit, 1) a Z fault.
+    code_arr = np.array(codes, dtype=np.int64)
+    probe_start = np.zeros(len(codes) + 1, dtype=np.int64)
+    probe_start[1:] = np.cumsum(_PROBE_COUNT[code_arr])
+    n_noise_probes = int(probe_start[-1])
+    probe_loc = np.repeat(np.arange(len(codes), dtype=np.int64), _PROBE_COUNT[code_arr])
+    local = np.arange(n_noise_probes, dtype=np.int64) - probe_start[probe_loc]
+    probe_code = code_arr[probe_loc]
+    noise_qudit = np.where(_PROBE_QUDIT[probe_code, local] == 0,
+                           np.array(q0s, dtype=np.int64)[probe_loc], np.array(q1s, dtype=np.int64)[probe_loc])
+    noise_kind = _PROBE_KIND[probe_code, local]
+    noise_op = np.array(probe_ops, dtype=np.int64)[probe_loc]
+
+    # Determinism probes.  The frame simulator randomizes the Z frame at the start and after every
+    # M, M_X and RESET, and the unit-fault responses above assume those random parts cancel.  A unit
+    # Z fault at each of those points must therefore reach no detector or observable.
+    resets = np.flatnonzero((gid == _M) | (gid == _M_X) | (gid == _RESET))
+    probe_op = np.concatenate((noise_op, np.full(n_qudits, -1, dtype=np.int64), resets)).astype(np.int64)
+    probe_qudit = np.concatenate((noise_qudit, np.arange(n_qudits, dtype=np.int64), qa[resets])).astype(np.int64)
+    probe_kind = np.concatenate((noise_kind, np.ones(n_qudits + len(resets), dtype=np.int64))).astype(np.int64)
+    if len(probe_qudit) and (probe_qudit.min() < 0 or probe_qudit.max() >= n_qudits):
+        bad = int(probe_qudit.min() if probe_qudit.min() < 0 else probe_qudit.max())
+        raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
+
+    n_targets = n_det + len(obs)
+    ptr, tgt, val = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
+                                probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits)
+    random_targets = np.unique(tgt[ptr[n_noise_probes]:]).tolist()
+    if random_targets:
+        names = [(f"D{t}" if t < n_det else f"L{t - n_det}") for t in random_targets]
+        raise ValueError("These detectors / observables are not deterministic without noise, so they "
+                         f"have no detector error model: {', '.join(names[:20])}"
+                         + (" ..." if len(names) > 20 else ""))
+    end = int(ptr[n_noise_probes])
+    return _Compiled(d, n_det, len(obs), det_labels, obs_labels, ir_indices, gate_ids, codes, channels,
+                     q0s, q1s, probs, pis, probe_start, ptr[:n_noise_probes + 1], tgt[:end], val[:end])
 
 
 def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
@@ -698,189 +1459,59 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
         ValueError: If an N2 gate uses `prob_dist`, or a detector expression
             is not linear.
     """
-    d = circuit.dimension
-    # _build_ir also samples one shot of noise; keep the caller's global RNG state untouched.
-    rng_state = np.random.get_state()
-    try:
-        ir_array, _, detector_info = Program._build_ir([circuit], 1)
-    finally:
-        np.random.set_state(rng_state)
-    gid = np.ascontiguousarray(ir_array["gate_id"], dtype=np.int64)
-    qa = np.ascontiguousarray(ir_array["qudit_index"], dtype=np.int64)
-    qb = np.ascontiguousarray(ir_array["target_index"], dtype=np.int64)
-    n_ops = len(gid)
-    n_qudits = circuit.num_qudits
-
-    # MUL multiplies X by a and Z by a^-1 mod d. Only MUL ops use these; every other op holds 1.
-    scalar = np.asarray(ir_array["scalar"], dtype=np.int64)
-    mul_a = np.ones(n_ops, dtype=np.int64)
-    mul_inv = np.ones(n_ops, dtype=np.int64)
-    for i in np.flatnonzero(gid == _MUL):
-        mul_a[i] = int(scalar[i]) % d
-        mul_inv[i] = pow(int(mul_a[i]), -1, d)
-
-    # Measurement record index of each measuring op (sdim counts M and M_X only).
-    is_meas = (gid == _M) | (gid == _M_X)
-    rec_of_op = np.full(n_ops, -1, dtype=np.int64)
-    rec_of_op[is_meas] = np.arange(int(is_meas.sum()), dtype=np.int64)
-    n_recs = int(is_meas.sum())
-
-    # For each qudit, the IR ops that can change its frame, so the kernel only
-    # visits ops on qudits a fault has reached. posa / posb hold an op's index
-    # in the flattened lists of its first / second qudit.
-    frame_mask = np.isin(gid, np.array(sorted(_FRAME_GATES)))
-    per_qudit = [[] for _ in range(n_qudits)]
-    posa = np.full(n_ops, -1, dtype=np.int64)
-    posb = np.full(n_ops, -1, dtype=np.int64)
-    for i in np.flatnonzero(frame_mask):
-        a = int(qa[i])
-        posa[i] = len(per_qudit[a])
-        per_qudit[a].append(i)
-        if qb[i] >= 0 and gid[i] in (_CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP):
-            b = int(qb[i])
-            posb[i] = len(per_qudit[b])
-            per_qudit[b].append(i)
-        else:
-            # Single-qudit op, so the kernel takes its one-qudit branch.
-            qb[i] = -1
-    qptr = np.zeros(n_qudits + 1, dtype=np.int64)
-    qptr[1:] = np.cumsum([len(l) for l in per_qudit])
-    qops = np.array([i for l in per_qudit for i in l], dtype=np.int64)
-    frame_ops = np.flatnonzero(frame_mask)
-    posa[frame_ops] += qptr[qa[frame_ops]]
-    two = frame_ops[qb[frame_ops] >= 0]
-    posb[two] += qptr[qb[two]]
-
-    # For each measurement record, the detectors / observables that use it and their coefficients.
-    dets, obs, det_labels, obs_labels = _detector_coefficients(detector_info, d)
-    n_det = len(dets)
-    incidence = [[] for _ in range(n_recs)]
-    for t, coeffs in enumerate(dets):
-        for r, c in coeffs.items():
-            incidence[r].append((t, c))
-    for k, coeffs in enumerate(obs):
-        for r, c in coeffs.items():
-            incidence[r].append((n_det + k, c))
-    rptr = np.zeros(n_recs + 1, dtype=np.int64)
-    rptr[1:] = np.cumsum([len(l) for l in incidence])
-    rtgt = np.array([t for l in incidence for t, _ in l], dtype=np.int64)
-    rcoef = np.array([c for l in incidence for _, c in l], dtype=np.int64)
-
-    # Noise gates in IR order and the unit faults to probe for each.
-    # _build_ir drops identity gates (id 0), so they don't count toward ir_index.
-    # A probe (qudit, 0) is an X fault and (qudit, 1) is a Z fault.
-    locations = []
-    probe_op, probe_qudit, probe_kind = [], [], []
-    ir_index = -1
-    for instr in circuit.operations:
-        if instr.gate_id == 0:
-            continue
-        ir_index += 1
-        if instr.gate_id == _N1:
-            channel = instr.params.get("noise_channel", instr.params.get("channel", "d"))
-            p = float(instr.params.get("prob", 0.0))
-            q0 = int(instr.qudit_index)
-            if channel not in ("d", "f", "p"):
-                raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {channel!r}.")
-            kinds = {"d": [(q0, 0), (q0, 1)], "f": [(q0, 0)], "p": [(q0, 1)]}[channel]
-            rank = len(kinds)
-            pi = p / (1.0 - float(d) ** (-rank))
-            qudits = (q0,)
-            name = f"N1[{channel}]@{ir_index}:q{q0}"
-        elif instr.gate_id == _N2:
-            if instr.params.get("prob_dist", None) is not None:
-                raise ValueError("Compact DEMs support N2 with prob=... (uniform non-identity depolarizing); "
-                                 "use sdim.dem_legacy for arbitrary prob_dist at small d.")
-            p = float(instr.params.get("prob", 0.0))
-            q0, q1 = int(instr.qudit_index), int(instr.target_index)
-            kinds = [(q0, 0), (q0, 1), (q1, 0), (q1, 1)]
-            channel = "d2"
-            rank = 4
-            pi = p / (1.0 - float(d) ** (-4))
-            qudits = (q0, q1)
-            name = f"N2@{ir_index}:q{q0},q{q1}"
-        else:
-            continue
-        if pi > 1.0 + 1e-12:
-            raise ValueError(f"{name}: prob={p} is above the fully mixing value {1.0 - float(d) ** (-rank)}. "
-                             "The compact DEM can only represent noise up to full mixing.")
-        pi = min(pi, 1.0)
-        first_probe = len(probe_op)
-        for (qq, kind) in kinds:
-            probe_op.append(ir_index)
-            probe_qudit.append(qq)
-            probe_kind.append(kind)
-        locations.append(NoiseLocation(ir_index, instr.gate_id, qudits, channel, p, pi,
-                                       list(range(first_probe, len(probe_op))), name))
-
-    # Determinism probes.  The frame simulator randomizes the Z frame at the start and after every
-    # M, M_X and RESET, and the unit-fault responses above assume those random parts cancel.  A unit
-    # Z fault at each of those points must therefore reach no detector or observable.
-    n_noise_probes = len(probe_op)
-    for q in range(n_qudits):
-        probe_op.append(-1)
-        probe_qudit.append(q)
-        probe_kind.append(1)
-    for i in np.flatnonzero((gid == _M) | (gid == _M_X) | (gid == _RESET)):
-        probe_op.append(int(i))
-        probe_qudit.append(int(qa[i]))
-        probe_kind.append(1)
-
-    probe_op = np.array(probe_op, dtype=np.int64)
-    probe_qudit = np.array(probe_qudit, dtype=np.int64)
-    probe_kind = np.array(probe_kind, dtype=np.int64)
-    n_targets = n_det + len(obs)
-    responses = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                            probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits)
-    random_targets = sorted({t for r in responses[n_noise_probes:] for t in r})
-    if random_targets:
-        names = [(f"D{t}" if t < n_det else f"L{t - n_det}") for t in random_targets]
-        raise ValueError("These detectors / observables are not deterministic without noise, so they "
-                         f"have no detector error model: {', '.join(names[:20])}"
-                         + (" ..." if len(names) > 20 else ""))
-    # Until now loc.responses held probe indices. Swap in the actual responses.
-    for loc in locations:
-        loc.responses = [responses[i] for i in loc.responses]
-    return CompiledResponses(n_det, len(obs), det_labels, obs_labels, locations)
+    with _gc_paused():
+        compiled = _compile(circuit)
+        return CompiledResponses(compiled.num_detectors, compiled.num_observables, compiled.detector_labels,
+                                 compiled.observable_labels, compiled.locations())
 
 
 def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits, chunk=1 << 15):
+                probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits, block=None, cap=16):
     """
-    Runs `_probe_kernel` over all probes in chunks.
+    Runs `_probe_kernel` over all probes, in blocks of `block` probes.
 
-    The kernel writes into preallocated output buffers sized for `cap` entries
-    per probe. When they fill up the chunk is rerun with buffers 4x larger. A
-    probe never has more than `n_targets` entries, so this always terminates.
+    With at least `_PROBE_PARALLEL_MIN` probes, the blocks run on several
+    threads (see `_run_tasks`), each thread taking the next block as it
+    finishes one, since blocks differ a lot in cost (early faults travel
+    further). By default a block is about 1/8 of a thread's share, between 64
+    and 1024 probes. Each block starts with room for `cap` entries per probe
+    (at most 2**20 in all) and grows its buffers as needed. The blocks only
+    change how the work is split, not the result.
 
     Returns:
-        list[dict[int, int]]: Sparse response {target: coefficient} of each probe.
+        tuple: (ptr, tgt, val), the response of probe k being the entries
+            ptr[k]:ptr[k + 1] of tgt (targets) and val (coefficients mod d),
+            in the order the kernel first touched each target.
     """
-    out = []
-    for start in range(0, len(probe_op), chunk):
-        stop = min(start + chunk, len(probe_op))
-        cap = 32
-        while True:
-            ptr = np.zeros(stop - start + 1, dtype=np.int64)
-            tgt = np.zeros((stop - start) * cap, dtype=np.int64)
-            val = np.zeros((stop - start) * cap, dtype=np.int64)
-            status = _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                                   probe_op[start:stop], probe_qudit[start:stop], probe_kind[start:stop],
-                                   d, n_targets, max(n_qudits, 1), ptr, tgt, val)
-            if status == 0:
-                break
-            if status != 1 or cap >= n_targets:
-                raise RuntimeError(f"unit-fault propagation failed with status {status}")
-            cap = min(cap * 4, max(n_targets, 1))
-        for i in range(stop - start):
-            a, b = ptr[i], ptr[i + 1]
-            out.append({int(t): int(v) for t, v in zip(tgt[a:b], val[a:b])})
-    return out
+    n = len(probe_op)
+    n_threads = _thread_count() if n >= _PROBE_PARALLEL_MIN else 1
+    if block is None:
+        block = max(n, 1) if n_threads == 1 else min(1024, max(64, -(-n // (8 * n_threads))))
+    n_blocks = -(-n // block)
+    max_slots = max(n_qudits, 1)
+    results = [None] * n_blocks
+
+    def task(b):
+        lo, hi = b * block, min((b + 1) * block, n)
+        results[b] = _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt,
+                                   rcoef, probe_op[lo:hi], probe_qudit[lo:hi], probe_kind[lo:hi], d, n_targets,
+                                   max_slots, max(min((hi - lo) * cap, 1 << 20), 1))
+
+    _run_tasks(task, n_blocks, n_threads)
+    counts = [np.zeros(1, dtype=np.int64)]
+    tgts, vals = [np.zeros(0, dtype=np.int64)], [np.zeros(0, dtype=np.int64)]
+    for status, bptr, btgt, bval in results:
+        if status != 0:
+            raise RuntimeError(f"unit-fault propagation failed with status {status}")
+        counts.append(np.diff(bptr))
+        tgts.append(btgt)
+        vals.append(bval)
+    return np.cumsum(np.concatenate(counts)), np.concatenate(tgts), np.concatenate(vals)
 
 
-@njit(cache=True)
+@njit(nogil=True, cache=True)
 def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                  probe_op, probe_qudit, probe_kind, d, n_targets, max_slots, out_ptr, out_tgt, out_val):
+                  probe_op, probe_qudit, probe_kind, d, n_targets, max_slots, cap):
     """
     Pushes unit faults through the circuit, one probe at a time.
 
@@ -898,23 +1529,30 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
     `mul_a` and `mul_inv` hold, per op, the MUL scalar a mod d and its inverse
     (1 for every other op).
 
+    The output starts with room for `cap` entries and doubles whenever a
+    probe's response would not fit.
+
     Returns:
-        int: 0 on success, 1 if the output buffers filled up, 2 if a fault
-            reached more than `max_slots` qudits (impossible when `max_slots`
-            is the number of qudits).
+        tuple: (status, out_ptr, out_tgt, out_val). status is 0 on success and
+            2 if a fault reached more than `max_slots` qudits (impossible when
+            `max_slots` is the number of qudits). Probe p's response is the
+            entries out_ptr[p]:out_ptr[p + 1] of out_tgt / out_val.
     """
     smax = max_slots
+    n_probes = probe_op.shape[0]
     sq = np.empty(smax, dtype=np.int64)
     sx = np.empty(smax, dtype=np.int64)
     sz = np.empty(smax, dtype=np.int64)
     scur = np.empty(smax, dtype=np.int64)
     acc = np.zeros(n_targets, dtype=np.int64)
     touched = np.empty(n_targets, dtype=np.int64)
-    is_touched = np.zeros(n_targets, dtype=np.bool_)
-    cap_total = out_tgt.shape[0]
+    is_touched = np.zeros(n_targets, dtype=np.int64)
+    out_ptr = np.zeros(n_probes + 1, dtype=np.int64)
+    out_tgt = np.empty(max(cap, 1), dtype=np.int64)
+    out_val = np.empty(max(cap, 1), dtype=np.int64)
     w = 0
     big = 1 << 62
-    for p in range(probe_op.shape[0]):
+    for p in range(n_probes):
         u = probe_qudit[p]
         nslot = 1
         sq[0] = u
@@ -973,8 +1611,8 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                         for k in range(rptr[r], rptr[r + 1]):
                             t = rtgt[k]
                             acc[t] = (acc[t] + rcoef[k] * nx) % d
-                            if not is_touched[t]:
-                                is_touched[t] = True
+                            if is_touched[t] == 0:
+                                is_touched[t] = 1
                                 touched[nt] = t
                                 nt += 1
                 elif g == 16:  # RESET
@@ -999,7 +1637,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                         sb = s
                 if sa < 0:
                     if nslot >= smax:
-                        return 2
+                        return 2, out_ptr, out_tgt[:0], out_val[:0]
                     sa = nslot
                     sq[sa] = a
                     sx[sa] = 0
@@ -1008,7 +1646,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                     nslot += 1
                 if sb < 0:
                     if nslot >= smax:
-                        return 2
+                        return 2, out_ptr, out_tgt[:0], out_val[:0]
                     sb = nslot
                     sq[sb] = b
                     sx[sb] = 0
@@ -1053,66 +1691,600 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                     scur[s] = scur[nslot]
                 else:
                     s += 1
-        # Write out this probe's non-zero totals and clear the accumulator.
+        # Write out this probe's non-zero totals and clear the accumulator. They are at most nt.
         out_ptr[p] = w
+        if w + nt > out_tgt.shape[0]:
+            size = 2 * out_tgt.shape[0]
+            while size < w + nt:
+                size *= 2
+            grown_tgt = np.empty(size, dtype=np.int64)
+            grown_val = np.empty(size, dtype=np.int64)
+            for i in range(w):
+                grown_tgt[i] = out_tgt[i]
+                grown_val[i] = out_val[i]
+            out_tgt = grown_tgt
+            out_val = grown_val
         for i in range(nt):
             t = touched[i]
             if acc[t] != 0:
-                if w >= cap_total:
-                    return 1
                 out_tgt[w] = t
                 out_val[w] = acc[t]
                 w += 1
             acc[t] = 0
-            is_touched[t] = False
-    out_ptr[probe_op.shape[0]] = w
-    return 0
+            is_touched[t] = 0
+    out_ptr[n_probes] = w
+    return 0, out_ptr, out_tgt[:w], out_val[:w]
 
 
 @njit(cache=True)
-def _sample_kernel(out, order, class_start, class_end, class_prob, gen_ptr, ent_ptr, ent_tgt, ent_val, d, seed):
-    """
-    Fills `out` with sampled detector / observable values. See `DetectorErrorModel.sample`.
-
-    A class of n mechanisms that share probability pi is n * shots independent
-    coin flips. The number of misses before the next hit is geometric,
-    floor(log(u) / log(1 - pi)), so the loop jumps from one firing to the next
-    instead of flipping every coin.
-    """
-    np.random.seed(seed)
-    shots = out.shape[0]
-    for c in range(class_start.shape[0]):
-        pi = class_prob[c]
-        if pi <= 0.0:
-            continue
-        lo = class_start[c]
-        n = class_end[c] - lo
-        total = n * shots
-        log_keep = np.log1p(-pi) if pi < 1.0 else -np.inf
-        pos = -1
+def _sort_pairs(keys, vals, lo, hi):
+    """Sorts keys[lo:hi] in place, moving vals[lo:hi] along with them (insertion sort, or heapsort)."""
+    n = hi - lo
+    if n <= 32:
+        for k in range(lo + 1, hi):
+            t = keys[k]
+            v = vals[k]
+            j = k
+            while j > lo and keys[j - 1] > t:
+                keys[j] = keys[j - 1]
+                vals[j] = vals[j - 1]
+                j -= 1
+            keys[j] = t
+            vals[j] = v
+        return
+    # Heapsort on the slice, in one loop so that it is one function to compile. The first n // 2
+    # steps build the heap (sifting down roots n // 2 - 1 .. 0); each later step moves the largest
+    # key to the end of the heap, which shrinks by one, and sifts down the new root.
+    half = n // 2
+    size = n
+    for step in range(half + n - 1):
+        if step < half:
+            root = half - 1 - step
+        else:
+            size = n - 1 - (step - half)
+            t = keys[lo]
+            keys[lo] = keys[lo + size]
+            keys[lo + size] = t
+            v = vals[lo]
+            vals[lo] = vals[lo + size]
+            vals[lo + size] = v
+            root = 0
         while True:
-            if pi >= 1.0:
-                pos += 1
-            else:
-                u = np.random.random()
-                while u <= 0.0:
-                    u = np.random.random()
-                skip = np.floor(np.log(u) / log_keep)
-                # For tiny pi the skip can exceed int64; anything past the end just means "done".
-                if skip >= total - 1 - pos:
-                    break
-                pos += 1 + np.int64(skip)
-            if pos >= total:
+            child = 2 * root + 1
+            if child >= size:
                 break
-            shot = pos // n
-            m = order[lo + pos % n]
-            for gi in range(gen_ptr[m], gen_ptr[m + 1]):
-                a = np.random.randint(0, d)
-                if a == 0:
+            if child + 1 < size and keys[lo + child + 1] > keys[lo + child]:
+                child += 1
+            if keys[lo + root] >= keys[lo + child]:
+                break
+            t = keys[lo + root]
+            keys[lo + root] = keys[lo + child]
+            keys[lo + child] = t
+            v = vals[lo + root]
+            vals[lo + root] = vals[lo + child]
+            vals[lo + child] = v
+            root = child
+
+
+@njit(cache=True)
+def _mod_inverse(a, m):
+    """The inverse of a mod m in 0 .. m - 1, or -1 if gcd(a, m) != 1."""
+    t, new_t, r, new_r = 0, 1, m, a % m
+    while new_r != 0:
+        q = r // new_r
+        t, new_t = new_t, t - q * new_t
+        r, new_r = new_r, r - q * new_r
+    if r != 1:
+        return -1
+    return t % m
+
+
+@njit(inline="always")
+def _line_hash(cptr, ctgt, cval, i):
+    h = np.uint64(0x9E3779B97F4A7C15) ^ np.uint64(cptr[i + 1] - cptr[i])
+    for k in range(cptr[i], cptr[i + 1]):
+        h = (h ^ np.uint64(ctgt[k])) * np.uint64(0xBF58476D1CE4E5B9)
+        h = (h ^ np.uint64(cval[k])) * np.uint64(0x94D049BB133111EB)
+        h ^= h >> np.uint64(31)
+    return np.int64(h >> np.uint64(1))
+
+
+@njit(inline="always")
+def _same_line(cptr, ctgt, cval, i, j):
+    n = cptr[i + 1] - cptr[i]
+    if cptr[j + 1] - cptr[j] != n:
+        return False
+    a = cptr[i]
+    b = cptr[j]
+    for k in range(n):
+        if ctgt[a + k] != ctgt[b + k] or cval[a + k] != cval[b + k]:
+            return False
+    return True
+
+
+@njit(cache=True)
+def _canonical_lines(ptr, tgt, val, probes, d, cptr, ctgt, cval, group):
+    """
+    Canonical form and line class of rank-1 mechanisms, as in `_canonical_line` and `merge_lines`.
+
+    Mechanism i is the response probes[i] (entries ptr[p]:ptr[p + 1] of tgt / val). Its
+    entries are sorted by target and scaled so the first coefficient is 1, and written to
+    cptr / ctgt / cval. group[i] numbers the distinct canonical forms in order of first
+    appearance.
+
+    Returns:
+        int: -1 on success, or the first i whose leading coefficient is not invertible mod d.
+    """
+    m = probes.shape[0]
+    w = 0
+    cptr[0] = 0
+    for i in range(m):
+        a = ptr[probes[i]]
+        n = ptr[probes[i] + 1] - a
+        for k in range(n):
+            ctgt[w + k] = tgt[a + k]
+            cval[w + k] = val[a + k]
+        _sort_pairs(ctgt, cval, w, w + n)
+        inv = _mod_inverse(cval[w], d)
+        if inv < 0:
+            return i
+        for k in range(n):
+            cval[w + k] = (cval[w + k] * inv) % d
+        w += n
+        cptr[i + 1] = w
+    _group_lines(cptr, ctgt, cval, group)
+    return -1
+
+
+@njit(cache=True)
+def _group_lines(cptr, ctgt, cval, group):
+    """
+    Numbers equal lines (entries cptr[i]:cptr[i + 1] of ctgt / cval) in order of first appearance.
+
+    Uses an open-addressing hash table, and compares entries on every hash match.
+    """
+    m = cptr.shape[0] - 1
+    cap = 2
+    while cap < 2 * m:
+        cap *= 2
+    mask = cap - 1
+    table = np.empty(cap, dtype=np.int64)
+    for s in range(cap):
+        table[s] = -1
+    hashes = np.empty(m, dtype=np.int64)
+    n_groups = 0
+    for i in range(m):
+        h = _line_hash(cptr, ctgt, cval, i)
+        hashes[i] = h
+        s = h & mask
+        while True:
+            r = table[s]
+            if r < 0:
+                table[s] = i
+                group[i] = n_groups
+                n_groups += 1
+                break
+            if hashes[r] == h and _same_line(cptr, ctgt, cval, r, i):
+                group[i] = group[r]
+                break
+            s = (s + 1) & mask
+    return n_groups
+
+
+@njit(cache=True)
+def _expand_lines(gen_ptr, ent_ptr, ent_tgt, ent_val, d):
+    """
+    The line mechanisms of `DetectorErrorModel.to_lines`, in canonical form.
+
+    For each mechanism (generators gen_ptr[i]:gen_ptr[i + 1], entries ent_ptr[g]:ent_ptr[g + 1]
+    with coefficients already reduced mod d), every point of `_projective_points(d, k)` in the
+    same order gives sum_j point_j * generator_j. Non-zero results are sorted by target and
+    scaled so the first coefficient is 1, as `merge_lines` does.
+
+    Returns:
+        tuple: (line_mech, lptr, ltgt, lval, bad). Line l came from mechanism line_mech[l] and
+            has entries lptr[l]:lptr[l + 1]. bad is -1, or the index of a line whose leading
+            coefficient is not invertible mod d; that line is the last one, left unscaled.
+    """
+    n_mech = gen_ptr.shape[0] - 1
+    line_mech = np.empty(16, dtype=np.int64)
+    lptr = np.zeros(17, dtype=np.int64)
+    ltgt = np.empty(64, dtype=np.int64)
+    lval = np.empty(64, dtype=np.int64)
+    n_lines = 0
+    w = 0
+    for i in range(n_mech):
+        g0 = gen_ptr[i]
+        k = gen_ptr[i + 1] - g0
+        if k == 0:
+            continue
+        # The distinct targets of the mechanism, sorted.
+        e0 = ent_ptr[g0]
+        e1 = ent_ptr[g0 + k]
+        cols = np.empty(e1 - e0, dtype=np.int64)
+        for e in range(e1 - e0):
+            cols[e] = ent_tgt[e0 + e]
+        spare = np.zeros(e1 - e0, dtype=np.int64)
+        _sort_pairs(cols, spare, 0, e1 - e0)
+        m = 0
+        for e in range(e1 - e0):
+            if m == 0 or cols[e] != cols[m - 1]:
+                cols[m] = cols[e]
+                m += 1
+        mat = np.zeros((k, m), dtype=np.int64)
+        for j in range(k):
+            for e in range(ent_ptr[g0 + j], ent_ptr[g0 + j + 1]):
+                lo_u = 0
+                hi_u = m
+                while lo_u < hi_u:
+                    mid = (lo_u + hi_u) // 2
+                    if cols[mid] < ent_tgt[e]:
+                        lo_u = mid + 1
+                    else:
+                        hi_u = mid
+                mat[j, lo_u] = (mat[j, lo_u] + ent_val[e]) % d
+        coeff = np.zeros(k, dtype=np.int64)
+        vals = np.empty(m, dtype=np.int64)
+        for lead in range(k):
+            n_tail = 1
+            for _ in range(k - lead - 1):
+                n_tail *= d
+            for tail in range(n_tail):
+                # The point (0, ..., 0, 1, tail digits), last digit fastest as in itertools.product.
+                for j in range(k):
+                    coeff[j] = 0
+                coeff[lead] = 1
+                x = tail
+                for pos in range(k - 1, lead, -1):
+                    coeff[pos] = x % d
+                    x //= d
+                count = 0
+                first = -1
+                for u in range(m):
+                    acc = 0
+                    for j in range(lead, k):
+                        if coeff[j] != 0:
+                            acc = (acc + coeff[j] * mat[j, u]) % d
+                    vals[u] = acc
+                    if acc != 0:
+                        count += 1
+                        if first < 0:
+                            first = u
+                if count == 0:
                     continue
-                for k in range(ent_ptr[gi], ent_ptr[gi + 1]):
-                    t = ent_tgt[k]
-                    out[shot, t] = (out[shot, t] + a * ent_val[k]) % d
+                inv = _mod_inverse(vals[first], d)
+                # Room for one more line.
+                if n_lines >= line_mech.shape[0]:
+                    size = 2 * line_mech.shape[0]
+                    grown = np.empty(size, dtype=np.int64)
+                    grown_ptr = np.zeros(size + 1, dtype=np.int64)
+                    for j in range(n_lines):
+                        grown[j] = line_mech[j]
+                        grown_ptr[j] = lptr[j]
+                    grown_ptr[n_lines] = lptr[n_lines]
+                    line_mech = grown
+                    lptr = grown_ptr
+                if w + count > ltgt.shape[0]:
+                    size = 2 * ltgt.shape[0]
+                    while w + count > size:
+                        size *= 2
+                    grown_t = np.empty(size, dtype=np.int64)
+                    grown_v = np.empty(size, dtype=np.int64)
+                    for j in range(w):
+                        grown_t[j] = ltgt[j]
+                        grown_v[j] = lval[j]
+                    ltgt = grown_t
+                    lval = grown_v
+                for u in range(m):
+                    if vals[u] != 0:
+                        ltgt[w] = cols[u]
+                        lval[w] = vals[u] if inv < 0 else (vals[u] * inv) % d
+                        w += 1
+                line_mech[n_lines] = i
+                n_lines += 1
+                lptr[n_lines] = w
+                if inv < 0:
+                    return line_mech[:n_lines], lptr[:n_lines + 1], ltgt[:w], lval[:w], n_lines - 1
+    return line_mech[:n_lines], lptr[:n_lines + 1], ltgt[:w], lval[:w], -1
+
+
+@njit(inline="always")
+def _rotl(x, k):
+    return (x << np.uint64(k)) | (x >> np.uint64(64 - k))
+
+
+@njit(inline="always")
+def _next_u64(s0, s1, s2, s3):
+    """One step of xoshiro256**. Returns the output and the new state."""
+    result = _rotl(s1 * np.uint64(5), 7) * np.uint64(9)
+    t = s1 << np.uint64(17)
+    s2 ^= s0
+    s3 ^= s1
+    s1 ^= s2
+    s0 ^= s3
+    s2 ^= t
+    s3 = _rotl(s3, 45)
+    return result, s0, s1, s2, s3
+
+
+@njit(inline="always")
+def _open_unit(r):
+    """Maps 64 random bits to a float in (0, 1): the top 53 bits plus one half, times 2**-53."""
+    return (np.float64(r >> np.uint64(11)) + 0.5) * (1.0 / 9007199254740992.0)
+
+
+@njit(cache=True)
+def _sample_plan(mech_prob, bits, n_gens, sizes, ent_tgt, ent_val, d, n_targets, montgomery, pack_like):
+    """
+    Lays out the arrays of `DetectorErrorModel._flatten` for `_sample_chunks`.
+
+    Mechanisms with pi >= 1 fire in every shot. Those with 0 < pi < 1 are
+    grouped into bins by the exponent and top 3 mantissa bits of pi, so the
+    probabilities in a bin are within a factor 9/8; bin_pmax is the largest
+    one and bin_log_keep its log(1 - pmax). Mechanisms with pi <= 0 or no
+    entries are left out.
+
+    Each mechanism kept becomes one block of `pack`, so firing it reads one
+    stretch of memory: the number of generators, then for each generator the
+    number of entries followed by (target, value) pairs. The value is the
+    coefficient reduced mod d, in Montgomery form v * 2**32 mod d when
+    `montgomery` (odd d). info[k] = (block offset, probability bits) for the
+    k-th mechanism in bin order (bins in increasing probability, mechanisms
+    in index order within a bin); always_off holds the blocks of pi >= 1.
+
+    `pack` has the dtype of `pack_like`. int32 is enough when every target is
+    below 2**31; values are below d, which is below 2**31. `bits` is
+    mech_prob viewed as int64.
+
+    Returns:
+        tuple: (status, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost).
+            status is -1 if all is well, -2 if a probability is NaN, or the
+            index of an entry whose target is out of range. cost estimates the
+            work per shot.
+    """
+    n_mech = mech_prob.shape[0]
+    n_gen = sizes.shape[0]
+    gen_ptr = np.zeros(n_mech + 1, dtype=np.int64)
+    for i in range(n_mech):
+        gen_ptr[i + 1] = gen_ptr[i] + n_gens[i]
+    ent_ptr = np.zeros(n_gen + 1, dtype=np.int64)
+    for g in range(n_gen):
+        ent_ptr[g + 1] = ent_ptr[g] + sizes[g]
+    # Allocations use few distinct (shape, dtype) forms, since numba compiles each form separately.
+    empty = np.zeros(0, dtype=np.int64)
+    no_pack = np.empty(0, dtype=pack_like.dtype)
+    no_info = np.empty((0, 2), dtype=np.int64)
+    no_float = np.empty(0, dtype=np.float64)
+    for k in range(ent_tgt.shape[0]):
+        if ent_tgt[k] < 0 or ent_tgt[k] >= n_targets:
+            return k, no_pack, no_info, empty, empty, no_float, no_float, 0.0
+        v = ent_val[k] % d
+        ent_val[k] = (v << 32) % d if montgomery else v
+    for i in range(n_mech):
+        if np.isnan(mech_prob[i]):
+            return -2, no_pack, no_info, empty, empty, no_float, no_float, 0.0
+    # Classify the mechanisms and estimate the work per shot.
+    n_always = 0
+    n_live = 0
+    keys = np.empty(n_mech, dtype=np.int64)
+    cost = 0.0
+    for i in range(n_mech):
+        work = 0
+        for g in range(gen_ptr[i], gen_ptr[i + 1]):
+            work += 1 + ent_ptr[g + 1] - ent_ptr[g]
+        if ent_ptr[gen_ptr[i + 1]] == ent_ptr[gen_ptr[i]]:
+            keys[i] = -1
+        elif mech_prob[i] >= 1.0:
+            keys[i] = -2
+            n_always += 1
+            cost += work
+        elif mech_prob[i] > 0.0:
+            # For positive doubles the bit pattern grows with the value.
+            keys[i] = bits[i] >> 49
+            n_live += 1
+            cost += mech_prob[i] * work
+        else:
+            keys[i] = -1
+    # Counting sort by key (bits >> 49 of a positive double is below 2**14). It is stable, so
+    # mechanisms stay in index order within a bin.
+    counts = np.zeros((1 << 14) + 1, dtype=np.int64)
+    for i in range(n_mech):
+        if keys[i] >= 0:
+            counts[keys[i] + 1] += 1
+    n_bins = 0
+    for key in range(1 << 14):
+        if counts[key + 1] > 0:
+            n_bins += 1
+        counts[key + 1] += counts[key]
+    order = np.empty(n_live + n_always, dtype=np.int64)
+    ia = n_live
+    for i in range(n_mech):
+        if keys[i] >= 0:
+            order[counts[keys[i]]] = i
+            counts[keys[i]] += 1
+        elif keys[i] == -2:
+            order[ia] = i
+            ia += 1
+    # Pack the mechanisms in that order: bins first, then the ones that always fire.
+    size = 0
+    for j in range(n_live + n_always):
+        i = order[j]
+        size += 1 + (gen_ptr[i + 1] - gen_ptr[i]) + 2 * (ent_ptr[gen_ptr[i + 1]] - ent_ptr[gen_ptr[i]])
+    pack = np.empty(size, dtype=pack_like.dtype)
+    info = np.empty((n_live, 2), dtype=np.int64)
+    always_off = np.empty(n_always, dtype=np.int64)
+    w = 0
+    for j in range(n_live + n_always):
+        i = order[j]
+        if j < n_live:
+            info[j, 0] = w
+            info[j, 1] = bits[i]
+        else:
+            always_off[j - n_live] = w
+        pack[w] = gen_ptr[i + 1] - gen_ptr[i]
+        w += 1
+        for g in range(gen_ptr[i], gen_ptr[i + 1]):
+            pack[w] = ent_ptr[g + 1] - ent_ptr[g]
+            w += 1
+            for e in range(ent_ptr[g], ent_ptr[g + 1]):
+                pack[w] = ent_tgt[e]
+                pack[w + 1] = ent_val[e]
+                w += 2
+    bin_ptr = np.zeros(n_bins + 1, dtype=np.int64)
+    bin_pmax = np.empty(n_bins, dtype=np.float64)   # every bin has a first mechanism, which sets it
+    b = -1
+    for j in range(n_live):
+        p = mech_prob[order[j]]
+        if j == 0 or keys[order[j]] != keys[order[j - 1]]:
+            b += 1
+            bin_ptr[b] = j
+            bin_pmax[b] = p
+        elif p > bin_pmax[b]:
+            bin_pmax[b] = p
+    bin_ptr[n_bins] = n_live
+    bin_log_keep = np.empty(n_bins, dtype=np.float64)
+    for b in range(n_bins):
+        bin_log_keep[b] = math.log1p(-bin_pmax[b])
+    cost += n_bins
+    return -1, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost
+
+
+@njit(nogil=True, cache=True)
+def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_log_keep, info, info_p, always_off,
+                   pack, d, thresh, nprime):
+    """
+    Samples blocks c_lo .. c_hi - 1. Block c is rows c * chunk onwards, drawn from the xoshiro256** state states[c].
+
+    See `DetectorErrorModel.sample`. A block only uses its own random state and
+    only writes its own rows, so blocks can run on any thread in any order.
+
+    The mechanisms of bin b (info[bin_ptr[b]:bin_ptr[b + 1]]) are n_b coins
+    per shot, n_b * shots coins in a block. Each is a candidate with
+    probability pmax = bin_pmax[b], and the number of misses before the next
+    candidate is geometric, floor(log(u) / log(1 - pmax)), so the loop jumps
+    from one candidate to the next. A candidate mechanism with probability
+    pi < pmax fires with probability pi / pmax, so overall it fires with
+    probability pi, independently of every other coin. nxt[b] holds the next
+    candidate of bin b, so each shot's row is finished before the next. The
+    mechanisms at always_off fire in every shot. info_p is info viewed as
+    float64, so info_p[k, 1] is the probability of the k-th binned mechanism.
+
+    Within a shot the always-on mechanisms come first, then the bins in
+    order. Each candidate draws its thinning coin (when pi < pmax), then its
+    coefficients if it fires, then the skip to the next candidate.
+
+    A firing mechanism adds sum_j a_j * generator_j, with each a_j uniform on
+    Z_d by Lemire's method on the top 32 bits of a draw: (x * d) >> 32 is
+    uniform once draws whose low half falls below thresh = 2**32 mod d are
+    rejected. For odd d, nprime is -d^-1 mod 2**32 and a * v mod d is a
+    Montgomery product with R = 2**32 (the packed value is v * R mod d); for
+    even d, nprime is 0 and the product uses %. With d < 2**31 every
+    intermediate value stays below 2**64.
+
+    The firing code is written out in this one function instead of calling a
+    helper, which would cost reference-count updates on every array per firing.
+    """
+    shots = det.shape[0]
+    nd = det.shape[1]
+    n_bins = bin_pmax.shape[0]
+    n_always = always_off.shape[0]
+    d_u = np.uint64(d)
+    low32 = np.uint64(0xFFFFFFFF)
+    nxt = np.empty(n_bins, dtype=np.int64)
+    for c in range(c_lo, c_hi):
+        s0 = states[c, 0]
+        s1 = states[c, 1]
+        s2 = states[c, 2]
+        s3 = states[c, 3]
+        lo = c * chunk
+        n_shots = min(chunk, shots - lo)
+        for b in range(n_bins):
+            total = (bin_ptr[b + 1] - bin_ptr[b]) * n_shots
+            r, s0, s1, s2, s3 = _next_u64(s0, s1, s2, s3)
+            skip = np.floor(np.log(_open_unit(r)) / bin_log_keep[b])
+            # For tiny pi the skip can exceed int64; anything past the end just means "done".
+            nxt[b] = np.int64(skip) if skip < total else total
+        for s in range(n_shots):
+            shot = lo + s
+            ia = 0            # next always-on mechanism
+            b = -1            # current bin, -1 before the first
+            first = 0         # bin b: first mechanism, size, coins in the block, end of this shot's coins,
+            n_b = 0           # largest probability, next candidate
+            total = 0
+            end = 0
+            pmax = 0.0
+            pos = 0
+            pending = False   # a candidate was handled and the skip past it is not drawn yet
+            while True:
+                # The block of the next mechanism that fires, or -1 when the shot is done.
+                off = -1
+                if ia < n_always:
+                    off = always_off[ia]
+                    ia += 1
+                else:
+                    while True:
+                        if pending:
+                            pending = False
+                            r, s0, s1, s2, s3 = _next_u64(s0, s1, s2, s3)
+                            skip = np.floor(np.log(_open_unit(r)) / bin_log_keep[b])
+                            if skip >= total - 1 - pos:
+                                pos = total
+                            else:
+                                pos += 1 + np.int64(skip)
+                        if b >= 0 and pos < end:
+                            k = first + pos - (end - n_b)
+                            pending = True
+                            pm = info_p[k, 1]
+                            if pm < pmax:
+                                r, s0, s1, s2, s3 = _next_u64(s0, s1, s2, s3)
+                                if not _open_unit(r) * pmax < pm:
+                                    continue
+                            off = info[k, 0]
+                            break
+                        if b >= 0:
+                            nxt[b] = pos
+                        b += 1
+                        if b == n_bins:
+                            break
+                        first = bin_ptr[b]
+                        n_b = bin_ptr[b + 1] - first
+                        total = n_b * n_shots
+                        end = (s + 1) * n_b
+                        pmax = bin_pmax[b]
+                        pos = nxt[b]
+                    if off < 0:
+                        break
+                # Fire the mechanism at `off`.
+                n_gen = np.int64(pack[off])
+                kk = off + 1
+                for _ in range(n_gen):
+                    n_ent = np.int64(pack[kk])
+                    kk += 1
+                    while True:
+                        r, s0, s1, s2, s3 = _next_u64(s0, s1, s2, s3)
+                        prod = (r >> np.uint64(32)) * d_u
+                        if (prod & low32) >= thresh:
+                            break
+                    a = prod >> np.uint64(32)
+                    if a == 0:
+                        kk += 2 * n_ent
+                        continue
+                    for _ in range(n_ent):
+                        t = np.int64(pack[kk])
+                        if nprime != 0:
+                            prod = a * np.uint64(pack[kk + 1])
+                            q = ((prod & low32) * nprime) & low32
+                            x = (prod + q * d_u) >> np.uint64(32)
+                            inc = np.int64(x - d_u if x >= d_u else x)
+                        else:
+                            inc = (np.int64(a) * np.int64(pack[kk + 1])) % d
+                        if t < nd:
+                            y = det[shot, t] + inc
+                            det[shot, t] = y - d if y >= d else y
+                        else:
+                            y = obs[shot, t - nd] + inc
+                            obs[shot, t - nd] = y - d if y >= d else y
+                        kk += 2
 
 
 def _canonical_line(gen: dict, d: int):
@@ -1120,7 +2292,8 @@ def _canonical_line(gen: dict, d: int):
     items = sorted(gen.items())
     inv = pow(items[0][1], -1, d)
     scaled = {t: (v * inv) % d for t, v in items}
-    return tuple(sorted(scaled.items())), scaled
+    # scaled is built in sorted order, so its items are already the sorted key.
+    return tuple(scaled.items()), scaled
 
 
 def _projective_points(d: int, k: int):
