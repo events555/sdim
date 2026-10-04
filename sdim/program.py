@@ -305,7 +305,9 @@ def _rng_next_hit(state, log_q, s, limit):
 # 2 * d (or d**2 for MUL) and nothing can overflow int64 for d < 2**31.
 #
 # Z-frame liveness: the Z part of the frame only matters where it can still flow into the X part
-# (through H, H_INV or M_X) before a measurement overwrites it with a random value.  A backward
+# (through H, H_INV or M_X) before M or RESET overwrites it with a random value.  M_X records the
+# Z part, leaves it unchanged, and replaces the X part with a random value instead, since the
+# qudit is left in an X eigenstate.  A backward
 # pass over the ops marks which Z updates are needed; the others are skipped.  Every X update and
 # every measurement record is always computed.
 
@@ -352,9 +354,7 @@ def _z_liveness(op, qa, qb, n_qudits):
             if live[a]:
                 flags[i] = _Z_A
             live[a] = False
-        elif g == 15:  # M_X: the recorded x[a] is the old z[a], then z[a] is random
-            if live[a]:
-                flags[i] = _Z_A
+        elif g == 15:  # M_X: records z[a] and keeps it; x[a] becomes random
             live[a] = True
     return flags, live
 
@@ -521,12 +521,15 @@ def _frame_ops(op, qa, qb, pa, pb, zf, start, end, d, x, z, width, records, col0
                 _add_noise_column(x[b], noise, k, 2, d, width)
                 if f & _Z_B:
                     _add_noise_column(z[b], noise, k, 3, d, width)
-        elif g == 14 or g == 15 or g == 16:  # M, M_X, RESET
+        elif g == 15:  # M_X: the outcome is the Z part, which stays; the X part becomes random
+            zr = z[a]
+            rec = records[pa[i]]
+            for s in range(width):
+                rec[col0 + s] = zr[s]
+            if lazy:
+                _rng_fill_below(rng, d, x[a], width)
+        elif g == 14 or g == 16:  # M, RESET
             xr = x[a]
-            if g == 15:  # X-basis measurement: x takes z (z then becomes random)
-                zr = z[a]
-                for s in range(width):
-                    xr[s] = zr[s]
             rec = records[pa[i]]
             for s in range(width):
                 rec[col0 + s] = xr[s]
@@ -775,7 +778,11 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
         for pos in record_ops.tolist():
             _frame_ops(op, qa, qb, pa, pb, zf, start, pos + 1, d, x, z, shots, records, 0, shots,
                        noise, empty_i, empty_i, empty_f, empty_i, empty_i, empty_f, 0, rng, False)
-            z[qa[pos]] = np.random.randint(0, d, size=shots)
+            row = np.random.randint(0, d, size=shots)
+            if op[pos] == 15:   # M_X is H_INV, M, then H: the random Z row ends up as -row in X
+                x[qa[pos]] = (d - row) % d
+            else:
+                z[qa[pos]] = row
             start = pos + 1
         _frame_ops(op, qa, qb, pa, pb, zf, start, num_ops, d, x, z, shots, records, 0, shots,
                    noise, empty_i, empty_i, empty_f, empty_i, empty_i, empty_f, 0, rng, False)

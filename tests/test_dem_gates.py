@@ -126,10 +126,12 @@ def random_circuit(d, seed, p=0.01, num_qudits=None, num_gates=None, noise_rate=
         b.noise(kind)
 
     last_record = [None] * n
+    in_x_eigenstate = set()   # X-basis qudits still in an X eigenstate after an M_X readout
     for rnd in range(2):
         for q in sorted(x_basis):
-            b.gate("H", q)
-            b.maybe_noise(noise_rate)
+            if q not in in_x_eigenstate:
+                b.gate("H", q)
+                b.maybe_noise(noise_rate)
 
         count = int(num_gates if num_gates is not None else rng.integers(20, 41))
         extra = rng.integers(len(CLIFFORDS), size=count - len(CLIFFORDS))
@@ -158,10 +160,12 @@ def random_circuit(d, seed, p=0.01, num_qudits=None, num_gates=None, noise_rate=
             b.maybe_noise(noise_rate)
             if q in x_basis and style[q] == "M_X":
                 rec = b.measure("M_X", q)
+                in_x_eigenstate.add(q)
             else:
                 if q in x_basis:
                     b.gate("H_INV", q)
                 rec = b.measure("M", q)
+                in_x_eigenstate.discard(q)
             round_records[q] = rec
             terms = {rec: 1}
             if last_record[q] is not None and rng.random() < 0.75:
@@ -179,6 +183,7 @@ def random_circuit(d, seed, p=0.01, num_qudits=None, num_gates=None, noise_rate=
             to_reset = [order[0]] + [q for q in order[2:] if rng.random() < 0.5]
             for q in to_reset:
                 b.gate("RESET", q)
+                in_x_eigenstate.discard(q)
                 b.maybe_noise(noise_rate)
 
     # A final observable with coefficients other than +-1 that spans both rounds.
@@ -239,9 +244,19 @@ def assert_deterministic(circuit, shots=64, seed=5):
 
 
 def _tableau_outcomes(circuit):
+    """(value, deterministic) of every M and M_X in the reference tableau shot.
+
+    RESET also records a round (its pre-reset outcome), which can be random, for example after
+    M_X leaves the qudit in an X eigenstate, so those rounds are skipped.
+    """
     prog = _tableau_reference(circuit)
+    kinds = [[] for _ in range(circuit.num_qudits)]
+    for op in circuit.operations:
+        if op.name in ("M", "M_X", "RESET"):
+            kinds[op.qudit_index].append(op.name)
     return [(int(r[0].measurement_value), bool(r[0].deterministic))
-            for rounds in prog.measurement_results for r in rounds]
+            for q, rounds in enumerate(prog.measurement_results)
+            for kind, r in zip(kinds[q], rounds) if kind != "RESET"]
 
 
 @pytest.mark.parametrize("seed", SEEDS)
@@ -417,10 +432,8 @@ def _to_stim(circuit):
     At d = 2 the sdim tableau has H = H_INV = H, P = S (X -> i XZ = Y) and
     P_INV = S_DAG, CNOT = CNOT_INV = CX and CZ = CZ_INV = CZ.
 
-    sdim's M_X applies H_INV and then measures Z, and leaves the qudit in the
-    rotated basis (the frame simulator does the same). stim's MX leaves the
-    qubit in an X eigenstate, so M_X becomes `MX q` followed by `H q`, which is
-    the same channel as `H q` then `M q`.
+    sdim's M_X, like stim's MX, measures in the X basis and leaves the qubit in
+    the matching X eigenstate, so it maps to MX directly.
     """
     names = {"H": "H", "H_INV": "H", "P": "S", "P_INV": "S_DAG", "CNOT": "CX", "CNOT_INV": "CX",
              "CZ": "CZ", "CZ_INV": "CZ", "SWAP": "SWAP", "M": "M", "RESET": "R"}
@@ -433,7 +446,6 @@ def _to_stim(circuit):
             lines.append(f"{names[n]} " + " ".join(map(str, qs)))
         elif n == "M_X":
             lines.append(f"MX {op.qudit_index}")
-            lines.append(f"H {op.qudit_index}")
         elif n == "N1":
             gate = {"d": "DEPOLARIZE1", "f": "X_ERROR", "p": "Z_ERROR"}[op.params["noise_channel"]]
             lines.append(f"{gate}({op.params['prob']}) {op.qudit_index}")

@@ -345,6 +345,9 @@ def apply_measure_x(tableau: Tableau, qudit_index: int, *_) -> Optional[Measurem
     """
     Apply X-basis measurement.
 
+    Rotates into the Z basis with H_INV, measures, and rotates back with H, so the qudit is left
+    in the X eigenstate that matches the outcome (measuring M_X again repeats it).
+
     Args:
         tableau (Tableau): The quantum tableau.
         qudit_index (int): The index of the qudit to measure.
@@ -355,9 +358,11 @@ def apply_measure_x(tableau: Tableau, qudit_index: int, *_) -> Optional[Measurem
     """
     tableau.hadamard_inv(qudit_index)
     if isinstance(tableau, WeylTableau):
-        return tableau.measure_z(qudit_index)
+        result = tableau.measure_z(qudit_index)
     else:
-        return tableau.measure(qudit_index)
+        result = tableau.measure(qudit_index)
+    tableau.hadamard(qudit_index)
+    return result
 
 def apply_SWAP(tableau: Tableau, qudit_index: int, target_index: int, *_) -> None:
     """

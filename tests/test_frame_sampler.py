@@ -25,7 +25,8 @@ from sdim.tableau.dataclasses import MeasurementResult
 def _reference_frame(ir_array, reference_results, n_qudits, d, shots, noise_array, detector_info):
     """
     The frame update rules with exact integers, drawing random Z frames from np.random in the order
-    simulate_frame does: one (n_qudits, shots) draw, then one row per M / M_X / RESET.
+    simulate_frame does: one (n_qudits, shots) draw, then one row per M / M_X / RESET.  M_X is
+    H_INV, a Z measurement, then H.
 
     Returns {(qudit, round): values} for every measurement record, and the detector and observable
     rows.
@@ -74,6 +75,8 @@ def _reference_frame(ir_array, reference_results, n_qudits, d, shots, noise_arra
                 x[a] = 0
             counts[a] += 1
             z[a] = np.random.randint(0, d, size=shots).astype(object)
+            if gate_id == 15:   # rotate back with H: the qudit is left in an X eigenstate
+                x[a], z[a] = -z[a], x[a].copy()
         elif gate_id == 17:
             x[a] = x[a] + noise_array[noise_counter, :, 0].astype(object)
             z[a] = z[a] + noise_array[noise_counter, :, 1].astype(object)

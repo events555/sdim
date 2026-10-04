@@ -1415,12 +1415,14 @@ def _compile(circuit: Circuit) -> _Compiled:
     noise_op = np.array(probe_ops, dtype=np.int64)[probe_loc]
 
     # Determinism probes.  The frame simulator randomizes the Z frame at the start and after every
-    # M, M_X and RESET, and the unit-fault responses above assume those random parts cancel.  A unit
-    # Z fault at each of those points must therefore reach no detector or observable.
+    # M and RESET, and the X frame after every M_X, and the unit-fault responses above assume those
+    # random parts cancel.  A unit fault of that kind at each of those points must therefore reach
+    # no detector or observable.
     resets = np.flatnonzero((gid == _M) | (gid == _M_X) | (gid == _RESET))
     probe_op = np.concatenate((noise_op, np.full(n_qudits, -1, dtype=np.int64), resets)).astype(np.int64)
     probe_qudit = np.concatenate((noise_qudit, np.arange(n_qudits, dtype=np.int64), qa[resets])).astype(np.int64)
-    probe_kind = np.concatenate((noise_kind, np.ones(n_qudits + len(resets), dtype=np.int64))).astype(np.int64)
+    reset_kind = np.where(gid[resets] == _M_X, 0, 1).astype(np.int64)
+    probe_kind = np.concatenate((noise_kind, np.ones(n_qudits, dtype=np.int64), reset_kind)).astype(np.int64)
     if len(probe_qudit) and (probe_qudit.min() < 0 or probe_qudit.max() >= n_qudits):
         bad = int(probe_qudit.min() if probe_qudit.min() < 0 else probe_qudit.max())
         raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
@@ -1601,11 +1603,15 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                     nx = (x * mul_a[op]) % d
                     nz = (z * mul_inv[op]) % d
                 elif g == 14 or g == 15:  # M, M_X
+                    # M records x and leaves a random z.  M_X records z, keeps it, and leaves a
+                    # random x (the qudit ends in an X eigenstate).  Random parts cancel in every
+                    # deterministic detector, so they are dropped here.
                     if g == 15:
                         nx = z
+                        nz = z
                     else:
                         nx = x
-                    nz = 0
+                        nz = 0
                     if nx != 0:
                         r = rec_of_op[op]
                         for k in range(rptr[r], rptr[r + 1]):
@@ -1615,6 +1621,8 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                                 is_touched[t] = 1
                                 touched[nt] = t
                                 nt += 1
+                    if g == 15:
+                        nx = 0
                 elif g == 16:  # RESET
                     nx = 0
                     nz = 0
