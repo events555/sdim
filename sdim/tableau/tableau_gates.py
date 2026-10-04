@@ -46,6 +46,12 @@ def _apply_pauli_powers(tableau: Tableau, qudit_index: int, x_exp: int, z_exp: i
         tableau.phase_vector %= tableau.dimension
         return None
 
+    if x_exp == 0 and z_exp == 0:
+        return None
+    # One kernel call that has the same effect as the gate sequence below.
+    if isinstance(tableau, ExtendedTableau) and tableau._fast_pauli(qudit_index, x_exp, z_exp):
+        return None
+
     # Prime dimension: the multiplication gate M_a satisfies M_a X M_a^-1 = X^a and M_a Z M_a^-1 = Z^(a^-1),
     # so X^k = M_k X M_k^-1 and Z^k = M_k^-1 Z M_k.  Only a power of 1 is possible at d = 2.
     if x_exp == 1 or x_exp == 0:
@@ -84,6 +90,9 @@ def apply_X(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     if isinstance(tableau, WeylTableau):
         tableau.x(qudit_index)
+    elif isinstance(tableau, ExtendedTableau) and tableau._fast_pauli(qudit_index, 1, 0):
+        # One kernel call with the same effect as the gate sequence below.
+        pass
     else:
         if tableau.even:
             tableau.hadamard(qudit_index)
@@ -113,6 +122,9 @@ def apply_X_inv(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     if isinstance(tableau, WeylTableau):
         tableau.x_inv(qudit_index)
+    elif isinstance(tableau, ExtendedTableau) and tableau._fast_pauli(qudit_index, -1, 0):
+        # One kernel call with the same effect as the gate sequence below.
+        pass
     else:
         if tableau.even:
             tableau.hadamard(qudit_index)
@@ -142,6 +154,9 @@ def apply_Z(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     if isinstance(tableau, WeylTableau):
         tableau.z(qudit_index)
+    elif isinstance(tableau, ExtendedTableau) and tableau._fast_pauli(qudit_index, 0, 1):
+        # One kernel call with the same effect as the gate sequence below.
+        pass
     else:
         if tableau.even:
             tableau.phase(qudit_index)
@@ -169,6 +184,9 @@ def apply_Z_inv(tableau: Tableau, qudit_index: int, *_) -> None:
     """
     if isinstance(tableau, WeylTableau):
         tableau.z_inv(qudit_index)
+    elif isinstance(tableau, ExtendedTableau) and tableau._fast_pauli(qudit_index, 0, -1):
+        # One kernel call with the same effect as the gate sequence below.
+        pass
     else:
         if tableau.even:
             tableau.phase_inv(qudit_index)

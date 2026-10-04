@@ -1,10 +1,19 @@
 import math
+import operator
 import numpy as np
 import random
 from dataclasses import dataclass
 from typing import Optional
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
 from sdim.tableau.tableau_optimized import hadamard_optimized, phase_optimized, hadamard_inv_optimized, phase_inv_optimized, cnot_optimized, cnot_inv_optimized
+from sdim.tableau.tableau_optimized import (
+    JIT_ENABLED, _cnot_kernel, _det_measure_kernel, _exponentiate_kernel, _first_x_kernel,
+    _hadamard_kernel, _multiply_kernel, _pauli_kernel, _phase_kernel, _random_measure_kernel,
+    _reduce_kernel,
+)
+from numba.core.errors import TypingError
+
+_INT64 = np.dtype(np.int64)
 
 @dataclass
 class ExtendedTableau(Tableau):
@@ -25,6 +34,144 @@ class ExtendedTableau(Tableau):
     destab_phase_vector: Optional[np.ndarray] = None
     destab_z_block: Optional[np.ndarray] = None
     destab_x_block: Optional[np.ndarray] = None
+
+    # Cache for _fast_params: the six arrays, the dimension, the number of qudits and the answer.
+    # A plain class attribute without an annotation, so it is not a dataclass field.
+    _fast_key = None
+
+    def __getstate__(self):
+        # Copies and pickles leave the cache behind and check their own arrays on first use, so a
+        # pickle loaded elsewhere (say, with numba's JIT off) never trusts an answer from here.
+        state = self.__dict__.copy()
+        state.pop("_fast_key", None)
+        return state
+
+    def _arrays(self):
+        return (self.x_block, self.z_block, self.phase_vector,
+                self.destab_x_block, self.destab_z_block, self.destab_phase_vector)
+
+    def _fast_params(self):
+        """
+        Returns (d, order, phase_order) when the numba kernels in tableau_optimized apply, else None.
+
+        The kernels need six distinct, C-contiguous, writeable int64 arrays of the tableau's shapes,
+        and an odd dimension or d = 2, below 2**31, so the order is below 2**31 as well.  Everything
+        else, such as dtype=object arrays of Python integers, goes through the exact reference code.
+
+        The answer is cached on the identity of the arrays, the dimension and the number of qudits.
+        An array that is made read-only after that keeps its identity; the gate methods notice it
+        when numba refuses to compile the kernel for it (see _drop_fast), and measure checks it.
+        """
+        key = self._fast_key
+        if (key is not None and key[0] is self.x_block and key[1] is self.z_block
+                and key[2] is self.phase_vector and key[3] is self.destab_x_block
+                and key[4] is self.destab_z_block and key[5] is self.destab_phase_vector
+                and key[6] == self.dimension and key[7] == self.num_qudits):
+            return key[8]
+        arrays = self._arrays()
+        params = self._check_fast_params(arrays)
+        self._fast_key = arrays + (self.dimension, self.num_qudits, params)
+        return params
+
+    def _drop_fast(self):
+        """
+        Sends this tableau's current arrays to the reference code from now on.
+
+        Called when numba raises TypingError for a kernel call: the kernels are compiled for
+        writeable int64 arrays, and numba refuses to compile a variant that writes to a read-only
+        array.  That happens while numba picks the compiled code, before anything runs, so nothing
+        has changed yet, and the reference code then behaves exactly as it always did (for a
+        read-only array, it raises ValueError: assignment destination is read-only).
+        """
+        self._fast_key = self._arrays() + (self.dimension, self.num_qudits, None)
+
+    def _writeable(self) -> bool:
+        """Whether all six arrays are still writeable (they were when _fast_params cached its answer)."""
+        return (self.x_block.flags.writeable and self.z_block.flags.writeable
+                and self.phase_vector.flags.writeable and self.destab_x_block.flags.writeable
+                and self.destab_z_block.flags.writeable and self.destab_phase_vector.flags.writeable)
+
+    def _check_fast_params(self, arrays):
+        if not JIT_ENABLED:
+            return None
+        d = self.dimension
+        n = self.num_qudits
+        if isinstance(d, (bool, np.bool_)) or not isinstance(d, (int, np.integer)):
+            return None
+        if isinstance(n, (bool, np.bool_)) or not isinstance(n, (int, np.integer)):
+            return None
+        d = int(d)
+        n = int(n)
+        if not 2 <= d < 2**31 or (d % 2 == 0 and d != 2):
+            return None
+        shapes = ((n, n), (n, n), (n,), (n, n), (n, n), (n,))
+        for array, shape in zip(arrays, shapes):
+            if type(array) is not np.ndarray or array.dtype != _INT64 or array.shape != shape:
+                return None
+            flags = array.flags
+            if not (flags.c_contiguous and flags.writeable and flags.aligned):
+                return None
+        for i in range(len(arrays)):
+            for j in range(i + 1, len(arrays)):
+                if np.may_share_memory(arrays[i], arrays[j]):
+                    return None
+        if d % 2:
+            return d, d, 1
+        return d, 2 * d, 2
+
+    def _fast(self, *indices):
+        """
+        Returns (d, order, phase_order, *rows) for the numba kernels, or None for the reference code.
+
+        The kernels do no bounds checking, so the qudit indices must be integers in range; negative
+        ones count from the end as in NumPy.  Anything else takes the reference code, which raises
+        the same error as before.
+        """
+        params = self._fast_params()
+        if params is None:
+            return None
+        n = self.x_block.shape[0]
+        rows = []
+        for index in indices:
+            if type(index) is not int:
+                # NumPy treats a bool index as a mask, not as 0 or 1.
+                if isinstance(index, (bool, np.bool_)):
+                    return None
+                try:
+                    index = operator.index(index)
+                except TypeError:
+                    return None
+            if index < -n or index >= n:
+                return None
+            rows.append(index + n if index < 0 else index)
+        return params + tuple(rows)
+
+    def _fast_pauli(self, qudit_index: int, x_exp: int, z_exp: int) -> bool:
+        """
+        Applies X^x_exp Z^z_exp to a qudit with a single kernel if the fast path applies.
+
+        Conjugating by X^a Z^b leaves the X and Z blocks alone and adds phase_order * (b * x - a * z)
+        to every phase, where (x, z) are the powers on the qudit.  That is exactly the effect of the
+        H/P/multiplication sequences in tableau_gates.  Returns False, having done nothing, when the
+        reference sequence has to run instead (including when it would raise, for an exponent that
+        is not invertible mod a composite d).
+        """
+        fast = self._fast(qudit_index)
+        if fast is None:
+            return False
+        d, order, po, q = fast
+        a = int(x_exp) % d
+        b = int(z_exp) % d
+        if (a > 1 and math.gcd(a, d) != 1) or (b > 1 and math.gcd(b, d) != 1):
+            return False
+        try:
+            _pauli_kernel(self.x_block, self.z_block, self.phase_vector,
+                          self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                          q, a, b, d, order, po)
+        except TypingError:
+            self._drop_fast()
+            return False
+        return True
 
     def print_destab_phase_vector(self):
         """
@@ -90,6 +237,15 @@ class ExtendedTableau(Tableau):
         """
         Reduces the tableau modulo the qudit dimension.
         """
+        fast = self._fast()
+        if fast is not None:
+            try:
+                _reduce_kernel(self.x_block, self.z_block, self.phase_vector,
+                               self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                               fast[0], fast[1])
+                return
+            except TypingError:
+                self._drop_fast()
         super().modulo()
         self.destab_x_block %= self.dimension
         self.destab_z_block %= self.dimension
@@ -131,6 +287,16 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the Hadamard gate to.
         """
+        fast = self._fast(qudit_index)
+        if fast is not None:
+            d, order, po, q = fast
+            try:
+                _hadamard_kernel(self.x_block, self.z_block, self.phase_vector,
+                                 self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                                 q, d, order, po, False)
+                return
+            except TypingError:
+                self._drop_fast()
         hadamard_optimized(
             self.x_block, self.z_block, self.phase_vector,
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
@@ -152,6 +318,16 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Hadamard gate to.
         """
+        fast = self._fast(qudit_index)
+        if fast is not None:
+            d, order, po, q = fast
+            try:
+                _hadamard_kernel(self.x_block, self.z_block, self.phase_vector,
+                                 self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                                 q, d, order, po, True)
+                return
+            except TypingError:
+                self._drop_fast()
         hadamard_inv_optimized(
             self.x_block, self.z_block, self.phase_vector,
             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
@@ -190,6 +366,16 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the Phase gate to.
         """
+        fast = self._fast(qudit_index)
+        if fast is not None:
+            d, order, po, q = fast
+            try:
+                _phase_kernel(self.x_block, self.z_block, self.phase_vector,
+                              self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                              q, d, order, po, False)
+                return
+            except TypingError:
+                self._drop_fast()
         phase_optimized(self.x_block, self.z_block, self.phase_vector,
                        self.destab_x_block, self.destab_z_block,
                        self.destab_phase_vector, 
@@ -221,6 +407,16 @@ class ExtendedTableau(Tableau):
         Args:
             qudit_index (int): The index of the qudit to apply the inverse Phase gate to.
         """
+        fast = self._fast(qudit_index)
+        if fast is not None:
+            d, order, po, q = fast
+            try:
+                _phase_kernel(self.x_block, self.z_block, self.phase_vector,
+                              self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                              q, d, order, po, True)
+                return
+            except TypingError:
+                self._drop_fast()
         phase_inv_optimized(self.x_block, self.z_block, self.phase_vector,
                        self.destab_x_block, self.destab_z_block,
                        self.destab_phase_vector, 
@@ -247,6 +443,16 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
+        fast = self._fast(control, target)
+        if fast is not None:
+            d, order, po, c, t = fast
+            try:
+                _cnot_kernel(self.x_block, self.z_block, self.phase_vector,
+                             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                             c, t, d, order, False)
+                return
+            except TypingError:
+                self._drop_fast()
         cnot_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
                        self.num_qudits, self.dimension,
                        control, target)
@@ -277,6 +483,16 @@ class ExtendedTableau(Tableau):
             control (int): The index of the control qudit.
             target (int): The index of the target qudit.
         """
+        fast = self._fast(control, target)
+        if fast is not None:
+            d, order, po, c, t = fast
+            try:
+                _cnot_kernel(self.x_block, self.z_block, self.phase_vector,
+                             self.destab_x_block, self.destab_z_block, self.destab_phase_vector,
+                             c, t, d, order, True)
+                return
+            except TypingError:
+                self._drop_fast()
         cnot_inv_optimized(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
                        self.num_qudits, self.dimension,
                        control, target)
@@ -295,6 +511,14 @@ class ExtendedTableau(Tableau):
             raise ValueError(f"Scalar {scalar} is not coprime with the dimension {self.dimension}.")
 
         inverse = pow(scalar, -1, self.dimension)
+        fast = self._fast(qudit_index)
+        if fast is not None:
+            try:
+                _multiply_kernel(self.x_block, self.z_block, self.destab_x_block, self.destab_z_block,
+                                 fast[3], scalar, inverse, fast[0])
+                return
+            except TypingError:
+                self._drop_fast()
         self.z_block[qudit_index, :] = (self.z_block[qudit_index, :] * inverse) % self.dimension
         self.x_block[qudit_index, :] = (self.x_block[qudit_index, :] * scalar) % self.dimension
         self.destab_z_block[qudit_index, :] = (self.destab_z_block[qudit_index, :] * inverse) % self.dimension
@@ -304,12 +528,44 @@ class ExtendedTableau(Tableau):
         """
         Measures the qudit at the specified index in the Z basis.
 
+        The reference code reduces the whole tableau first.  The int64 kernels don't need to, since
+        they reduce every entry they read and write back reduced values; they give the same outcome
+        and the same tableau mod the dimension (mod the order for the phases), and the very same
+        arrays when the tableau starts reduced, as it always does inside Program.
+
         Args:
             qudit_index (int): The index of the qudit to measure.
 
         Returns:
             MeasurementResult: The result of the measurement, including whether it was
                                deterministic and the measured value.
+        """
+        fast = self._fast(qudit_index)
+        if fast is not None and not self._writeable():
+            # Made read-only since _fast_params cached its answer.  The kernels below that only
+            # read would still run, so check here, before any of them does.
+            self._drop_fast()
+            fast = None
+        if fast is None:
+            return self._measure_exact(qudit_index)
+        d, order, po, q = fast
+        x, z, phases = self.x_block, self.z_block, self.phase_vector
+        first_xpow, xpow = _first_x_kernel(x, q, d)
+        if first_xpow < 0:
+            phase = _det_measure_kernel(x, z, phases, self.destab_x_block, q, d, order, po)
+            return MeasurementResult(qudit_index, True, (-phase // po) % d)
+        if xpow != 1:
+            _exponentiate_kernel(x, z, phases, first_xpow, pow(int(xpow), -1, d), d, order, po)
+        _random_measure_kernel(x, z, phases, self.destab_x_block, self.destab_z_block,
+                               self.destab_phase_vector, q, first_xpow, d, order, po)
+        measurement_outcome = random.choice(range(d))
+        phases[first_xpow] = (-measurement_outcome * po) % order
+        return MeasurementResult(qudit_index, False, measurement_outcome)
+
+    def _measure_exact(self, qudit_index: int) -> MeasurementResult:
+        """
+        The reference implementation of `measure`, for arrays the numba kernels don't take
+        (such as dtype=object arrays of Python integers).  It reduces the whole tableau.
         """
         first_xpow = None
         # Find the first non-zero X in the tableau zlogical
