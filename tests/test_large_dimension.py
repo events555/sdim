@@ -109,10 +109,10 @@ def test_multiplication_scalar_is_reduced(d, a):
     assert all(r.measurement_value == expected for r in measurements[0][0])
 
 
-def test_frame_sampler_rejects_malformed_prob_dist():
+def test_malformed_prob_dist_is_rejected():
     """A wrong-length N2 prob_dist used to act as identity in the frame sampler."""
     c = Circuit(2, 3)
-    c.add_gate("N2", 0, 1, prob_dist=[1.0, 0.0])
-    c.add_gate("M", [0, 1])
     with pytest.raises(ValueError, match="prob_dist"):
-        Program(c).simulate(shots=3)
+        c.add_gate("N2", 0, 1, prob_dist=[1.0, 0.0])
+    with pytest.raises(ValueError, match="prob_dist"):
+        c.add_gate("N2", 0, 1, prob_dist=np.full(81, 0.5))

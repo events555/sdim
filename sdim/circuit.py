@@ -1,6 +1,15 @@
 from .gatedata import GateData
 from dataclasses import dataclass
 from typing import Union, Optional, List
+import numpy as np
+
+# Keyword parameters accepted by gates that take any.  Catches typos such as probability=0.1,
+# which would otherwise be stored silently while the default prob is used.
+_GATE_PARAMS = {
+    "N1": {"noise_channel", "prob"},
+    "N2": {"prob", "prob_dist"},
+    "MUL": {"a", "scalar"},
+}
 
 @dataclass
 class CircuitInstruction:
@@ -113,6 +122,11 @@ class Circuit:
             for key, value in gate.defaults.items():
                 kwargs.setdefault(key, value)
 
+        allowed = _GATE_PARAMS.get(primary_name)
+        if allowed is not None and set(kwargs) - allowed:
+            raise ValueError(f"{primary_name} does not take {sorted(set(kwargs) - allowed)}; "
+                             f"its parameters are {sorted(allowed)}.")
+
         if primary_name == "N1":
             if kwargs["noise_channel"] not in ("d", "f", "p"):
                 raise ValueError(f"N1 noise_channel must be 'd', 'f' or 'p', not {kwargs['noise_channel']!r}.")
@@ -121,6 +135,12 @@ class Circuit:
         elif primary_name == "N2" and kwargs.get("prob_dist") is None:
             if not 0.0 <= float(kwargs["prob"]) <= 1.0:
                 raise ValueError(f"N2 prob must be between 0 and 1, not {kwargs['prob']}.")
+        elif primary_name == "N2":
+            dist = np.asarray(kwargs["prob_dist"], dtype=float).reshape(-1)
+            if dist.size != self.dimension ** 4:
+                raise ValueError(f"N2 prob_dist has length {dist.size} instead of the required {self.dimension ** 4}.")
+            if (dist < 0).any() or not np.isclose(dist.sum(), 1.0, rtol=0.0, atol=1e-8):
+                raise ValueError("N2 prob_dist must be non-negative and sum to 1.")
 
         if control is None and target is None: # Detectors only
             self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), None, None, params=kwargs))
@@ -140,6 +160,9 @@ class Circuit:
             qubit_pairs = list(zip(control, target))
         else:
             raise ValueError("Invalid combination of control and target qubits")
+
+        if any(c == t for c, t in qubit_pairs):
+            raise ValueError(f"{primary_name} needs two different qudits.")
 
         # Add instructions for all qubit pairs
         for c, t in qubit_pairs:

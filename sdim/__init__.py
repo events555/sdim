@@ -26,7 +26,7 @@ result = program.simulate(show_measurement=True) # Runs the program and prints t
 
 Output:
 ```plaintext
-Measurement results:
+Measurement results for shot 1:
 Measured qudit (0) as (1) and was random
 Measured qudit (1) as (1) and was deterministic
 Measured qudit (2) as (1) and was deterministic

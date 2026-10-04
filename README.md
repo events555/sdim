@@ -52,7 +52,7 @@ circuit.add_gate('DETECTOR', expr='rec[-3] - rec[-2] + rec[-1]')
 circuit.add_gate('LOGICAL_OBSERVABLE', expr='rec[-1]')
 
 dem = DetectorErrorModel.from_circuit(circuit)
-detectors, observables = dem.sample(100_000) # int64 arrays of values mod d, one row per shot
+detectors, observables = dem.sample(100_000) # int64 arrays of values mod d, shape (shots, detectors)
 dem.write_to_file('model.qdem')
 ```
 
@@ -60,7 +60,9 @@ Noise gates take these parameters:
 - `N1`: `noise_channel` (`'d'` depolarizing, `'f'` flip, `'p'` phase) and `prob`.
 - `N2`: `prob` for two-qudit depolarizing. A full `prob_dist` over all d^4 Paulis also works for small d, but `sdim.dem` rejects it. Use the older `sdim.dem_legacy` model for those circuits.
 
-The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent single-shift mechanisms. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](sdim/dem.py) explains the math and the file format.
+The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent line mechanisms, each adding a uniformly random multiple of a single vector. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](sdim/dem.py) explains the math and the file format.
+
+`Program(circuit).simulate(shots=n, raw_detector_output=True)` samples detectors with the Pauli frame simulator instead. Its arrays are indexed the other way round, (detector, shot), and cover the n - 1 shots after the noiseless reference shot.
 
 ## Primary References
 <a id="1">[1]

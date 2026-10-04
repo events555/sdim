@@ -1,27 +1,31 @@
-# Ignore everything by default except the directories
+# Ignore everything by default, then whitelist what belongs in the repository.
+# "!*/" lets git look inside directories; files still need a whitelist entry below.
 *
+!*/
 
-# Whitelist specific files and directories
-!src/
-!circuits/
-!docs/
-!examples/
-!tests/
+!/.gitignore
+!/.github/**
+!/sdim/**
+!/tests/**
+!/circuits/**
+!/docs/**
+!/examples/**
 
-!README.md
-!CHANGELOG.md
-!TODO.md
+!/README.md
+!/CHANGELOG.md
+!/TODO.md
+!/pyproject.toml
+!/poetry.lock
+!/LICENSE
+!/CITATION.cff
 
-!pyproject.toml
-!poetry.lock
-
-!LICENSE
-
-!CITATION.cff
-
-# Ignore specific files and directories
+# Generated files inside whitelisted directories
 circuits/random*.chp
 circuits/failed*.chp
 circuits/test*.chp
-
 **/__pycache__/
+*.pyc
+*.nbi
+*.nbc
+.DS_Store
+.pytest_cache/

@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . pytest stim
+      # test_tomography.py takes about 15 minutes; it runs on manual dispatch only.
+      - run: python -m pytest -q --ignore=tests/test_tomography.py
+      - if: github.event_name == 'workflow_dispatch'
+        run: python -m pytest -q tests/test_tomography.py

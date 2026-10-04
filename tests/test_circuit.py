@@ -261,3 +261,27 @@ def test_deutsch():
     program.stabilizer_tableau.print_tableau()
     
     assert result == [MeasurementResult(0, True, expected_result)]
+
+
+def test_gate_parameter_validation():
+    import numpy as np
+    c = Circuit(2, 3)
+    with pytest.raises(ValueError, match="does not take"):
+        c.add_gate("N1", 0, probability=0.1)          # typo for prob
+    with pytest.raises(ValueError, match="does not take"):
+        c.add_gate("MUL", 0, b=2)
+    with pytest.raises(ValueError, match="prob_dist"):
+        c.add_gate("N2", 0, 1, prob_dist=[1.0, 0.0])
+    with pytest.raises(ValueError, match="sum to 1"):
+        c.add_gate("N2", 0, 1, prob_dist=np.full(81, 0.5))
+    with pytest.raises(ValueError, match="two different qudits"):
+        c.add_gate("CNOT", 0, 0)
+    with pytest.raises(ValueError, match="two different qudits"):
+        c.add_gate("N2", 1, 1, prob=0.1)
+    assert c.operations == []
+    c.add_gate("N1", 0, channel="p", prob=0.2)
+    c.add_gate("MUL", 1, a=2)
+    dist = np.zeros(81)
+    dist[27] = 1.0
+    c.add_gate("N2", 0, 1, prob_dist=dist)
+    assert [op.name for op in c.operations] == ["N1", "MUL", "N2"]
