@@ -51,11 +51,17 @@ mechanism adds `a_1*g_1 + a_2*g_2 + ...` to the detectors and observables,
 where each `a_j` is uniform on Z_d (zero included). `Dk=v` and `Lk=v` give
 the coefficient, mod d, on detector k and observable k. The comment names the
 noise gate(s) the mechanism came from. `write_to_file` and `read_from_file`
-use the same format.
+use the same format, with detector and observable labels written as JSON
+string literals on `DETECTOR Dk "label"` and `LOGICAL_OBSERVABLE Lk "label"`
+lines.
 
 The N1 lines show `pi` slightly above 0.01 because one of the d equally likely
 shifts is the identity, so `pi = p / (1 - 1/d)`. The X fault after the second
-N1 reaches observable 0 with coefficient -1, which prints as 1000002.
+N1 changes detector 0 by -1 and observable 0 by +1. A mechanism with one
+generator adds a uniformly random multiple of it, so `merge_lines` scales
+every such generator to make its first coefficient 1. The line becomes
+`D0=1 L0=-1`, which prints as `L0=1000002` since coefficients are written as
+residues mod d.
 
 ## How it works
 
@@ -87,14 +93,26 @@ the Fourier domain, so subgroup mechanisms combine by multiplying their
    `p_1 (1 - p_2) + (1 - p_1) p_2`. The XOR rule is wrong for d > 2, since a
    shift applied twice adds up to twice the shift instead of cancelling.
 
-The unit-fault responses come from pushing each unit fault through the rest of
-the circuit with the same frame update rules as `sdim.program.simulate_frame`.
-Detector and observable coefficients are read from sdim's own compiled
-detector expressions.
+The unit-fault responses follow the frame update rules of
+`sdim.program.simulate_frame`. Rather than pushing every unit fault forward
+to the end of the circuit, which costs time quadratic in the number of rounds,
+`from_circuit` makes one backward sweep, as stim does: for each qudit it keeps
+the linear maps from its X and Z frame components to the detectors and
+observables, and updates them with the transpose of each gate's frame rule.
+Each noise gate then reads the responses of its unit faults directly.
+A response lists its targets in the order the fault first reaches them, as
+pushing it forward did; where that order is not clear from which records
+the targets read, a few short backward sweeps ask whether the fault is
+non-zero at single records. Detector and observable coefficients are read
+from sdim's own compiled detector expressions.
 
 ## Limitations
 
-- The dimension must be prime, so that Z_d is a field.
+- The dimension must be prime, so that Z_d is a field. `from_circuit` with
+  `check_dimension_prime=False` still builds the model for a composite d
+  (the frame rules and the subgroup argument hold over Z_d), but `merge_lines`
+  then leaves lines whose leading coefficient is not a unit unmerged, and
+  `to_lines` refuses composite dimensions.
 - N2 gates must use `prob`. A custom `prob_dist` is not a subgroup mechanism.
   `sdim.dem_legacy` handles those for small d.
 - Detector and observable expressions must be linear in their measurement
@@ -116,7 +134,10 @@ import copy
 import dis
 import gc
 import itertools
+import json
 import math
+import operator
+import re
 import threading
 import types
 
@@ -142,10 +163,15 @@ _SAMPLE_CHUNK = 256
 _SAMPLE_PARALLEL_WORK = 200_000
 # Sampler tasks per thread. Each task is a run of consecutive blocks; more tasks balance the load better.
 _SAMPLE_TASKS_PER_THREAD = 8
-# The sampler's arithmetic needs d < 2**31 (see `_sample_chunks`).
+# The sampler's arithmetic needs d < 2**31 (see `_sample_chunks`), and so does `_expand_lines`.
 _MAX_SAMPLE_DIMENSION = 2 ** 31 - 1
-# With fewer unit-fault probes than this, `from_circuit` propagates them on the calling thread.
+# With fewer unit-fault probes than this, the forward kernel runs them on the calling thread.
 _PROBE_PARALLEL_MIN = 2048
+# At most about this many (probe, record) questions go into one sweep of `_ask_records`.
+_TOUCH_QUESTIONS_PER_SWEEP = 1 << 20
+# Compute unit-fault responses with one backward sweep (True) or by pushing every unit fault forward
+# to the end of the circuit (False). Both give the same model; the forward kernel is the reference.
+_BACKWARD = True
 
 
 def _thread_count() -> int:
@@ -252,17 +278,145 @@ def _gc_paused():
             gc.enable()
 
 
-def _is_prime(n: int) -> bool:
+# Miller-Rabin with these bases is exact for every n below _MILLER_RABIN_EXACT (Sorenson and Webster, 2015).
+_MILLER_RABIN_BASES = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41)
+_MILLER_RABIN_EXACT = 3317044064679887385961981
+
+
+def _is_prime(n) -> bool:
+    """
+    Whether the integer n is prime, in microseconds for any size of n.
+
+    Miller-Rabin with the 13 smallest prime bases decides every n below
+    3.3 * 10**24 exactly. Larger n get the Baillie-PSW test (Miller-Rabin to
+    base 2 and a strong Lucas test), which no known composite passes. (Trial
+    division up to sqrt(n) never finishes for a DIMENSION such as 2**89 - 1.)
+    A value that is not an integer is not prime.
+    """
+    try:
+        n = operator.index(n)
+    except TypeError:
+        if not (isinstance(n, float) and n.is_integer()):
+            return False
+        n = int(n)
     if n < 2:
         return False
-    if n % 2 == 0:
-        return n == 2
-    f = 3
-    while f * f <= n:
-        if n % f == 0:
+    for p in _MILLER_RABIN_BASES:
+        if n % p == 0:
+            return n == p
+    odd, s = n - 1, 0
+    while odd % 2 == 0:
+        odd //= 2
+        s += 1
+    # Baillie-PSW needs base 2 only; below the bound, the 13 bases are exact without the Lucas test.
+    for a in (_MILLER_RABIN_BASES if n < _MILLER_RABIN_EXACT else (2,)):
+        x = pow(a, odd, n)
+        if x == 1 or x == n - 1:
+            continue
+        for _ in range(s - 1):
+            x = x * x % n
+            if x == n - 1:
+                break
+        else:
             return False
-        f += 2
-    return True
+    return n < _MILLER_RABIN_EXACT or _strong_lucas_probable_prime(n)
+
+
+def _jacobi(a: int, n: int) -> int:
+    """The Jacobi symbol (a / n) for odd n > 0."""
+    a %= n
+    result = 1
+    while a:
+        while a % 2 == 0:
+            a //= 2
+            if n % 8 in (3, 5):
+                result = -result
+        a, n = n, a
+        if a % 4 == 3 and n % 4 == 3:
+            result = -result
+        a %= n
+    return result if n == 1 else 0
+
+
+def _strong_lucas_probable_prime(n: int) -> bool:
+    """
+    The strong Lucas probable prime test with Selfridge's parameters, for odd n > 41.
+
+    D is the first of 5, -7, 9, -11, ... with Jacobi symbol (D / n) = -1, P = 1
+    and Q = (1 - D) / 4. Writing n + 1 = k * 2**s with k odd, n passes if
+    U_k = 0 or V_(k * 2**r) = 0 (mod n) for some 0 <= r < s.
+    """
+    root = math.isqrt(n)
+    if root * root == n:
+        return False                    # no D has (D / n) = -1
+    D = 5
+    while True:
+        j = _jacobi(D, n)
+        if j == -1:
+            break
+        if j == 0 and abs(D) != n:
+            return False                # D shares a factor with n
+        D = -D - 2 if D > 0 else -D + 2
+    Q = (1 - D) // 4
+    k, s = n + 1, 0
+    while k % 2 == 0:
+        k //= 2
+        s += 1
+
+    def half(x):
+        # x / 2 mod n (n is odd).
+        x %= n
+        return (x + n) // 2 if x % 2 else x // 2
+
+    # U_m, V_m and Q**m for m = 1, then the bits of k from the top: m -> 2m, and m -> m + 1 on a 1 bit.
+    U, V, Qm = 1, 1, Q % n
+    for bit in bin(k)[3:]:
+        U, V, Qm = U * V % n, (V * V - 2 * Qm) % n, Qm * Qm % n
+        if bit == "1":
+            U, V, Qm = half(U + V), half(D * U + V), Qm * Q % n
+    if U == 0 or V == 0:
+        return True
+    for _ in range(s - 1):
+        V, Qm = (V * V - 2 * Qm) % n, Qm * Qm % n
+        if V == 0:
+            return True
+    return False
+
+
+def _padded_labels(labels, count) -> list:
+    """`labels` (None counts as empty) padded with "" up to `count` entries."""
+    labels = [] if labels is None else labels
+    try:
+        missing = int(count) - len(labels)
+    except (TypeError, ValueError):
+        return labels
+    return list(labels) + [""] * missing if missing > 0 else labels
+
+
+# A high surrogate followed by a low one: JSON decodes their two escapes as one character.
+_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
+# The first line of a file written by format v1, which wrote labels verbatim, contains this.
+_V1_HEADER_TAG = "(format: qdem v1)"
+
+
+def _read_label(text: str) -> str:
+    """A label in a format v2 file: a JSON string literal, or else the text itself (as format v1 wrote it)."""
+    if text.startswith('"'):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return text
+        if isinstance(value, str):
+            return value
+    return text
+
+
+def _as_integer(x, what: str) -> int:
+    """`operator.index(x)`, or a ValueError naming the generator entry."""
+    try:
+        return operator.index(x)
+    except TypeError:
+        raise ValueError(f"a generator has {what} {x!r}, which is not an integer") from None
 
 
 def depolarizing_subgroup_probability(p: float, dimension: int, num_qudits: int) -> float:
@@ -304,10 +458,12 @@ def line_probability(pi: float, dimension: int, subgroup_rank: int) -> float:
         float: Probability of each line mechanism.
 
     Raises:
-        ValueError: If pi > 1.
+        ValueError: If pi is not in [0, 1].
     """
     if pi > 1.0:
         raise ValueError(f"pi = {pi} is above 1")
+    if not pi >= 0.0:
+        raise ValueError(f"pi = {pi} is not in [0, 1]")
     if pi == 1.0:
         # Uniform on the subgroup: every line is uniform too, and their sum is uniform again.
         return 1.0
@@ -325,15 +481,22 @@ def merge_subgroup_probabilities(*pis: float) -> float:
     with probability pi / 2, this is the XOR rule p_1 (1 - p_2) + (1 - p_1) p_2.
 
     Args:
-        *pis (float): Probabilities of the mechanisms to merge.
+        *pis (float): Probabilities of the mechanisms to merge, each in [0, 1].
 
     Returns:
-        float: Probability of the merged mechanism.
+        float: Probability of the merged mechanism, 0.0 if there are none.
+
+    Raises:
+        ValueError: If a probability is not in [0, 1] (NaN included).
     """
+    for pi in pis:
+        if not 0.0 <= pi <= 1.0:
+            raise ValueError(f"cannot merge a mechanism with probability {pi}: it is not in [0, 1]")
     if any(pi >= 1.0 for pi in pis):
         return 1.0
     log_keep = sum(math.log1p(-pi) for pi in pis)
-    return -math.expm1(log_keep)
+    # 0.0 - x turns the -0.0 of an all-zero merge into 0.0 and leaves every other value alone.
+    return 0.0 - math.expm1(log_keep)
 
 
 def _merge_pair(a: float, b: float) -> float:
@@ -344,7 +507,7 @@ def _merge_pair(a: float, b: float) -> float:
     gives exactly what `sum` does; other inputs go through the general function.
     """
     if 0.0 < a < 1.0 and 0.0 < b < 1.0:
-        return -math.expm1(math.log1p(-a) + math.log1p(-b))
+        return 0.0 - math.expm1(math.log1p(-a) + math.log1p(-b))
     return merge_subgroup_probabilities(a, b)
 
 
@@ -390,7 +553,10 @@ class DetectorErrorModel:
         num_observables (int): Number of logical observables.
         mechanisms (list[ErrorMechanism]): The error mechanisms.
         detector_labels (list[str]): Label of each detector, "" if it has none.
-        observable_labels (list[str]): Label of each logical observable, "" if it has none.
+            A shorter list (the default is empty) is padded with "" to
+            num_detectors entries, as `read_from_file` and `from_circuit` give.
+        observable_labels (list[str]): Label of each logical observable, "" if
+            it has none, padded the same way.
     """
 
     dimension: int
@@ -399,6 +565,10 @@ class DetectorErrorModel:
     mechanisms: list = field(default_factory=list)
     detector_labels: list = field(default_factory=list)
     observable_labels: list = field(default_factory=list)
+
+    def __post_init__(self):
+        self.detector_labels = _padded_labels(self.detector_labels, self.num_detectors)
+        self.observable_labels = _padded_labels(self.observable_labels, self.num_observables)
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -415,16 +585,21 @@ class DetectorErrorModel:
             merge (bool): Merge rank-1 mechanisms that act on the same line of
                 detector space, see `merge_lines`. Defaults to True.
             check_dimension_prime (bool): Raise if the dimension is not prime.
-                Defaults to True.
+                Defaults to True. With False, a composite d is compiled with
+                the same frame rules, which hold over Z_d; merging then skips
+                lines whose leading coefficient is not a unit mod d, and
+                `to_lines` and `read_from_file` (by default) refuse the model.
 
         Returns:
             DetectorErrorModel: The compiled model.
 
         Raises:
-            ValueError: If the dimension is not prime, an N2 gate uses
-                `prob_dist`, a noise probability is above the fully mixing
-                value, or a detector or observable is not linear in its
-                records or not deterministic without noise.
+            ValueError: If the dimension is not prime, an N1 gate has an
+                unknown noise channel, an N2 gate uses `prob_dist`, a noise
+                probability is above the fully mixing value, a two-qudit gate
+                acts on one qudit twice, or a detector or observable is not
+                linear in its records or not deterministic without noise.
+            IndexError: If a gate acts on a qudit outside the circuit.
         """
         d = circuit.dimension
         if check_dimension_prime and not _is_prime(d):
@@ -445,11 +620,23 @@ class DetectorErrorModel:
         """
         Merges rank-1 mechanisms that act on the same line of detector space.
 
-        Two generators are on the same line when one is a non-zero multiple of
-        the other. Each generator is scaled so its first coefficient is 1, and
-        mechanisms with equal scaled generators are merged with
-        `merge_subgroup_probabilities`. Mechanisms of rank 2 or more are left
-        as they are, since two of them almost never share a subgroup.
+        Two generators are on the same line when one is a unit multiple of
+        the other. Each generator is reduced mod d, sorted by target, and
+        scaled so its first coefficient is 1, and mechanisms with equal scaled
+        generators are merged with `merge_subgroup_probabilities`, in order of
+        first appearance. The merged source joins the sources of all the
+        merged mechanisms with "+", in order; each source goes into exactly
+        one merged source, so the sources take no more room than before.
+        Mechanisms of rank 2 or more come after the lines, as they are,
+        since two of them almost never share a subgroup.
+
+        A generator with no non-zero coefficient, or (composite d only) one
+        whose first coefficient is not a unit mod d, cannot be scaled that
+        way; its mechanism stays in its place, reduced and sorted but not
+        merged with any other.
+
+        Raises:
+            ValueError: If two merged mechanisms have probabilities outside [0, 1].
         """
         d = self.dimension
         merged: dict = {}
@@ -461,6 +648,9 @@ class DetectorErrorModel:
                     others.append(mech)
                     continue
                 key, scaled = _canonical_line(mech.generators[0], d)
+                if key is None:
+                    merged[object()] = ErrorMechanism(mech.probability, [scaled], mech.source)
+                    continue
                 prev = merged.get(key)
                 if prev is not None:
                     prev.probability = _merge_pair(prev.probability, mech.probability)
@@ -488,9 +678,14 @@ class DetectorErrorModel:
         linearly dependent. Lines with no effect are dropped and repeated
         lines are merged.
 
-        The number of lines grows like d**(k-1), so this is only practical
-        for small d. It is the form to use for decoders that expect one shift
-        per mechanism, and for comparing with stim at d = 2.
+        Each line mechanism, when it fires, adds a uniformly random multiple
+        a * v (a uniform on Z_d, zero included) of its one vector v. At d = 2
+        that is a single shift applied with probability pi / 2; for d > 2 the
+        d - 1 non-zero multiples of v are equally likely. The number of lines
+        grows like d**(k-1), so this is only practical for small d. It is the
+        form to use for decoders that expect independent mechanisms that each
+        move along one direction of detector space, and for comparing with
+        stim at d = 2.
 
         Args:
             max_lines_per_mechanism (int): Raise instead of expanding a
@@ -500,9 +695,14 @@ class DetectorErrorModel:
             DetectorErrorModel: A new model in which every mechanism has rank 1.
 
         Raises:
-            ValueError: If a mechanism needs more than `max_lines_per_mechanism` lines.
+            ValueError: If the dimension is not prime (the line decomposition
+                needs Z_d to be a field), a mechanism needs more than
+                `max_lines_per_mechanism` lines, or a probability is not in [0, 1].
         """
         d = self.dimension
+        if not _is_prime(d):
+            raise ValueError(f"to_lines needs a prime dimension, not {d}: the split into independent line "
+                             "mechanisms only holds when Z_d is a field")
         out = DetectorErrorModel(d, self.num_detectors, self.num_observables, [],
                                  list(self.detector_labels), list(self.observable_labels))
         mechs = self.mechanisms
@@ -537,22 +737,60 @@ class DetectorErrorModel:
     # ---------------------------------------------------------------- sample
     def _flatten(self):
         """
-        Packs the mechanisms into flat arrays for the numba sampler.
+        Packs the mechanisms into flat arrays for the numba sampler, checking every entry.
 
         Returns mech_prob (probability of each mechanism), n_gens (number of
         generators of each mechanism), sizes (number of entries of each
-        generator), and ent_tgt / ent_val (targets and coefficients of all
-        entries, generator by generator, in dict order).
+        generator), and ent_tgt / ent_val (targets, and coefficients reduced
+        mod d, of all entries, generator by generator, in dict order).
+
+        Raises:
+            ValueError: If a target or coefficient is not an integer, or a
+                target is outside 0 .. num_detectors + num_observables - 1.
         """
         mechs = self.mechanisms
+        d = int(self.dimension)
+        n_targets = int(self.num_detectors) + int(self.num_observables)
         mech_prob = np.array([m.probability for m in mechs], dtype=np.float64)
         n_gens = np.fromiter((len(m.generators) for m in mechs), dtype=np.int64, count=len(mechs))
         gens = [g for m in mechs for g in m.generators]
         sizes = np.fromiter(map(len, gens), dtype=np.int64, count=len(gens))
         n_ent = int(sizes.sum())
-        ent_tgt = np.fromiter(itertools.chain.from_iterable(gens), dtype=np.int64, count=n_ent)
-        ent_val = np.fromiter(itertools.chain.from_iterable(g.values() for g in gens), dtype=np.int64, count=n_ent)
+        ent_tgt = ent_val = None
+        targets = itertools.chain.from_iterable(gens)
+        values = itertools.chain.from_iterable(g.values() for g in gens)
+        if set(map(type, targets)) <= {int} and set(map(type, values)) <= {int}:
+            # Plain ints: convert in bulk. Anything beyond int64 takes the entry-by-entry path.
+            try:
+                ent_tgt = np.fromiter(itertools.chain.from_iterable(gens), dtype=np.int64, count=n_ent)
+                ent_val = np.fromiter(itertools.chain.from_iterable(g.values() for g in gens), dtype=np.int64,
+                                      count=n_ent)
+            except OverflowError:
+                ent_tgt = None
+        if ent_tgt is None:
+            ent_tgt = np.empty(n_ent, dtype=np.int64)
+            ent_val = np.empty(n_ent, dtype=np.int64)
+            k = 0
+            for g in gens:
+                for t, v in g.items():
+                    index = _as_integer(t, "target")
+                    if not 0 <= index < n_targets:
+                        raise ValueError(self._bad_target_message(t))
+                    ent_tgt[k] = index
+                    # Reduced in Python first, so coefficients of any size are exact.
+                    ent_val[k] = _as_integer(v, "coefficient") % d
+                    k += 1
+        bad = np.flatnonzero((ent_tgt < 0) | (ent_tgt >= n_targets))
+        if len(bad):
+            raise ValueError(self._bad_target_message(int(ent_tgt[bad[0]])))
+        # Coefficients as residues mod d (np.remainder by a positive int64 is never negative).
+        np.remainder(ent_val, d, out=ent_val)
         return mech_prob, n_gens, sizes, ent_tgt, ent_val
+
+    def _bad_target_message(self, target) -> str:
+        return (f"a generator refers to target {target!r}, but the model has {self.num_detectors} detectors "
+                f"and {self.num_observables} observables (targets 0 to "
+                f"{int(self.num_detectors) + int(self.num_observables) - 1})")
 
     def sample(self, shots: int, seed: int | None = None):
         """
@@ -561,14 +799,21 @@ class DetectorErrorModel:
         Mechanisms are grouped into bins of similar probability. Within a bin
         the sampler jumps straight to the next candidate firing with a
         geometric skip, and a mechanism whose probability is below the bin's
-        maximum keeps each candidate with probability pi / pi_max. The cost
-        grows with the number of firings, not with shots * len(mechanisms).
+        maximum keeps each candidate with probability pi / pi_max. Each shot
+        only visits the bins that have a candidate in it (found in a bitmap
+        of the bins), so the cost grows with the number of firings plus one
+        skip per bin per block of shots, not with shots * len(mechanisms) or
+        shots * (number of bins).
 
         Shots are split into fixed blocks of 256, and large jobs spread the
         blocks over several threads (numba's thread count, see
         `_thread_count`). Each block has its own random stream
         (xoshiro256**) seeded from `seed` through NumPy's SeedSequence, so a
         given seed gives the same samples whatever the number of threads.
+
+        Targets and coefficients must be integers (Python or NumPy). Every
+        target must be a detector or observable of the model, and
+        coefficients are reduced mod d, whatever their size.
 
         Args:
             shots (int): Number of samples.
@@ -581,8 +826,9 @@ class DetectorErrorModel:
 
         Raises:
             ValueError: If the dimension is not between 1 and 2**31 - 1, a
-                mechanism probability is NaN, or a generator refers to a
-                target outside the model.
+                mechanism probability is NaN, a target or coefficient is not
+                an integer, or a generator refers to a target outside
+                0 .. num_detectors + num_observables - 1.
         """
         nd = self.num_detectors
         det = np.zeros((shots, nd), dtype=np.int64)
@@ -597,15 +843,11 @@ class DetectorErrorModel:
         montgomery = d % 2 == 1
         # int32 pack entries halve the sampler's memory traffic; they hold targets below n_targets and
         # residues below d.
-        pack_like = np.empty(0, dtype=np.int32 if n_targets <= np.iinfo(np.int32).max else np.int64)
-        status, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost = _sample_plan(
-            mech_prob, mech_prob.view(np.int64), n_gens, sizes, ent_tgt, ent_val, d, n_targets, montgomery,
-            pack_like)
-        if status == -2:
-            raise ValueError("a mechanism probability is NaN")
-        if status >= 0:
-            raise ValueError(f"a generator refers to target {int(ent_tgt[status])}, but the model has "
-                             f"{nd} detectors and {self.num_observables} observables")
+        pack_dtype = np.int32 if n_targets <= np.iinfo(np.int32).max else np.int64
+        pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost = _sample_plan(
+            mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack_dtype)
+        # Every block draws one skip per bin, and each shot scans a bitmap of the bins.
+        cost += len(bin_pmax) / _SAMPLE_CHUNK
         n_chunks = -(-shots // _SAMPLE_CHUNK)
         states = np.random.SeedSequence(seed).generate_state(4 * n_chunks, dtype=np.uint64).reshape(n_chunks, 4)
         # xoshiro256** must not start from the all-zero state.
@@ -627,20 +869,27 @@ class DetectorErrorModel:
 
     # -------------------------------------------------------------------- io
     def __str__(self) -> str:
-        """The model in the format `read_from_file` reads, without the header comments."""
+        """
+        The model in the format `read_from_file` reads, without the header comments.
+
+        Labels are written as JSON string literals (with every non-ASCII
+        character escaped), so any label, including one with line breaks,
+        '#' or leading and trailing spaces, reads back exactly. A source is a
+        comment: line breaks in it are written as spaces.
+        """
         lines = [f"DIMENSION {self.dimension}",
                  f"DETECTORS {self.num_detectors}",
                  f"OBSERVABLES {self.num_observables}"]
         for i, label in enumerate(self.detector_labels):
             if label:
-                lines.append(f"DETECTOR D{i} {label}")
+                lines.append(f"DETECTOR D{i} {json.dumps(str(label))}")
         for i, label in enumerate(self.observable_labels):
             if label:
-                lines.append(f"LOGICAL_OBSERVABLE L{i} {label}")
+                lines.append(f"LOGICAL_OBSERVABLE L{i} {json.dumps(str(label))}")
         for m in self.mechanisms:
             gens = " | ".join(" ".join(self._target_name(t) + f"={v}" for t, v in sorted(g.items()))
                               for g in m.generators)
-            tag = f" # {m.source}" if m.source else ""
+            tag = f" # {' '.join(str(m.source).splitlines())}" if m.source else ""
             lines.append(f"ERROR({float(m.probability)!r}) {gens}{tag}")
         return "\n".join(lines) + "\n"
 
@@ -649,45 +898,68 @@ class DetectorErrorModel:
 
     def write_to_file(self, path: str | Path, comment: str = "") -> None:
         """
-        Writes the model to a text file.
+        Writes the model to a UTF-8 text file, in the format of `str(self)` after a header.
 
         Args:
             path (str or Path): Output path.
             comment (str, optional): Extra text, written as `#` lines in the header.
+
+        Raises:
+            ValueError: If a label has a lone high surrogate right before a
+                lone low surrogate (a Python str can hold them). A JSON
+                string literal cannot tell them from the one character
+                they encode in UTF-16, so the label would not read back.
         """
+        for label in itertools.chain(self.detector_labels, self.observable_labels):
+            if label and _SURROGATE_PAIR.search(str(label)):
+                raise ValueError(f"label {label!r} has a lone surrogate pair, which a JSON string literal reads "
+                                 "back as one character; it cannot be written")
         header = [
-            "# sdim compact qudit detector error model (format: qdem v1)",
+            "# sdim compact qudit detector error model (format: qdem v2)",
             "# ERROR(pi) g_1 | g_2 | ... : with probability pi, add sum_j a_j g_j,",
             "#   a_j i.i.d. uniform on Z_d (identity included); mechanisms are independent.",
             "# Coefficients are residues mod DIMENSION.  Targets Dk are detectors, Lk observables.",
+            "# Labels are JSON string literals.",
         ]
         if comment:
             header += ["# " + line for line in comment.splitlines()]
-        for label in list(self.detector_labels) + list(self.observable_labels):
-            if "\n" in (label or ""):
-                raise ValueError(f"label {label!r} contains a newline")
-        Path(path).write_text("\n".join(header) + "\n#\n" + str(self))
+        Path(path).write_text("\n".join(header) + "\n#\n" + str(self), encoding="utf-8")
 
     @classmethod
-    def read_from_file(cls, path: str | Path) -> "DetectorErrorModel":
+    def read_from_file(cls, path: str | Path, check_dimension_prime: bool = True) -> "DetectorErrorModel":
         """
         Reads a model written by `write_to_file`.
 
+        Labels are JSON string literals (format v2). A file whose first line
+        is the header that format v1 wrote ("... (format: qdem v1)") has its
+        labels read verbatim, as v1 wrote them, quotes and backslashes
+        included. In any other file, a label that is not a valid JSON string
+        literal is read verbatim as well.
+
         Args:
-            path (str or Path): Input path.
+            path (str or Path): Input path, a UTF-8 text file.
+            check_dimension_prime (bool): Raise if DIMENSION is not prime.
+                Defaults to True, since the compact model needs Z_d to be a
+                field (see `from_circuit`).
 
         Returns:
             DetectorErrorModel: The model in the file.
 
         Raises:
-            ValueError: If the file is not in the format, or refers to a
-                detector or observable outside the declared counts.
+            ValueError: If the file is not in the format, DIMENSION is not an
+                integer of at least 2 (or not prime), a header line is
+                repeated, or a line refers to a detector or observable outside
+                the declared counts.
         """
         dem = None
         det_labels: dict = {}
         obs_labels: dict = {}
         mechanisms = []
-        for number, raw in enumerate(Path(path).read_text().splitlines(), start=1):
+        seen = set()
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        # Format v1 wrote labels verbatim; its files start with this header line.
+        verbatim_labels = bool(lines) and lines[0].lstrip().startswith("#") and _V1_HEADER_TAG in lines[0]
+        for number, raw in enumerate(lines, start=1):
             stripped = raw.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -695,24 +967,48 @@ class DetectorErrorModel:
             if head != "DIMENSION" and dem is None:
                 raise ValueError(f"line {number}: DIMENSION must come first")
             if head in ("DETECTOR", "LOGICAL_OBSERVABLE"):
-                # Labels are read verbatim, so they may contain '#'.
+                # The label is the rest of the line, so it may contain '#'.
                 parts = stripped.split(maxsplit=2)
                 prefix, labels = ("D", det_labels) if head == "DETECTOR" else ("L", obs_labels)
                 if len(parts) < 2 or not parts[1].startswith(prefix) or not parts[1][1:].isdigit():
                     raise ValueError(f"line {number}: expected {head} {prefix}<index> <label>")
-                labels[int(parts[1][1:])] = parts[2] if len(parts) > 2 else ""
+                if len(parts) < 3:
+                    label = ""
+                else:
+                    label = parts[2] if verbatim_labels else _read_label(parts[2])
+                labels[int(parts[1][1:])] = label
                 continue
             line, _, source = raw.partition("#")
             line, source = line.strip(), source.strip()
-            if head == "DIMENSION":
-                dem = cls(int(line.split()[1]))
-            elif head == "DETECTORS":
-                dem.num_detectors = int(line.split()[1])
-            elif head == "OBSERVABLES":
-                dem.num_observables = int(line.split()[1])
+            if head in ("DIMENSION", "DETECTORS", "OBSERVABLES"):
+                if head in seen:
+                    raise ValueError(f"line {number}: {head} is given twice")
+                seen.add(head)
+                fields = line.split()
+                value = int(fields[1]) if len(fields) == 2 and fields[1].isascii() and fields[1].isdigit() else None
+                if head == "DIMENSION":
+                    if value is None or value < 2:
+                        raise ValueError(f"line {number}: DIMENSION must be an integer of at least 2, not "
+                                         f"{' '.join(fields[1:])!r}")
+                    if check_dimension_prime and not _is_prime(value):
+                        raise ValueError(f"line {number}: DIMENSION {value} is not prime; compact qudit DEMs "
+                                         "require a prime dimension (Z_d must be a field)")
+                    dem = cls(value)
+                elif value is None:
+                    raise ValueError(f"line {number}: {head} must be a non-negative integer, not "
+                                     f"{' '.join(fields[1:])!r}")
+                elif head == "DETECTORS":
+                    dem.num_detectors = value
+                else:
+                    dem.num_observables = value
             elif head.startswith("ERROR("):
-                prob_text, rest = line[len("ERROR("):].split(")", 1)
-                probability = float(prob_text)
+                prob_text, closed, rest = line[len("ERROR("):].partition(")")
+                try:
+                    probability = float(prob_text) if closed else None
+                except ValueError:
+                    probability = None
+                if probability is None:
+                    raise ValueError(f"line {number}: expected ERROR(<probability>), not {line!r}")
                 if not 0.0 <= probability <= 1.0:
                     raise ValueError(f"line {number}: probability {probability} is not in [0, 1]")
                 gens = []
@@ -720,7 +1016,8 @@ class DetectorErrorModel:
                     gen = {}
                     for item in chunk.split():
                         name, _, value = item.partition("=")
-                        if name[:1] not in ("D", "L") or not name[1:].isdigit() or not value:
+                        if (name[:1] not in ("D", "L") or not name[1:].isascii() or not name[1:].isdigit()
+                                or not value.lstrip("-").isascii() or not value.lstrip("-").isdigit()):
                             raise ValueError(f"line {number}: bad target {item!r}")
                         idx = int(name[1:])
                         limit = dem.num_detectors if name[0] == "D" else dem.num_observables
@@ -736,6 +1033,10 @@ class DetectorErrorModel:
                 raise ValueError(f"line {number}: unrecognized DEM line: {raw}")
         if dem is None:
             raise ValueError("no DIMENSION line")
+        for name, labels, count in (("D", det_labels, dem.num_detectors), ("L", obs_labels, dem.num_observables)):
+            if labels and max(labels) >= count:
+                raise ValueError(f"a label is given for {name}{max(labels)}, but the model has only {count} "
+                                 + ("detectors" if name == "D" else "observables"))
         dem.mechanisms = [m for m in mechanisms if m.generators]
         dem.detector_labels = [det_labels.get(i, "") for i in range(dem.num_detectors)]
         dem.observable_labels = [obs_labels.get(i, "") for i in range(dem.num_observables)]
@@ -760,6 +1061,10 @@ class NoiseLocation:
         subgroup_probability (float): Probability of the equivalent subgroup mechanism.
         responses (list[dict[int, int]]): Sparse response of each unit fault. The
             order is X then Z on each qudit, with only X for "f" and only Z for "p".
+            Each dict lists its targets in the order the fault first reaches
+            them: by the first measurement record (in circuit order) at which
+            the propagated fault is non-zero and that the target reads, then by
+            target index.
         source (str): Name of the gate as written in DEM files.
     """
     ir_index: int
@@ -793,67 +1098,114 @@ class CompiledResponses:
 
 class _LinearForm:
     """
-    An affine form c_0 + c_1 rec[0] + ... + c_n rec[n - 1], coefficients mod d.
+    An affine form k + s * (c_1 rec[0] + ... + c_n rec[n - 1]), coefficients mod d.
 
-    `_detector_coefficients` calls a compiled detector expression once on a
-    list of these forms. The operations below are the only ones defined, and
-    each one turns values congruent mod d to its operands into a value
-    congruent mod d to its result: + and -, multiplication by a constant (or
-    by a form with no record terms), and % by a non-zero multiple of d. So
+    `_detector_coefficients` calls a compiled detector expression once, on a
+    `_Records` sequence of these forms. The operations below are the only ones
+    defined, and each one turns values congruent mod d to its operands into a
+    value congruent mod d to its result: + and -, multiplication by a constant
+    (or by a form with no record terms), and % by a non-zero multiple of d. So
     when the call succeeds, the expression is congruent mod d to the returned
     form for every integer input. Any other operation raises TypeError, and
     the caller falls back to evaluating the expression on numeric probes.
+
+    c is a sparse dict {position j (1 .. n): non-zero coefficient}, and the
+    scale s is a unit mod d. In the expressions this is used on (straight-line
+    arithmetic, see `_is_straight_line_arithmetic`) every value is used
+    exactly once, and `_Records` hands out a new form for every rec[j], so an
+    operation may reuse its operands: a sum adds the smaller dict into the
+    larger one, and negation and multiplication by a constant only change k
+    and s. An expression over many records (an observable that reads every
+    round, say) thus costs time about linear in its length, where dense
+    coefficient tuples cost its length times the number of records.
     """
 
-    __slots__ = ("c", "d")
+    __slots__ = ("k", "s", "c", "n", "d")
 
-    def __init__(self, c: tuple, d: int):
+    def __init__(self, k: int, s: int, c: dict, n: int, d: int):
+        self.k = k
+        self.s = s
         self.c = c
+        self.n = n
         self.d = d
 
-    def _coeffs(self, other) -> tuple:
-        if type(other) is _LinearForm and len(other.c) == len(self.c):
-            return other.c
+    def coefficients(self) -> tuple:
+        """The dense tuple (c_0, c_1, ..., c_n) mod d, c_0 being the constant term."""
+        out = [0] * (self.n + 1)
+        out[0] = self.k
+        s, d = self.s, self.d
+        for j, v in self.c.items():
+            out[j] = v * s % d
+        return tuple(out)
+
+    def _form(self, other):
+        if type(other) is _LinearForm and other.n == self.n:
+            return other
         if type(other) is int:
-            return (other % self.d,) + (0,) * (len(self.c) - 1)
+            return _LinearForm(other % self.d, 1, {}, self.n, self.d)
         raise TypeError("not a linear operation")
 
-    def __add__(self, other):
+    def _scaled(self, m: int):
+        """The form times the constant m, in place."""
         d = self.d
-        return _LinearForm(tuple((a + b) % d for a, b in zip(self.c, self._coeffs(other))), d)
+        self.k = self.k * m % d
+        s = self.s * m % d
+        if s == 0:
+            self.c, self.s = {}, 1
+        elif math.gcd(s, d) != 1:
+            # Composite d only: a non-unit scale could turn entries into zeros, so apply it now.
+            self.c = {j: v * s % d for j, v in self.c.items() if v * s % d}
+            self.s = 1
+        else:
+            self.s = s
+        return self
+
+    def __add__(self, other):
+        other = self._form(other)
+        if other is self:
+            return self._scaled(2)
+        big, small = (self, other) if len(self.c) >= len(other.c) else (other, self)
+        d = self.d
+        big.k = (big.k + small.k) % d
+        if small.c:
+            # small's entries in big's scale; m is a unit, so every term it adds is non-zero.
+            m = small.s * pow(big.s, -1, d) % d
+            c = big.c
+            for j, v in small.c.items():
+                x = (c.get(j, 0) + v * m) % d
+                if x:
+                    c[j] = x
+                else:
+                    del c[j]
+        return big
 
     __radd__ = __add__
 
     def __sub__(self, other):
-        d = self.d
-        return _LinearForm(tuple((a - b) % d for a, b in zip(self.c, self._coeffs(other))), d)
+        other = self._form(other)
+        if other is self:
+            return self._scaled(0)
+        return self + other._scaled(-1)
 
     def __rsub__(self, other):
-        d = self.d
-        return _LinearForm(tuple((b - a) % d for a, b in zip(self.c, self._coeffs(other))), d)
+        return self._scaled(-1) + other
 
     def __neg__(self):
-        d = self.d
-        return _LinearForm(tuple((-a) % d for a in self.c), d)
+        return self._scaled(-1)
 
     def __pos__(self):
         return self
 
     def __mul__(self, other):
-        d = self.d
         if type(other) is int:
-            k = other % d
-            form = self
-        elif type(other) is _LinearForm and len(other.c) == len(self.c):
-            if not any(other.c[1:]):
-                k, form = other.c[0], self
-            elif not any(self.c[1:]):
-                k, form = self.c[0], other
-            else:
-                raise TypeError("product of two records")
-        else:
-            raise TypeError("not a linear operation")
-        return _LinearForm(tuple((a * k) % d for a in form.c), d)
+            return self._scaled(other)
+        if type(other) is _LinearForm and other.n == self.n:
+            if not other.c:
+                return self._scaled(other.k)
+            if not self.c:
+                return other._scaled(self.k)
+            raise TypeError("product of two records")
+        raise TypeError("not a linear operation")
 
     __rmul__ = __mul__
 
@@ -869,6 +1221,28 @@ class _LinearForm:
     __bool__ = __index__ = __int__ = __float__ = __str__ = __format__ = _refuse
     __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = _refuse
     __hash__ = None
+
+
+class _Records:
+    """The `rec` argument of the symbolic call: rec[j] is a new form 1 * rec[j] each time, as a list would index."""
+
+    __slots__ = ("n", "d")
+
+    def __init__(self, n: int, d: int):
+        self.n = n
+        self.d = d
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, j):
+        if type(j) is not int:
+            raise TypeError("not a linear operation")
+        if j < 0:
+            j += self.n
+        if not 0 <= j < self.n:
+            raise IndexError("record index out of range")
+        return _LinearForm(0, 1, {j + 1: 1} if self.d > 1 else {}, self.n, self.d)
 
 
 # Bytecode a detector expression may contain for the single symbolic evaluation: loading the
@@ -930,14 +1304,12 @@ def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict):
         return cache[key]
     result = None
     if _is_straight_line_arithmetic(fn):
-        zero = (0,) * (n + 1)
-        rec = [_LinearForm(zero[:j + 1] + (1 % dimension,) + zero[j + 2:], dimension) for j in range(n)]
         try:
-            value = fn(rec)
+            value = fn(_Records(n, dimension))
         except Exception:
             value = None
         if type(value) is _LinearForm:
-            result = value.c
+            result = value.coefficients()
         elif type(value) is int:
             result = (value % dimension,) + (0,) * n
     if key is not None:
@@ -945,19 +1317,19 @@ def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict):
     return result
 
 
-def _probed_coefficients(fn, n: int, unique_index: int, label, dimension: int) -> list:
+def _probed_coefficients(fn, n: int, unique_index: int, name: str, dimension: int) -> list:
     """
     Coefficient of each record position, read by evaluating the detector function on probes.
 
     Evaluating on unit vectors gives the coefficients, and further probes check that the
-    function really is linear.
+    function really is linear. `name` names the detector or observable in error messages.
 
     Raises:
         ValueError: If the function has a constant term or is not linear.
     """
     base = int(fn([0] * n)) % dimension
     if base != 0:
-        raise ValueError(f"detector {label!r} has a non-zero constant term")
+        raise ValueError(f"{name} has a non-zero constant term")
 
     def at(values):
         return int(fn(list(values))) % dimension
@@ -988,7 +1360,7 @@ def _probed_coefficients(fn, n: int, unique_index: int, label, dimension: int) -
     probes += [[int(x) for x in rng.integers(0, dimension, size=n)] for _ in range(16)]
     for v in probes:
         if at(v) != linear(v):
-            raise ValueError(f"detector {label!r} is not linear in its records")
+            raise ValueError(f"{name} is not linear in its records")
     return position_coeffs
 
 
@@ -997,33 +1369,50 @@ def _detector_coefficients(detector_info, dimension: int):
     Reads the linear coefficients of each detector and logical observable.
 
     sdim compiles each DETECTOR / LOGICAL_OBSERVABLE expression into a
-    function of its measurement records. When the function is plain
-    arithmetic on its records (+, -, * by constants, % by a multiple of d),
-    one call on symbolic `_LinearForm` records gives its coefficients exactly
-    and proves it linear mod d. Otherwise it is evaluated on unit vectors to
-    get the coefficients, and on pairs, doubled unit vectors and random inputs
-    to check that it really is linear.
+    function of the values of the records it reads (`rec[0]`, `rec[1]`, ...
+    are the records listed in its arguments, in order), wrapped in
+    `sdim.program._detector_mod` (normally). When the function is straight-line
+    arithmetic (record lookups, integer constants, unary minus, +, -, *, %)
+    one call on symbolic `_LinearForm` records gives its coefficients mod d
+    exactly and proves it affine mod d. Otherwise it is evaluated on the zero
+    vector (the constant term) and on unit vectors (the coefficients), then
+    checked for linearity on doubled unit vectors, random inputs and, for at
+    most 40 records, every pair of unit vectors.
+
+    Args:
+        detector_info: The DetectorData returned by `Program._build_ir`.
+        dimension (int): Qudit dimension d.
 
     Returns:
-        tuple: Detector coefficients and observable coefficients (lists of
-            {record index: coefficient mod d}), then detector labels and
-            observable labels.
+        tuple: (dets, obs, det_labels, obs_labels). dets and obs hold, for each
+            detector and each observable in order, a dict {absolute measurement
+            record index: coefficient mod d}, with the coefficients of a record
+            read twice added up and zero coefficients left out. The labels are
+            the DETECTOR / LOGICAL_OBSERVABLE labels, "" for none.
 
     Raises:
-        ValueError: If an expression has a constant term or is not linear.
+        ValueError: If an expression has a non-zero constant term or is not
+            linear in its records. The message names the detector (Dk) or
+            observable (Lk) by index, and by label if it has one.
     """
     dets, obs, det_labels, obs_labels = [], [], [], []
     cache: dict = {}
     for unique_index, label, arguments, is_logical in detector_info.detector_data:
         fn = detector_info.detector_functions[unique_index]
         n = len(arguments)
+        if is_logical:
+            name = f"logical observable L{len(obs)}"
+        else:
+            name = f"detector D{len(dets)}"
+        if label:
+            name += f" ({label!r})"
         form = _symbolic_coefficients(fn, n, dimension, cache)
         if form is None:
-            position_coeffs = _probed_coefficients(fn, n, unique_index, label, dimension)
+            position_coeffs = _probed_coefficients(fn, n, unique_index, name, dimension)
         else:
             # The same checks, in the same order, as the numeric path; every probe would agree.
             if form[0] != 0:
-                raise ValueError(f"detector {label!r} has a non-zero constant term")
+                raise ValueError(f"{name} has a non-zero constant term")
             position_coeffs = form[1:]
 
         coeffs = {}
@@ -1058,19 +1447,18 @@ def _plain_noise_gate(instr) -> bool:
     return True
 
 
-def _qudit_op_lists(gid, qa, qb, n_qudits: int):
+def _frame_qudits(gid, qa, qb, n_qudits: int):
     """
-    For each qudit, the IR ops that can change its frame, in circuit order.
+    Checks the qudits of the ops that can change a frame.
 
-    Returns (qb, qptr, qops, posa, posb). Qudit q's ops are qops[qptr[q]:qptr[q + 1]],
-    so the probe kernel only visits ops on qudits a fault has reached. posa / posb hold an
-    op's position in qops within the list of its first / second qudit. qb is a copy with
-    -1 for every single-qudit frame op, so the kernel takes its one-qudit branch.
+    Returns (qb, frame_ops, two_ops): qb is a copy with -1 for every single-qudit frame op, so
+    the kernels take their one-qudit branch, and frame_ops / two_ops are the frame ops and the
+    two-qudit frame ops.
 
     Raises:
         IndexError: If a frame op acts on a qudit outside 0 .. n_qudits - 1.
+        ValueError: If a two-qudit frame op acts on one qudit twice (it has no frame rule).
     """
-    n_ops = len(gid)
     frame_mask = np.isin(gid, np.array(sorted(_FRAME_GATES), dtype=np.int64))
     two_mask = frame_mask & np.isin(gid, np.array(_TWO_QUDIT_FRAME_GATES, dtype=np.int64)) & (qb >= 0)
     qb = np.where(frame_mask & ~two_mask, -1, qb)
@@ -1080,6 +1468,25 @@ def _qudit_op_lists(gid, qa, qb, n_qudits: int):
     if len(ent_q) and (ent_q.min() < 0 or ent_q.max() >= n_qudits):
         bad = int(ent_q.min() if ent_q.min() < 0 else ent_q.max())
         raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
+    same = two_ops[qa[two_ops] == qb[two_ops]]
+    if len(same):
+        i = int(same[0])
+        raise ValueError(f"IR op {i} (gate id {int(gid[i])}) acts on qudit {int(qa[i])} twice; "
+                         "a two-qudit gate needs two different qudits")
+    return np.ascontiguousarray(qb, dtype=np.int64), frame_ops, two_ops
+
+
+def _qudit_op_lists(gid, qa, qb, frame_ops, two_ops, n_qudits: int):
+    """
+    For each qudit, the IR ops that can change its frame, in circuit order (for the forward kernel).
+
+    qb, frame_ops and two_ops are what `_frame_qudits` returns. Returns (qptr, qops, posa, posb).
+    Qudit q's ops are qops[qptr[q]:qptr[q + 1]], so the probe kernel only visits ops on qudits a
+    fault has reached. posa / posb hold an op's position in qops within the list of its first /
+    second qudit.
+    """
+    n_ops = len(gid)
+    ent_q = np.concatenate((qa[frame_ops], qb[two_ops]))
     ent_op = np.concatenate((frame_ops, two_ops))
     # An op's first-qudit entry comes before its second-qudit entry, which matters only if they coincide.
     ent_second = np.concatenate((np.zeros(len(frame_ops), dtype=np.int64), np.ones(len(two_ops), dtype=np.int64)))
@@ -1093,7 +1500,7 @@ def _qudit_op_lists(gid, qa, qb, n_qudits: int):
     posb = np.full(n_ops, -1, dtype=np.int64)
     posa[frame_ops] = where[:len(frame_ops)]
     posb[two_ops] = where[len(frame_ops):]
-    return np.ascontiguousarray(qb, dtype=np.int64), qptr, qops, posa, posb
+    return qptr, qops, posa, posb
 
 
 # Unit faults of each noise-gate code: 0 = N1 'd', 1 = N1 'f', 2 = N1 'p', 3 = N2. Probe j of a
@@ -1132,10 +1539,13 @@ def _lines_from_arrays(mechs: list, pls: list, d: int):
     """
     The mechanisms of `DetectorErrorModel.to_lines`, expanded and merged in numba.
 
-    pls[i] is the line probability of mechs[i]. Returns None if a target or
-    coefficient is not a Python int that fits in int64; the caller then
-    expands one dict at a time.
+    pls[i] is the line probability of mechs[i], and d is prime. Returns None if
+    a target or coefficient is not a Python int that fits in int64, or if d is
+    above 2**31 - 1 (`_expand_lines` multiplies residues in int64, so it needs
+    d * d to fit); the caller then expands one dict at a time, exactly.
     """
+    if d > _MAX_SAMPLE_DIMENSION:
+        return None
     gens = [g for m in mechs for g in m.generators]
     kinds = set(map(type, itertools.chain.from_iterable(gens)))
     kinds |= set(map(type, itertools.chain.from_iterable(g.values() for g in gens)))
@@ -1153,15 +1563,113 @@ def _lines_from_arrays(mechs: list, pls: list, d: int):
     ent_val = np.fromiter((v % d for g in gens for v in g.values()), dtype=np.int64, count=n_ent)
     line_mech, lptr, ltgt, lval, bad = _expand_lines(gen_ptr, ent_ptr, ent_tgt, ent_val, d)
     if bad >= 0:
-        # A leading coefficient with no inverse mod d (composite d). Raise what merge_lines raises.
-        lead = int(lval[lptr[bad]])
-        pow(lead, -1, d)
-        raise ValueError(f"{lead} is not invertible mod {d}")
-    group = np.empty(len(line_mech), dtype=np.int64)
-    _group_lines(lptr, ltgt, lval, group)
+        # Every non-zero residue is invertible mod a prime, and to_lines only takes prime d.
+        raise RuntimeError(f"{int(lval[lptr[bad]])} is not invertible mod {d}")
+    group = _line_groups(lptr, ltgt, lval)
     line_mech = line_mech.tolist()
     return _merge_groups(group.tolist(), [pls[i] for i in line_mech], [mechs[i].source for i in line_mech],
                          ltgt.tolist(), lval.tolist(), lptr.tolist())
+
+
+def _pow_mod(base, exponent: int, d: int) -> np.ndarray:
+    """base ** exponent mod d, elementwise, for int64 residues and d < 2**31 (products stay below 2**62)."""
+    result = np.ones(len(base), dtype=np.int64)
+    square = np.asarray(base, dtype=np.int64) % d
+    while exponent:
+        if exponent & 1:
+            result = result * square % d
+        square = square * square % d
+        exponent >>= 1
+    return result
+
+
+def _scale_lines(cptr, cval, d: int):
+    """
+    Scales each line (entries cptr[i]:cptr[i + 1] of cval, sorted by target, non-zero mod d) so its first value is 1.
+
+    Returns (scaled values, solo): solo is None, or (composite d) a bool array marking the lines
+    whose first value is not invertible mod d. Those are left unscaled.
+    """
+    n = len(cptr) - 1
+    if n == 0:
+        return cval, None
+    lead = cval[cptr[:-1]]
+    solo = None
+    if _is_prime(d):
+        inv = _pow_mod(lead, d - 2, d)
+    else:
+        leads, where = np.unique(lead, return_inverse=True)
+        inverses = []
+        for v in leads.tolist():
+            inverses.append(pow(v, -1, d) if math.gcd(v, d) == 1 else 1)
+        inv = np.array(inverses, dtype=np.int64)[where.reshape(-1)]
+        solo = np.array([math.gcd(v, d) != 1 for v in leads.tolist()], dtype=bool)[where.reshape(-1)]
+    return cval * np.repeat(inv, np.diff(cptr)) % d, solo
+
+
+def _line_groups(cptr, ctgt, cval, solo=None) -> np.ndarray:
+    """
+    Numbers equal lines (entries cptr[i]:cptr[i + 1] of ctgt / cval) in order of first appearance.
+
+    A line marked in `solo` gets a number of its own. A few lines are grouped exactly, by their
+    entries. Many lines are compared by a 64-bit hash of their entries, and every line found
+    equal to an earlier one is checked entry by entry; a hash collision (never seen in practice)
+    falls back to exact grouping.
+    """
+    n = len(cptr) - 1
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    if n <= 64:
+        return _exact_line_groups(cptr, ctgt, cval, solo)
+    sizes = np.diff(cptr)
+    with np.errstate(over="ignore"):
+        x = ctgt.astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+        x ^= cval.astype(np.uint64) * np.uint64(0xBF58476D1CE4E5B9)
+        x ^= x >> np.uint64(31)
+        x *= np.uint64(0x94D049BB133111EB)
+        x ^= x >> np.uint64(29)
+        total = np.zeros(len(x) + 1, dtype=np.uint64)
+        np.cumsum(x, out=total[1:])
+        h = total[cptr[1:]] - total[cptr[:-1]] + sizes.astype(np.uint64) * np.uint64(0xD6E8FEB86659FD93)
+    line = np.arange(n, dtype=np.int64)
+    rep = line.copy()
+    normal = line if solo is None else np.flatnonzero(~solo)
+    if len(normal):
+        _, first, where = np.unique(h[normal], return_index=True, return_inverse=True)
+        rep[normal] = normal[first[where.reshape(-1)]]
+    dup = np.flatnonzero(rep != line)
+    if len(dup):
+        same = sizes[dup] == sizes[rep[dup]]
+        if same.all():
+            a = _segments(cptr[dup], sizes[dup])
+            b = _segments(cptr[rep[dup]], sizes[dup])
+            same = (ctgt[a] == ctgt[b]) & (cval[a] == cval[b])
+        if not same.all():
+            # A hash collision: group exactly instead.
+            return _exact_line_groups(cptr, ctgt, cval, solo)
+    return np.searchsorted(np.unique(rep), rep)
+
+
+def _exact_line_groups(cptr, ctgt, cval, solo=None) -> np.ndarray:
+    """`_line_groups`, by comparing the entries of the lines themselves."""
+    cptr, ctgt, cval = cptr.tolist(), ctgt.tolist(), cval.tolist()
+    solo = [False] * (len(cptr) - 1) if solo is None else solo.tolist()
+    seen: dict = {}
+    group = []
+    for i in range(len(cptr) - 1):
+        a, b = cptr[i], cptr[i + 1]
+        key = i if solo[i] else (tuple(ctgt[a:b]), tuple(cval[a:b]))
+        group.append(seen.setdefault(key, len(seen)))
+    return np.array(group, dtype=np.int64)
+
+
+def _segments(starts, counts):
+    """The indices starts[i] + 0 .. counts[i] - 1 for every i, concatenated."""
+    counts = np.asarray(counts, dtype=np.int64)
+    total = int(counts.sum())
+    offsets = np.zeros(len(counts), dtype=np.int64)
+    np.cumsum(counts[:-1], out=offsets[1:])
+    return np.repeat(np.asarray(starts, dtype=np.int64) - offsets, counts) + np.arange(total, dtype=np.int64)
 
 
 class _Compiled:
@@ -1169,12 +1677,23 @@ class _Compiled:
     Unit-fault responses of every noise gate, as flat arrays.
 
     Noise gate i has unit-fault probes probe_start[i]:probe_start[i + 1], and
-    probe k has response entries ptr[k]:ptr[k + 1] in tgt (targets, in the
-    order the kernel first touched them) and val (coefficients mod d).
+    probe k has response entries ptr[k]:ptr[k + 1] in tgt (targets) and val
+    (coefficients mod d).
+
+    The entries of a response come out of the forward kernel in the order the
+    fault first reaches each target (see `NoiseLocation`), and that is the
+    dict order of every response and generator this module hands out. The
+    backward sweep gives them sorted by target instead. ordered[k] is True
+    once probe k's entries are in first-touch order (always, for at most one
+    entry), and `_order_probes` puts the entries of the probes that need it in
+    that order (see `_touch_order`). Only the generators of rank-2 and higher
+    mechanisms, unmerged models and `compile_unit_responses` need it: merged
+    lines are sorted by target anyway.
     """
 
     def __init__(self, dimension, num_detectors, num_observables, detector_labels, observable_labels,
-                 ir_index, gate_id, codes, channels, q0, q1, prob, pi, probe_start, ptr, tgt, val):
+                 ir_index, gate_id, codes, channels, q0, q1, prob, pi, probe_start, ptr, tgt, val,
+                 ordered=None, sweep=None):
         self.dimension = dimension
         self.num_detectors = num_detectors
         self.num_observables = num_observables
@@ -1192,14 +1711,38 @@ class _Compiled:
         self.ptr = ptr
         self.tgt = tgt
         self.val = val
+        self.ordered = np.ones(len(ptr) - 1, dtype=bool) if ordered is None else ordered
+        # (backward kernel arguments, probe_op, probe_qudit, probe_kind) of the noise probes, for _order_probes.
+        self._sweep = sweep
 
     def source(self, i: int) -> str:
         if self.codes[i] == 3:
             return f"N2@{self.ir_index[i]}:q{self.q0[i]},q{self.q1[i]}"
         return f"N1[{self.channels[i]}]@{self.ir_index[i]}:q{self.q0[i]}"
 
+    def _probes_of(self, gates) -> np.ndarray:
+        """The probe indices of the given noise gates, gate by gate."""
+        gates = np.asarray(gates, dtype=np.int64)
+        start = self.probe_start
+        return _segments(start[gates], start[gates + 1] - start[gates])
+
+    def _order_probes(self, probes) -> None:
+        """Puts the response entries of the given probes in first-touch order (see the class docstring)."""
+        probes = np.asarray(probes, dtype=np.int64)
+        need = probes[~self.ordered[probes]]
+        if not len(need):
+            return
+        sizes = self.ptr[need + 1] - self.ptr[need]
+        slots = _segments(self.ptr[need], sizes)
+        perm = _touch_order(self._sweep, self.dimension, self.num_detectors + self.num_observables, need, sizes,
+                            self.tgt[slots])
+        self.tgt[slots] = self.tgt[slots][perm]
+        self.val[slots] = self.val[slots][perm]
+        self.ordered[need] = True
+
     def locations(self) -> list:
         """The `NoiseLocation` list that `compile_unit_responses` returns."""
+        self._order_probes(np.arange(len(self.ptr) - 1, dtype=np.int64))
         tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
         responses = [dict(zip(tgt[a:b], val[a:b])) for a, b in zip(ptr[:-1], ptr[1:])]
         start = self.probe_start.tolist()
@@ -1232,6 +1775,13 @@ class _Compiled:
         rank = np.add.reduceat(nonempty.astype(np.int64), start[:-1])
         prob = np.array(self.prob, dtype=np.float64)
         keep = (rank > 0) & ~(prob <= 0.0)
+        if merge:
+            ones = np.flatnonzero(keep & (rank == 1))
+            higher = np.flatnonzero(keep & (rank > 1))
+            self._order_probes(self._probes_of(higher))
+            higher = higher.tolist()
+        else:
+            self._order_probes(self._probes_of(np.flatnonzero(keep)))
         tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
         nonempty_list = nonempty.tolist()
         start_list = start.tolist()
@@ -1244,26 +1794,26 @@ class _Compiled:
         if not merge:
             return [ErrorMechanism(pi[i], generators(i), self.source(i)) for i in np.flatnonzero(keep).tolist()]
 
-        ones = np.flatnonzero(keep & (rank == 1))
-        higher = np.flatnonzero(keep & (rank > 1)).tolist()
         # The one non-empty probe of each rank-1 gate (only read for those gates).
         probe_loc = np.repeat(np.arange(n_loc, dtype=np.int64), np.diff(start))
         nonempty_probe = np.full(n_loc, -1, dtype=np.int64)
         hits = np.flatnonzero(nonempty)
         nonempty_probe[probe_loc[hits]] = hits
         probes = nonempty_probe[ones]
-        n_entries = int((self.ptr[probes + 1] - self.ptr[probes]).sum())
+        # Their entries, sorted by target within each mechanism (the backward sweep gives them sorted).
+        sizes = self.ptr[probes + 1] - self.ptr[probes]
+        entries = _segments(self.ptr[probes], sizes)
+        owner = np.repeat(np.arange(len(probes), dtype=np.int64), sizes)
+        ctgt = self.tgt[entries]
+        cval = self.val[entries]
+        if not np.all((owner[1:] != owner[:-1]) | (ctgt[1:] > ctgt[:-1])):
+            by_target = np.lexsort((ctgt, owner))
+            ctgt = ctgt[by_target]
+            cval = cval[by_target]
         cptr = np.zeros(len(probes) + 1, dtype=np.int64)
-        ctgt = np.empty(n_entries, dtype=np.int64)
-        cval = np.empty(n_entries, dtype=np.int64)
-        group = np.empty(len(probes), dtype=np.int64)
-        bad = _canonical_lines(self.ptr, self.tgt, self.val, probes, d, cptr, ctgt, cval, group)
-        if bad >= 0:
-            # Not invertible mod d (only possible for a composite d). Raise what merge_lines raises.
-            k = int(probes[bad])
-            lead = min(zip(tgt[ptr[k]:ptr[k + 1]], val[ptr[k]:ptr[k + 1]]))[1]
-            pow(lead, -1, d)
-            raise ValueError(f"{lead} is not invertible mod {d}")
+        np.cumsum(sizes, out=cptr[1:])
+        cval, solo = _scale_lines(cptr, cval, d)
+        group = _line_groups(cptr, ctgt, cval, solo)
 
         ones = ones.tolist()
         out = _merge_groups(group.tolist(), [pi[i] for i in ones], [self.source(i) for i in ones],
@@ -1272,14 +1822,22 @@ class _Compiled:
         return out
 
 
-def _compile(circuit: Circuit) -> _Compiled:
+def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     """
     Computes the unit-fault responses of every noise gate. See `compile_unit_responses`.
+
+    With `backward` (the default is `_BACKWARD`), one backward sweep over the
+    circuit gives every response (`_backward_kernel`); otherwise every unit
+    fault is pushed forward to the end of the circuit (`_probe_kernel`), which
+    costs time quadratic in the number of rounds of a memory circuit. Both give
+    the same responses, and the same model.
 
     The noise gates are left out of the circuit handed to `Program._build_ir`
     when that does not change what it returns or raises, since it would
     otherwise draw a noise sample for each of them.
     """
+    if backward is None:
+        backward = _BACKWARD
     d = circuit.dimension
     n_qudits = circuit.num_qudits
 
@@ -1336,10 +1894,10 @@ def _compile(circuit: Circuit) -> _Compiled:
     n_recs = int(is_meas.sum())
     rec_of_op[is_meas] = np.arange(n_recs, dtype=np.int64)
 
-    qb, qptr, qops, posa, posb = _qudit_op_lists(gid, qa, qb, n_qudits)
+    qb, frame_ops, two_ops = _frame_qudits(gid, qa, qb, n_qudits)
 
     # For each measurement record, the detectors / observables that use it and their coefficients,
-    # detectors first and then observables, each in order.
+    # detectors first and then observables, each in order. Within a record, targets are increasing.
     dets, obs, det_labels, obs_labels = _detector_coefficients(detector_info, d)
     n_det = len(dets)
     inc_rec, inc_tgt, inc_coef = [], [], []
@@ -1351,8 +1909,8 @@ def _compile(circuit: Circuit) -> _Compiled:
     by_rec = np.argsort(inc_rec, kind="stable")
     rptr = np.zeros(n_recs + 1, dtype=np.int64)
     rptr[1:] = np.cumsum(np.bincount(inc_rec, minlength=n_recs))
-    rtgt = np.array(inc_tgt, dtype=np.int64)[by_rec]
-    rcoef = np.array(inc_coef, dtype=np.int64)[by_rec]
+    rtgt = np.ascontiguousarray(np.array(inc_tgt, dtype=np.int64)[by_rec])
+    rcoef = np.ascontiguousarray(np.array(inc_coef, dtype=np.int64)[by_rec])
 
     # Noise gates in IR order. Raise on the first bad one, as compile_unit_responses always has.
     # Consecutive gates that share a params dict (one add_gate call) share its parsed values.
@@ -1428,8 +1986,15 @@ def _compile(circuit: Circuit) -> _Compiled:
         raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
 
     n_targets = n_det + len(obs)
-    ptr, tgt, val = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
-                                probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits)
+    if backward:
+        visit = np.argsort(-probe_op, kind="stable")
+        none = np.zeros(0, dtype=np.int64)
+        ptr, tgt, val = _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, visit, probe_op,
+                                         probe_qudit, probe_kind, d, n_qudits, none, none, none)
+    else:
+        qptr, qops, posa, posb = _qudit_op_lists(gid, qa, qb, frame_ops, two_ops, n_qudits)
+        ptr, tgt, val = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt,
+                                    rcoef, probe_op, probe_qudit, probe_kind, d, n_targets, n_qudits)
     random_targets = np.unique(tgt[ptr[n_noise_probes]:]).tolist()
     if random_targets:
         names = [(f"D{t}" if t < n_det else f"L{t - n_det}") for t in random_targets]
@@ -1437,8 +2002,150 @@ def _compile(circuit: Circuit) -> _Compiled:
                          f"have no detector error model: {', '.join(names[:20])}"
                          + (" ..." if len(names) > 20 else ""))
     end = int(ptr[n_noise_probes])
+    ptr = ptr[:n_noise_probes + 1]
+    ordered = sweep = None
+    if backward:
+        ordered = np.diff(ptr) <= 1
+        sweep = (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits,
+                probe_op[:n_noise_probes], probe_qudit[:n_noise_probes], probe_kind[:n_noise_probes])
     return _Compiled(d, n_det, len(obs), det_labels, obs_labels, ir_indices, gate_ids, codes, channels,
-                     q0s, q1s, probs, pis, probe_start, ptr[:n_noise_probes + 1], tgt[:end], val[:end])
+                     q0s, q1s, probs, pis, probe_start, ptr, tgt[:end], val[:end], ordered, sweep)
+
+
+def _touch_order(sweep, d: int, n_targets: int, probes, sizes, tgt) -> np.ndarray:
+    """
+    The first-touch order of the response entries of some unit-fault probes.
+
+    Probe probes[i] has sizes[i] >= 2 entries, which come next in `tgt`
+    (sorted by target, from the backward sweep). The forward kernel would list
+    them by their key r_t * n_targets + t, where r_t is the first record of
+    target t at which the propagated fault is non-zero. Records are numbered
+    in circuit order. Returns the permutation of `tgt` that puts each probe's
+    entries in that order.
+
+    Target t has a non-zero coefficient, so r_t is one of t's records after
+    the fault (its candidates). Each entry keeps the interval of keys still
+    possible for it: from its next candidate, the first one at which the
+    fault is not known to be zero, to its last candidate. The key is known
+    once the fault is found non-zero at the next candidate, or the next
+    candidate is the last one (t reads the fault at one of them). Once the
+    intervals of a probe's entries are disjoint, sorting by their lower ends
+    gives the order. Most probes start that way, since their targets read
+    records in different rounds.
+
+    While intervals overlap, every entry whose interval overlaps another and
+    whose key is not known asks about its next `step` candidates (all but
+    the last), with `step` doubling from 1 at each pass, and
+    `_ask_records` answers with a backward sweep. An entry thus asks about
+    fewer than twice the candidates it has to rule out (plus one), so a
+    fault that reaches its targets early settles them with a question or
+    two each, however many rounds the targets read. Only a fault that
+    reaches overlapping targets late needs many questions, about one per
+    candidate it passes, like pushing it forward does. A sweep gets about
+    `_TOUCH_QUESTIONS_PER_SWEEP` questions at most (each of them takes a few
+    tens of bytes), and a pass with more uses several sweeps.
+    """
+    (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits, probe_op, probe_qudit,
+     probe_kind) = sweep
+    probes = np.asarray(probes, dtype=np.int64)
+    n_recs = len(rptr) - 1
+    stride = n_recs + 1
+    # Each target's records, sorted, as keys target * stride + record.
+    entry_rec = np.repeat(np.arange(n_recs, dtype=np.int64), np.diff(rptr))
+    tkey = np.sort(rtgt * stride + entry_rec)
+    trec = tkey % stride
+    tend = np.searchsorted(tkey, (np.arange(n_targets, dtype=np.int64) + 1) * stride)
+    recs_before = np.zeros(len(gid) + 1, dtype=np.int64)
+    np.cumsum(rec_of_op >= 0, out=recs_before[1:])
+
+    owner = np.repeat(np.arange(len(probes), dtype=np.int64), sizes)
+    t = np.asarray(tgt, dtype=np.int64)
+    nxt = np.searchsorted(tkey, t * stride + recs_before[probe_op[probes] + 1][owner])
+    last = tend[t] - 1
+    if np.any(nxt > last):
+        raise RuntimeError("a unit fault reaches a target with no measurement record after the fault")
+    lower = trec[nxt] * n_targets + t
+    upper = trec[last] * n_targets + t           # equal to lower once the key is known
+    work = np.arange(len(t), dtype=np.int64)     # the entries of the probes whose order is not settled
+    step = 1
+    while len(work):
+        # Sorted by lower end within each probe, an entry overlaps another one of its probe iff it
+        # overlaps the next one or the largest upper end before it.
+        work = work[np.lexsort((lower[work], owner[work]))]
+        o, lo, hi = owner[work], lower[work], upper[work]
+        n = len(work)
+        same = o[1:] == o[:-1]
+        overlap = np.zeros(n, dtype=bool)
+        overlap[:-1] = same & (lo[1:] <= hi[:-1])
+        # The running maximum of hi is taken over ranks, offset per probe so it restarts at each probe.
+        hi_values, hi_rank = np.unique(hi, return_inverse=True)
+        offset = np.zeros(n, dtype=np.int64)
+        np.cumsum(~same, out=offset[1:])
+        offset *= n + 1
+        run = np.maximum.accumulate(hi_rank.reshape(-1) + offset) - offset
+        overlap[1:] |= same & (hi_values[run[:-1]] >= lo[1:])
+        active = work[overlap & (lo < hi)]
+        if not len(active):
+            break
+        unsettled = np.zeros(len(probes), dtype=bool)
+        unsettled[owner[active]] = True
+        work = work[unsettled[o]]
+        # Ask about the next `step` candidates of each active entry (not the last one: it needs no
+        # question), in pieces of at most about _TOUCH_QUESTIONS_PER_SWEEP questions.
+        counts = np.minimum(last[active] - nxt[active], step)
+        cuts = np.flatnonzero(np.diff((np.cumsum(counts) - counts) // _TOUCH_QUESTIONS_PER_SWEEP)) + 1
+        for piece, cnt in zip(np.split(active, cuts), np.split(counts, cuts)):
+            q_pos = _segments(nxt[piece], cnt)
+            q_start = np.zeros(len(piece), dtype=np.int64)
+            np.cumsum(cnt[:-1], out=q_start[1:])
+            q_probe = np.repeat(probes[owner[piece]], cnt)
+            hits = np.flatnonzero(_ask_records(sweep, d, q_probe, trec[q_pos]))
+            # The first candidate found non-zero becomes the entry's key; otherwise move past the questions.
+            if len(hits):
+                j = np.minimum(np.searchsorted(hits, q_start), len(hits) - 1)
+                found = (hits[j] >= q_start) & (hits[j] < q_start + cnt)
+                nxt[piece] = np.where(found, q_pos[hits[j]], nxt[piece] + cnt)
+            else:
+                found = np.zeros(len(piece), dtype=bool)
+                nxt[piece] += cnt
+            lower[piece] = trec[nxt[piece]] * n_targets + t[piece]
+            upper[piece] = np.where(found, lower[piece], upper[piece])
+        step = min(2 * step, _TOUCH_QUESTIONS_PER_SWEEP)
+    return np.lexsort((lower, owner))
+
+
+def _ask_records(sweep, d: int, q_probe, q_rec) -> np.ndarray:
+    """
+    Whether the fault of probe q_probe[i] is non-zero at measurement record q_rec[i], for each i.
+
+    One backward sweep answers them all: its targets are the records asked
+    about, each one alone with coefficient 1, and each run of consecutive
+    questions of one probe is one read of that probe's map, which looks up
+    each record by binary search. A record is dropped from the maps once the
+    sweep passes the earliest probe that asks about it. Nothing here sorts
+    the questions.
+    """
+    (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits, probe_op, probe_qudit,
+     probe_kind) = sweep
+    q_probe = np.asarray(q_probe, dtype=np.int64)
+    q_rec = np.asarray(q_rec, dtype=np.int64)
+    n_recs = len(rptr) - 1
+    # Target r is record r; only the records asked about have a row.
+    row_ptr = np.zeros(n_recs + 1, dtype=np.int64)
+    row_ptr[q_rec + 1] = 1
+    asked = np.flatnonzero(row_ptr[1:])
+    np.cumsum(row_ptr, out=row_ptr)
+    expire = np.full(n_recs, len(gid), dtype=np.int64)
+    np.minimum.at(expire, q_rec, probe_op[q_probe])
+    ask_start = np.flatnonzero(np.r_[True, q_probe[1:] != q_probe[:-1]]) if len(q_probe) else q_probe
+    askers = q_probe[ask_start]
+    ask_ptr = np.append(ask_start, len(q_probe)).astype(np.int64)
+    ops = probe_op[askers]
+    # The answers come back in the order asked.
+    _, _, val = _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, row_ptr, asked,
+                                 np.ones(len(asked), dtype=np.int64), np.argsort(-ops, kind="stable"), ops,
+                                 probe_qudit[askers], probe_kind[askers], d, n_qudits, expire, ask_ptr, q_rec)
+    return val != 0
 
 
 def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
@@ -1446,9 +2153,12 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
     Computes the detector response of every unit fault in a circuit.
 
     For each N1/N2 gate, an X or Z fault is placed right after the gate on
-    each qudit it acts on, then pushed through the rest of the circuit with
-    the same update rules as `sdim.program.simulate_frame`. The response is
-    the change the fault causes in each detector and logical observable.
+    each qudit it acts on. Its response is the change it causes in each
+    detector and logical observable when it follows the update rules of
+    `sdim.program.simulate_frame` through the rest of the circuit. The
+    responses come from one backward sweep over the circuit (see the module
+    docstring), and each one lists its targets in the order the fault first
+    reaches them (see `NoiseLocation`).
 
     Args:
         circuit (Circuit): The noisy circuit.
@@ -1458,8 +2168,13 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
             per noise gate.
 
     Raises:
-        ValueError: If an N2 gate uses `prob_dist`, or a detector expression
-            is not linear.
+        ValueError: If an N1 gate has an unknown noise channel, an N2 gate
+            uses `prob_dist`, a noise probability is above the fully mixing
+            value, a two-qudit gate acts on one qudit twice, a detector or
+            observable expression has a constant term or is not linear in its
+            records, or a detector or observable is not deterministic without
+            noise.
+        IndexError: If a gate acts on a qudit outside the circuit.
     """
     with _gc_paused():
         compiled = _compile(circuit)
@@ -1516,6 +2231,10 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                   probe_op, probe_qudit, probe_kind, d, n_targets, max_slots, cap):
     """
     Pushes unit faults through the circuit, one probe at a time.
+
+    This is the forward reference for `_backward_kernel`, used when `_BACKWARD`
+    is False: it costs time proportional to how far each fault travels, which
+    for a memory circuit grows with the number of rounds after the fault.
 
     The frame update rules are the ones in `sdim.program.simulate_frame`, with
     one difference. Measurement and reset set the Z frame to 0 instead of
@@ -1724,6 +2443,263 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
     return 0, out_ptr, out_tgt[:w], out_val[:w]
 
 
+@njit(nogil=True, cache=True)
+def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, visit, probe_op, probe_qudit,
+                     probe_kind, d, n_qudits, expire, ask_ptr, ask_tgt):
+    """
+    The response of every unit-fault probe, from one backward sweep over the circuit.
+
+    Map 2q (2q + 1) is the response of a unit X (Z) fault on qudit q placed at
+    the current point of the sweep: a sparse vector of targets, sorted, with
+    non-zero values mod d. At the end of the circuit every map is zero. Going
+    back over op i turns the maps after it into the maps before it, by the
+    transpose of the op's frame rule in `_probe_kernel`: a fault before the op
+    becomes some combination of unit faults after it, plus the record it
+    changes if the op measures. Writing X, Z for a qudit's maps, the maps
+    before the op are, in terms of the maps after it:
+
+        H        X <- Z,       Z <- -X
+        H_INV    X <- -Z,      Z <- X
+        P        X <- X + Z
+        P_INV    X <- X - Z
+        MUL a    X <- a X,     Z <- a^-1 Z
+        M        X <- X + R,   Z <- 0          (R: the targets reading the record)
+        M_X      Z <- Z + R,   X <- 0
+        RESET    X <- 0,       Z <- 0
+        CNOT a b     Xa <- Xa + Xb,   Zb <- Zb - Za
+        CNOT_INV a b Xa <- Xa - Xb,   Zb <- Zb + Za
+        CZ a b       Xa <- Xa + Zb,   Xb <- Xb + Za
+        CZ_INV a b   Xa <- Xa - Zb,   Xb <- Xb - Za
+        SWAP a b     swap the maps of a and b
+
+    A probe (op p, qudit, kind) reads its map after op p, that is just before
+    going back over op p (p = -1: at the start of the circuit). The maps live
+    in one pool: a map is rewritten at the end of the pool, and the pool is
+    compacted when it fills up. `visit` lists the probes by decreasing op.
+
+    The targets are whatever the record rows rptr / rtgt / rcoef say: the
+    detectors and observables, or (for `_ask_records`) single records. If
+    `expire` is not empty, target t is no longer needed once the sweep is
+    before op expire[t]: rewriting a map while going back over op i drops the
+    entries of the targets with expire[t] >= i, which keeps short-lived
+    targets from piling up in maps that live long. If `ask_ptr` is not
+    empty, probe k reads only the targets ask_tgt[ask_ptr[k]:ask_ptr[k + 1]],
+    each by binary search in its map, and its response lists all of them in
+    that order, with value 0 for those not in the map.
+
+    The sweep starts at the last op whose record some target reads (every
+    map is zero after it) and stops once every probe has read its map.
+
+    Returns:
+        tuple: (ptr, tgt, val), probe k's response being the entries
+            ptr[k]:ptr[k + 1] of tgt (sorted targets, or the targets asked
+            about) and val.
+    """
+    n_ops = gid.shape[0]
+    n_probes = visit.shape[0]
+    n_maps = 2 * n_qudits
+    filtering = expire.shape[0] > 0
+    asking = ask_ptr.shape[0] > 0
+    mstart = np.zeros(n_maps, dtype=np.int64)
+    mlen = np.zeros(n_maps, dtype=np.int64)
+    pool_t = np.empty(max(1024, 2 * n_maps), dtype=np.int64)
+    pool_v = np.empty(pool_t.shape[0], dtype=np.int64)
+    used = 0
+    res_start = np.zeros(n_probes, dtype=np.int64)
+    res_len = np.zeros(n_probes, dtype=np.int64)
+    out_t = np.empty(1024, dtype=np.int64)
+    out_v = np.empty(1024, dtype=np.int64)
+    w = 0
+    # Up to two merges per op: (destination map, source map or -1 - record, multiplier).
+    act = np.empty((2, 3), dtype=np.int64)
+    v = 0
+    op = n_ops - 1
+    while op >= 0 and (rec_of_op[op] < 0 or rptr[rec_of_op[op] + 1] == rptr[rec_of_op[op]]):
+        op -= 1
+    while True:
+        while v < n_probes and probe_op[visit[v]] >= op:
+            pr = visit[v]
+            m = 2 * probe_qudit[pr] + probe_kind[pr]
+            n = ask_ptr[pr + 1] - ask_ptr[pr] if asking else mlen[m]
+            if w + n > out_t.shape[0]:
+                size = 2 * out_t.shape[0]
+                while size < w + n:
+                    size *= 2
+                grown_t = np.empty(size, dtype=np.int64)
+                grown_v = np.empty(size, dtype=np.int64)
+                for i in range(w):
+                    grown_t[i] = out_t[i]
+                    grown_v[i] = out_v[i]
+                out_t = grown_t
+                out_v = grown_v
+            s = mstart[m]
+            if asking:
+                end = s + mlen[m]
+                for i in range(n):
+                    x = ask_tgt[ask_ptr[pr] + i]
+                    lo = s
+                    hi = end
+                    while lo < hi:
+                        mid = (lo + hi) // 2
+                        if pool_t[mid] < x:
+                            lo = mid + 1
+                        else:
+                            hi = mid
+                    out_t[w + i] = x
+                    out_v[w + i] = pool_v[lo] if lo < end and pool_t[lo] == x else 0
+            else:
+                for i in range(n):
+                    out_t[w + i] = pool_t[s + i]
+                    out_v[w + i] = pool_v[s + i]
+            res_start[pr] = w
+            res_len[pr] = n
+            w += n
+            v += 1
+        if op < 0 or v == n_probes:
+            break
+        g = gid[op]
+        n_act = 0
+        if qb[op] >= 0 and g >= 9 and g <= 13:
+            xa = 2 * qa[op]
+            xb = 2 * qb[op]
+            if g == 13:  # SWAP
+                for c in range(2):
+                    t0 = mstart[xa + c]
+                    mstart[xa + c] = mstart[xb + c]
+                    mstart[xb + c] = t0
+                    t0 = mlen[xa + c]
+                    mlen[xa + c] = mlen[xb + c]
+                    mlen[xb + c] = t0
+            else:
+                n_act = 2
+                if g == 9 or g == 10:  # CNOT, CNOT_INV
+                    act[0, 0] = xa
+                    act[0, 1] = xb
+                    act[1, 0] = xb + 1
+                    act[1, 1] = xa + 1
+                    act[0, 2] = 1 if g == 9 else d - 1
+                    act[1, 2] = d - 1 if g == 9 else 1
+                else:  # CZ, CZ_INV
+                    act[0, 0] = xa
+                    act[0, 1] = xb + 1
+                    act[1, 0] = xb
+                    act[1, 1] = xa + 1
+                    act[0, 2] = 1 if g == 11 else d - 1
+                    act[1, 2] = act[0, 2]
+        elif g >= 5 and g <= 8 or g == 22 or g >= 14 and g <= 16:
+            x = 2 * qa[op]
+            z = x + 1
+            neg = -1
+            if g == 5 or g == 6:  # H, H_INV
+                t0 = mstart[x]
+                mstart[x] = mstart[z]
+                mstart[z] = t0
+                t0 = mlen[x]
+                mlen[x] = mlen[z]
+                mlen[z] = t0
+                neg = z if g == 5 else x
+            elif g == 7 or g == 8:  # P, P_INV
+                n_act = 1
+                act[0, 0] = x
+                act[0, 1] = z
+                act[0, 2] = 1 if g == 7 else d - 1
+            elif g == 22:  # MUL
+                for c in range(2):
+                    f = mul_a[op] if c == 0 else mul_inv[op]
+                    if f != 1:
+                        for i in range(mstart[x + c], mstart[x + c] + mlen[x + c]):
+                            pool_v[i] = (pool_v[i] * f) % d
+            elif g == 16:  # RESET
+                mlen[x] = 0
+                mlen[z] = 0
+            else:  # M records X, M_X records Z
+                kept = x if g == 14 else z
+                mlen[z if g == 14 else x] = 0
+                n_act = 1
+                act[0, 0] = kept
+                act[0, 1] = -1 - rec_of_op[op]
+                act[0, 2] = 1
+            if neg >= 0 and d > 2:
+                for i in range(mstart[neg], mstart[neg] + mlen[neg]):
+                    pool_v[i] = d - pool_v[i]
+        for a in range(n_act):
+            dst = act[a, 0]
+            src = act[a, 1]
+            c = act[a, 2]
+            if src >= 0:
+                ns = mlen[src]
+            else:
+                ns = rptr[-src] - rptr[-1 - src]
+            if ns == 0:
+                continue
+            need = mlen[dst] + ns
+            if used + need > pool_t.shape[0]:
+                # Compact the live maps into a pool with room for at least as much again.
+                live = 0
+                for m in range(n_maps):
+                    live += mlen[m]
+                size = max(2 * (live + need), 2 * n_maps, 1024)
+                new_t = np.empty(size, dtype=np.int64)
+                new_v = np.empty(size, dtype=np.int64)
+                pos = 0
+                for m in range(n_maps):
+                    s = mstart[m]
+                    for i in range(mlen[m]):
+                        new_t[pos + i] = pool_t[s + i]
+                        new_v[pos + i] = pool_v[s + i]
+                    mstart[m] = pos
+                    pos += mlen[m]
+                pool_t = new_t
+                pool_v = new_v
+                used = pos
+            if src >= 0:
+                src_t = pool_t
+                src_v = pool_v
+                j = mstart[src]
+            else:
+                src_t = rtgt
+                src_v = rcoef
+                j = rptr[-1 - src]
+            j_end = j + ns
+            i = mstart[dst]
+            i_end = i + mlen[dst]
+            k = used
+            # dst + c * src, both sorted; c is a unit, so only equal targets can cancel.
+            while i < i_end or j < j_end:
+                if j == j_end or (i < i_end and pool_t[i] < src_t[j]):
+                    tt = pool_t[i]
+                    y = pool_v[i]
+                    i += 1
+                elif i == i_end or src_t[j] < pool_t[i]:
+                    tt = src_t[j]
+                    y = (c * src_v[j]) % d
+                    j += 1
+                else:
+                    tt = pool_t[i]
+                    y = (pool_v[i] + c * src_v[j]) % d
+                    i += 1
+                    j += 1
+                if y != 0 and (not filtering or expire[tt] < op):
+                    pool_t[k] = tt
+                    pool_v[k] = y
+                    k += 1
+            mstart[dst] = used
+            mlen[dst] = k - used
+            used = k
+        op -= 1
+    ptr = np.zeros(n_probes + 1, dtype=np.int64)
+    for pr in range(n_probes):
+        ptr[pr + 1] = ptr[pr] + res_len[pr]
+    tgt = np.empty(ptr[n_probes], dtype=np.int64)
+    val = np.empty(ptr[n_probes], dtype=np.int64)
+    for pr in range(n_probes):
+        s = res_start[pr]
+        for i in range(res_len[pr]):
+            tgt[ptr[pr] + i] = out_t[s + i]
+            val[ptr[pr] + i] = out_v[s + i]
+    return ptr, tgt, val
+
+
 @njit(cache=True)
 def _sort_pairs(keys, vals, lo, hi):
     """Sorts keys[lo:hi] in place, moving vals[lo:hi] along with them (insertion sort, or heapsort)."""
@@ -1785,98 +2761,6 @@ def _mod_inverse(a, m):
     if r != 1:
         return -1
     return t % m
-
-
-@njit(inline="always")
-def _line_hash(cptr, ctgt, cval, i):
-    h = np.uint64(0x9E3779B97F4A7C15) ^ np.uint64(cptr[i + 1] - cptr[i])
-    for k in range(cptr[i], cptr[i + 1]):
-        h = (h ^ np.uint64(ctgt[k])) * np.uint64(0xBF58476D1CE4E5B9)
-        h = (h ^ np.uint64(cval[k])) * np.uint64(0x94D049BB133111EB)
-        h ^= h >> np.uint64(31)
-    return np.int64(h >> np.uint64(1))
-
-
-@njit(inline="always")
-def _same_line(cptr, ctgt, cval, i, j):
-    n = cptr[i + 1] - cptr[i]
-    if cptr[j + 1] - cptr[j] != n:
-        return False
-    a = cptr[i]
-    b = cptr[j]
-    for k in range(n):
-        if ctgt[a + k] != ctgt[b + k] or cval[a + k] != cval[b + k]:
-            return False
-    return True
-
-
-@njit(cache=True)
-def _canonical_lines(ptr, tgt, val, probes, d, cptr, ctgt, cval, group):
-    """
-    Canonical form and line class of rank-1 mechanisms, as in `_canonical_line` and `merge_lines`.
-
-    Mechanism i is the response probes[i] (entries ptr[p]:ptr[p + 1] of tgt / val). Its
-    entries are sorted by target and scaled so the first coefficient is 1, and written to
-    cptr / ctgt / cval. group[i] numbers the distinct canonical forms in order of first
-    appearance.
-
-    Returns:
-        int: -1 on success, or the first i whose leading coefficient is not invertible mod d.
-    """
-    m = probes.shape[0]
-    w = 0
-    cptr[0] = 0
-    for i in range(m):
-        a = ptr[probes[i]]
-        n = ptr[probes[i] + 1] - a
-        for k in range(n):
-            ctgt[w + k] = tgt[a + k]
-            cval[w + k] = val[a + k]
-        _sort_pairs(ctgt, cval, w, w + n)
-        inv = _mod_inverse(cval[w], d)
-        if inv < 0:
-            return i
-        for k in range(n):
-            cval[w + k] = (cval[w + k] * inv) % d
-        w += n
-        cptr[i + 1] = w
-    _group_lines(cptr, ctgt, cval, group)
-    return -1
-
-
-@njit(cache=True)
-def _group_lines(cptr, ctgt, cval, group):
-    """
-    Numbers equal lines (entries cptr[i]:cptr[i + 1] of ctgt / cval) in order of first appearance.
-
-    Uses an open-addressing hash table, and compares entries on every hash match.
-    """
-    m = cptr.shape[0] - 1
-    cap = 2
-    while cap < 2 * m:
-        cap *= 2
-    mask = cap - 1
-    table = np.empty(cap, dtype=np.int64)
-    for s in range(cap):
-        table[s] = -1
-    hashes = np.empty(m, dtype=np.int64)
-    n_groups = 0
-    for i in range(m):
-        h = _line_hash(cptr, ctgt, cval, i)
-        hashes[i] = h
-        s = h & mask
-        while True:
-            r = table[s]
-            if r < 0:
-                table[s] = i
-                group[i] = n_groups
-                n_groups += 1
-                break
-            if hashes[r] == h and _same_line(cptr, ctgt, cval, r, i):
-                group[i] = group[r]
-                break
-            s = (s + 1) & mask
-    return n_groups
 
 
 @njit(cache=True)
@@ -1996,6 +2880,13 @@ def _expand_lines(gen_ptr, ent_ptr, ent_tgt, ent_val, d):
     return line_mech[:n_lines], lptr[:n_lines + 1], ltgt[:w], lval[:w], -1
 
 
+# Position of the single set bit of x, by the de Bruijn product (x * 0x07EDD5E59A4E28C2) >> 58.
+_LOW_BIT = np.zeros(64, dtype=np.int64)
+for _i in range(64):
+    _LOW_BIT[((0x07EDD5E59A4E28C2 << _i) % (1 << 64)) >> 58] = _i
+del _i
+
+
 @njit(inline="always")
 def _rotl(x, k):
     return (x << np.uint64(k)) | (x >> np.uint64(64 - k))
@@ -2021,8 +2912,7 @@ def _open_unit(r):
     return (np.float64(r >> np.uint64(11)) + 0.5) * (1.0 / 9007199254740992.0)
 
 
-@njit(cache=True)
-def _sample_plan(mech_prob, bits, n_gens, sizes, ent_tgt, ent_val, d, n_targets, montgomery, pack_like):
+def _sample_plan(mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack_dtype):
     """
     Lays out the arrays of `DetectorErrorModel._flatten` for `_sample_chunks`.
 
@@ -2035,126 +2925,68 @@ def _sample_plan(mech_prob, bits, n_gens, sizes, ent_tgt, ent_val, d, n_targets,
     Each mechanism kept becomes one block of `pack`, so firing it reads one
     stretch of memory: the number of generators, then for each generator the
     number of entries followed by (target, value) pairs. The value is the
-    coefficient reduced mod d, in Montgomery form v * 2**32 mod d when
-    `montgomery` (odd d). info[k] = (block offset, probability bits) for the
-    k-th mechanism in bin order (bins in increasing probability, mechanisms
-    in index order within a bin); always_off holds the blocks of pi >= 1.
+    coefficient (already reduced mod d), in Montgomery form v * 2**32 mod d
+    when `montgomery` (odd d). info[k] = (block offset, probability bits) for
+    the k-th mechanism in bin order (bins in increasing probability,
+    mechanisms in index order within a bin); always_off holds the blocks of
+    pi >= 1. `pack` has dtype `pack_dtype`; int32 is enough when every target
+    is below 2**31 (values are below d, which is below 2**31).
 
-    `pack` has the dtype of `pack_like`. int32 is enough when every target is
-    below 2**31; values are below d, which is below 2**31. `bits` is
-    mech_prob viewed as int64.
+    This runs in NumPy rather than numba: it is linear work done once per
+    call, and leaving it out of numba saves its compile time on first use.
 
     Returns:
-        tuple: (status, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost).
-            status is -1 if all is well, -2 if a probability is NaN, or the
-            index of an entry whose target is out of range. cost estimates the
-            work per shot.
+        tuple: (pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost),
+            cost estimating the work per shot of the firings.
+
+    Raises:
+        ValueError: If a probability is NaN.
     """
-    n_mech = mech_prob.shape[0]
-    n_gen = sizes.shape[0]
+    if np.isnan(mech_prob).any():
+        raise ValueError("a mechanism probability is NaN")
+    if montgomery:
+        ent_val = (ent_val << 32) % d
+    n_mech = len(mech_prob)
     gen_ptr = np.zeros(n_mech + 1, dtype=np.int64)
-    for i in range(n_mech):
-        gen_ptr[i + 1] = gen_ptr[i] + n_gens[i]
-    ent_ptr = np.zeros(n_gen + 1, dtype=np.int64)
-    for g in range(n_gen):
-        ent_ptr[g + 1] = ent_ptr[g] + sizes[g]
-    # Allocations use few distinct (shape, dtype) forms, since numba compiles each form separately.
-    empty = np.zeros(0, dtype=np.int64)
-    no_pack = np.empty(0, dtype=pack_like.dtype)
-    no_info = np.empty((0, 2), dtype=np.int64)
-    no_float = np.empty(0, dtype=np.float64)
-    for k in range(ent_tgt.shape[0]):
-        if ent_tgt[k] < 0 or ent_tgt[k] >= n_targets:
-            return k, no_pack, no_info, empty, empty, no_float, no_float, 0.0
-        v = ent_val[k] % d
-        ent_val[k] = (v << 32) % d if montgomery else v
-    for i in range(n_mech):
-        if np.isnan(mech_prob[i]):
-            return -2, no_pack, no_info, empty, empty, no_float, no_float, 0.0
-    # Classify the mechanisms and estimate the work per shot.
-    n_always = 0
-    n_live = 0
-    keys = np.empty(n_mech, dtype=np.int64)
-    cost = 0.0
-    for i in range(n_mech):
-        work = 0
-        for g in range(gen_ptr[i], gen_ptr[i + 1]):
-            work += 1 + ent_ptr[g + 1] - ent_ptr[g]
-        if ent_ptr[gen_ptr[i + 1]] == ent_ptr[gen_ptr[i]]:
-            keys[i] = -1
-        elif mech_prob[i] >= 1.0:
-            keys[i] = -2
-            n_always += 1
-            cost += work
-        elif mech_prob[i] > 0.0:
-            # For positive doubles the bit pattern grows with the value.
-            keys[i] = bits[i] >> 49
-            n_live += 1
-            cost += mech_prob[i] * work
-        else:
-            keys[i] = -1
-    # Counting sort by key (bits >> 49 of a positive double is below 2**14). It is stable, so
-    # mechanisms stay in index order within a bin.
-    counts = np.zeros((1 << 14) + 1, dtype=np.int64)
-    for i in range(n_mech):
-        if keys[i] >= 0:
-            counts[keys[i] + 1] += 1
-    n_bins = 0
-    for key in range(1 << 14):
-        if counts[key + 1] > 0:
-            n_bins += 1
-        counts[key + 1] += counts[key]
-    order = np.empty(n_live + n_always, dtype=np.int64)
-    ia = n_live
-    for i in range(n_mech):
-        if keys[i] >= 0:
-            order[counts[keys[i]]] = i
-            counts[keys[i]] += 1
-        elif keys[i] == -2:
-            order[ia] = i
-            ia += 1
-    # Pack the mechanisms in that order: bins first, then the ones that always fire.
-    size = 0
-    for j in range(n_live + n_always):
-        i = order[j]
-        size += 1 + (gen_ptr[i + 1] - gen_ptr[i]) + 2 * (ent_ptr[gen_ptr[i + 1]] - ent_ptr[gen_ptr[i]])
-    pack = np.empty(size, dtype=pack_like.dtype)
+    np.cumsum(n_gens, out=gen_ptr[1:])
+    ent_ptr = np.zeros(len(sizes) + 1, dtype=np.int64)
+    np.cumsum(sizes, out=ent_ptr[1:])
+    mech_ent = ent_ptr[gen_ptr[1:]] - ent_ptr[gen_ptr[:-1]]
+    work = n_gens + mech_ent
+    live = np.flatnonzero((mech_ent > 0) & (mech_prob > 0.0) & (mech_prob < 1.0))
+    always = np.flatnonzero((mech_ent > 0) & (mech_prob >= 1.0))
+    cost = float(work[always].sum()) + float((mech_prob[live] * work[live]).sum())
+    # For positive doubles the bit pattern grows with the value; a stable sort keeps index order in a bin.
+    keys = mech_prob[live].view(np.int64) >> 49
+    by_key = np.argsort(keys, kind="stable")
+    live = live[by_key]
+    keys = keys[by_key]
+    order = np.concatenate((live, always))
+    # One block per mechanism, in that order.
+    block = 1 + n_gens[order] + 2 * mech_ent[order]
+    block_off = np.zeros(len(order) + 1, dtype=np.int64)
+    np.cumsum(block, out=block_off[1:])
+    pack = np.empty(int(block_off[-1]), dtype=pack_dtype)
+    pack[block_off[:-1]] = n_gens[order]
+    gens = _segments(gen_ptr[order], n_gens[order])
+    gen_mech = np.repeat(order, n_gens[order])
+    gen_off = np.repeat(block_off[:-1], n_gens[order])
+    gen_pos = gen_off + 1 + (gens - gen_ptr[gen_mech]) + 2 * (ent_ptr[gens] - ent_ptr[gen_ptr[gen_mech]])
+    pack[gen_pos] = sizes[gens]
+    ents = _segments(ent_ptr[gens], sizes[gens])
+    ent_pos = np.repeat(gen_pos + 1 - 2 * ent_ptr[gens], sizes[gens]) + 2 * ents
+    pack[ent_pos] = ent_tgt[ents]
+    pack[ent_pos + 1] = ent_val[ents]
+    n_live = len(live)
     info = np.empty((n_live, 2), dtype=np.int64)
-    always_off = np.empty(n_always, dtype=np.int64)
-    w = 0
-    for j in range(n_live + n_always):
-        i = order[j]
-        if j < n_live:
-            info[j, 0] = w
-            info[j, 1] = bits[i]
-        else:
-            always_off[j - n_live] = w
-        pack[w] = gen_ptr[i + 1] - gen_ptr[i]
-        w += 1
-        for g in range(gen_ptr[i], gen_ptr[i + 1]):
-            pack[w] = ent_ptr[g + 1] - ent_ptr[g]
-            w += 1
-            for e in range(ent_ptr[g], ent_ptr[g + 1]):
-                pack[w] = ent_tgt[e]
-                pack[w + 1] = ent_val[e]
-                w += 2
-    bin_ptr = np.zeros(n_bins + 1, dtype=np.int64)
-    bin_pmax = np.empty(n_bins, dtype=np.float64)   # every bin has a first mechanism, which sets it
-    b = -1
-    for j in range(n_live):
-        p = mech_prob[order[j]]
-        if j == 0 or keys[order[j]] != keys[order[j - 1]]:
-            b += 1
-            bin_ptr[b] = j
-            bin_pmax[b] = p
-        elif p > bin_pmax[b]:
-            bin_pmax[b] = p
-    bin_ptr[n_bins] = n_live
-    bin_log_keep = np.empty(n_bins, dtype=np.float64)
-    for b in range(n_bins):
-        bin_log_keep[b] = math.log1p(-bin_pmax[b])
-    cost += n_bins
-    return -1, pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost
+    info[:, 0] = block_off[:n_live]
+    info[:, 1] = mech_prob[live].view(np.int64)
+    always_off = np.ascontiguousarray(block_off[n_live:-1])
+    starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]]) if n_live else np.zeros(0, dtype=np.int64)
+    bin_ptr = np.append(starts, n_live).astype(np.int64)
+    bin_pmax = np.maximum.reduceat(mech_prob[live], starts) if n_live else np.zeros(0, dtype=np.float64)
+    bin_log_keep = np.array([math.log1p(-p) for p in bin_pmax.tolist()], dtype=np.float64)
+    return pack, info, always_off, bin_ptr, np.ascontiguousarray(bin_pmax, dtype=np.float64), bin_log_keep, cost
 
 
 @njit(nogil=True, cache=True)
@@ -2177,9 +3009,18 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
     mechanisms at always_off fire in every shot. info_p is info viewed as
     float64, so info_p[k, 1] is the probability of the k-th binned mechanism.
 
-    Within a shot the always-on mechanisms come first, then the bins in
-    order. Each candidate draws its thinning coin (when pi < pmax), then its
-    coefficients if it fires, then the skip to the next candidate.
+    Each shot only visits the bins with a candidate in it: row s of the
+    bitmap `active` (n_words 64-bit words) marks the bins whose next candidate
+    falls in shot s, and a bin is marked in the row of its next candidate's
+    shot when it is done with the current one. Reading a row clears it. A
+    block thus costs one skip per bin, one pass over n_bins / 64 words per
+    shot, and the work of its candidates, not shots * bins.
+
+    Within a shot the always-on mechanisms come first, then the bins visited
+    in increasing order. Each candidate draws its thinning coin (when
+    pi < pmax), then its coefficients if it fires, then the skip to the next
+    candidate. Bins with no candidate in a shot draw nothing in it, so the
+    random stream is the same as visiting every bin in every shot.
 
     A firing mechanism adds sum_j a_j * generator_j, with each a_j uniform on
     Z_d by Lemire's method on the top 32 bits of a draw: (x * d) >> 32 is
@@ -2199,6 +3040,9 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
     d_u = np.uint64(d)
     low32 = np.uint64(0xFFFFFFFF)
     nxt = np.empty(n_bins, dtype=np.int64)
+    n_words = (n_bins + 63) // 64
+    active = np.zeros(chunk * n_words, dtype=np.uint64)
+    one = np.uint64(1)
     for c in range(c_lo, c_hi):
         s0 = states[c, 0]
         s1 = states[c, 1]
@@ -2212,12 +3056,19 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
             skip = np.floor(np.log(_open_unit(r)) / bin_log_keep[b])
             # For tiny pi the skip can exceed int64; anything past the end just means "done".
             nxt[b] = np.int64(skip) if skip < total else total
+            if nxt[b] < total:
+                i = (nxt[b] // (bin_ptr[b + 1] - bin_ptr[b])) * n_words + (b >> 6)
+                active[i] |= one << np.uint64(b & 63)
         for s in range(n_shots):
             shot = lo + s
+            row = s * n_words
+            word = -1         # the bins of this shot still to visit: the bits of `bits`, then words word + 1 ..
+            bits = np.uint64(0)
             ia = 0            # next always-on mechanism
-            b = -1            # current bin, -1 before the first
-            first = 0         # bin b: first mechanism, size, coins in the block, end of this shot's coins,
-            n_b = 0           # largest probability, next candidate
+            in_bin = False    # inside bin b: first mechanism, size, coins in the block, end of this shot's coins,
+            b = 0             # largest probability, next candidate
+            first = 0
+            n_b = 0
             total = 0
             end = 0
             pmax = 0.0
@@ -2239,7 +3090,7 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
                                 pos = total
                             else:
                                 pos += 1 + np.int64(skip)
-                        if b >= 0 and pos < end:
+                        if in_bin and pos < end:
                             k = first + pos - (end - n_b)
                             pending = True
                             pm = info_p[k, 1]
@@ -2249,11 +3100,23 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
                                     continue
                             off = info[k, 0]
                             break
-                        if b >= 0:
+                        if in_bin:
+                            in_bin = False
                             nxt[b] = pos
-                        b += 1
-                        if b == n_bins:
+                            if pos < total:
+                                # pos >= end: the next candidate is in a later shot of the block.
+                                i = (pos // n_b) * n_words + (b >> 6)
+                                active[i] |= one << np.uint64(b & 63)
+                        while bits == 0 and word + 1 < n_words:
+                            word += 1
+                            bits = active[row + word]
+                            active[row + word] = 0
+                        if bits == 0:
                             break
+                        low = bits & (~bits + one)
+                        bits ^= low
+                        b = word * 64 + _LOW_BIT[np.int64((low * np.uint64(0x07EDD5E59A4E28C2)) >> np.uint64(58))]
+                        in_bin = True
                         first = bin_ptr[b]
                         n_b = bin_ptr[b + 1] - first
                         total = n_b * n_shots
@@ -2296,8 +3159,17 @@ def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_l
 
 
 def _canonical_line(gen: dict, d: int):
-    """Scales a sparse vector so its first entry is 1. Returns (hashable key, scaled dict)."""
-    items = sorted(gen.items())
+    """
+    Reduces a sparse vector mod d, sorts it by target and scales it so its first entry is 1.
+
+    Returns (key, scaled), key being the hashable tuple of scaled's items. If no entry is
+    non-zero mod d, or the first one is not invertible mod d (composite d), the vector cannot
+    be scaled that way: the result is (None, the reduced, sorted vector), and the caller does
+    not merge it with any other.
+    """
+    items = sorted((t, v % d) for t, v in gen.items() if v % d)
+    if not items or math.gcd(items[0][1], d) != 1:
+        return None, dict(items)
     inv = pow(items[0][1], -1, d)
     scaled = {t: (v * inv) % d for t, v in items}
     # scaled is built in sorted order, so its items are already the sorted key.

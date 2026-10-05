@@ -9,7 +9,9 @@ against exact distributions.
 import functools
 import itertools
 import math
+import random
 import struct
+import time
 
 import numpy as np
 import pytest
@@ -26,7 +28,7 @@ from sdim.dem import (
     _merge_pair,
     _projective_points,
 )
-from sdim.program import Program
+from sdim.program import Program, _compile_detector
 from tests.test_dem_gates import random_circuit
 
 
@@ -51,22 +53,32 @@ def _reference_from_circuit(circuit, merge=True):
 
 def _reference_merge_lines(dem):
     d = dem.dimension
-    merged, order, others = {}, [], []
+    merged, parts, order, others = {}, {}, [], []
     for mech in dem.mechanisms:
         if mech.rank != 1:
             others.append(mech)
             continue
-        items = sorted(mech.generators[0].items())
+        items = sorted((t, v % d) for t, v in mech.generators[0].items() if v % d)
+        if not items or math.gcd(items[0][1], d) != 1:
+            # No unit leading coefficient (composite d, or a zero vector): never merged.
+            key = object()
+            merged[key] = ErrorMechanism(mech.probability, [dict(items)], mech.source)
+            parts[key] = [mech.source]
+            order.append(key)
+            continue
         inv = pow(items[0][1], -1, d)
         scaled = {t: (v * inv) % d for t, v in items}
         key = tuple(sorted(scaled.items()))
         if key in merged:
             prev = merged[key]
             prev.probability = merge_subgroup_probabilities(prev.probability, mech.probability)
-            prev.source = prev.source + "+" + mech.source
+            parts[key].append(mech.source)
         else:
             merged[key] = ErrorMechanism(mech.probability, [scaled], mech.source)
+            parts[key] = [mech.source]
             order.append(key)
+    for key in order:
+        merged[key].source = "+".join(parts[key])
     dem.mechanisms = [merged[k] for k in order] + others
 
 
@@ -134,7 +146,26 @@ def test_from_circuit_merges_many_lines():
     c.add_gate("DETECTOR", expr="2*rec[-2] + rec[-1]")
     fast = DetectorErrorModel.from_circuit(c)
     _assert_same_model(fast, _reference_from_circuit(c))
-    assert len(fast.mechanisms) == 1 and fast.mechanisms[0].source.count("+") == 39
+    assert len(fast.mechanisms) == 1
+    # The merged source names every gate, in circuit order (phase noise before M is invisible).
+    assert fast.mechanisms[0].source == "+".join(f"N1[f]@{2 + 3 * k}:q0" for k in range(40))
+
+
+def test_merged_sources_name_every_gate():
+    """A cap on merged sources (the first four, then " (+N more)") made them differ from the old code."""
+    c = Circuit(1, 3)
+    c.add_gate("RESET", 0)
+    for _ in range(6):
+        c.add_gate("N1", 0, noise_channel="f", prob=0.001)
+    c.add_gate("M", 0)
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    expected = "+".join(f"N1[f]@{k}:q0" for k in range(1, 7))
+    assert DetectorErrorModel.from_circuit(c).mechanisms[0].source == expected
+    dem = DetectorErrorModel.from_circuit(c, merge=False)
+    dem.merge_lines()
+    assert dem.mechanisms[0].source == expected
+    lines = DetectorErrorModel(7, 1, 0, [ErrorMechanism(0.1, [{0: k + 1}], f"s{k}") for k in range(6)]).to_lines()
+    assert [m.source for m in lines.mechanisms] == ["+".join(f"s{k}" for k in range(6))]
 
 
 @pytest.mark.parametrize("d", [2, 3, 5])
@@ -161,12 +192,56 @@ def test_to_lines_user_models_match_reference():
         _assert_same_model(dem.to_lines(), _reference_to_lines(dem))
 
 
-def test_to_lines_composite_dimension_raises_like_merge_lines():
-    dem = DetectorErrorModel(4, 2, 0, [ErrorMechanism(0.1, [{0: 2, 1: 1}], "a")])
-    with pytest.raises(ValueError, match="not invertible"):
-        _reference_to_lines(dem)
-    with pytest.raises(ValueError, match="not invertible"):
-        dem.to_lines()
+def test_to_lines_rejects_composite_dimensions():
+    """The split into independent lines needs a field; it used to fail only on a non-unit coefficient."""
+    for d, gen in [(4, {0: 2, 1: 1}), (4, {0: 1, 1: 2}), (9, {0: 1}), (15, {1: 7})]:
+        dem = DetectorErrorModel(d, 2, 0, [ErrorMechanism(0.1, [gen], "a")])
+        with pytest.raises(ValueError, match="prime"):
+            dem.to_lines()
+
+
+def test_merge_lines_composite_dimension_keeps_non_unit_lines():
+    """At composite d a line whose first coefficient is not a unit is left unmerged instead of crashing."""
+    d = 4
+    mechs = [ErrorMechanism(0.1, [{1: 1, 0: 2}], "a"), ErrorMechanism(0.2, [{0: 3, 1: 2}], "b"),
+             ErrorMechanism(0.3, [{0: 2, 1: 1}], "c"), ErrorMechanism(0.4, [{0: 1, 1: 2}], "d"),
+             ErrorMechanism(0.5, [{0: 4}], "zero"), ErrorMechanism(0.6, [{0: 1}, {1: 1}], "rank2")]
+    dem = DetectorErrorModel(d, 2, 0, [ErrorMechanism(m.probability, m.generators, m.source) for m in mechs])
+    dem.merge_lines()
+    ref = DetectorErrorModel(d, 2, 0, list(mechs))
+    _reference_merge_lines(ref)
+    _assert_same_model(dem, ref)
+    # "b" (3 * (1, 2)) and "d" are one line; "a" and "c" have leading coefficient 2 and stay apart.
+    assert [(m.source, m.generators) for m in dem.mechanisms] == [
+        ("a", [{0: 2, 1: 1}]), ("b+d", [{0: 1, 1: 2}]), ("c", [{0: 2, 1: 1}]), ("zero", [{}]),
+        ("rank2", [{0: 1}, {1: 1}])]
+    assert dem.mechanisms[1].probability == merge_subgroup_probabilities(0.2, 0.4)
+
+
+@pytest.mark.parametrize("d", [4, 6, 9])
+def test_from_circuit_composite_dimension_does_not_crash(d):
+    """check_dimension_prime=False on a composite d used to crash in the merge (non-unit leading coefficient)."""
+    c = Circuit(3, d)
+    c.add_gate("RESET", [0, 1, 2])
+    c.add_gate("N1", 0, noise_channel="f", prob=0.1)
+    c.add_gate("MUL", 0, a=d - 1)
+    c.add_gate("CNOT", 0, 1)
+    c.add_gate("N1", 1, noise_channel="f", prob=0.05)
+    c.add_gate("M", [0, 1, 2])
+    factor = min(f for f in range(2, d) if d % f == 0)
+    c.add_gate("DETECTOR", expr=f"{factor}*rec[-3]")     # the first fault's leading coefficient is not a unit
+    c.add_gate("DETECTOR", expr="rec[-2] - rec[-3]")
+    c.add_gate("LOGICAL_OBSERVABLE", expr="rec[-2]")
+    with pytest.raises(ValueError, match="prime"):
+        DetectorErrorModel.from_circuit(c)
+    for merge in (True, False):
+        dem = DetectorErrorModel.from_circuit(c, merge=merge, check_dimension_prime=False)
+        _assert_same_model(dem, _reference_from_circuit(c, merge))
+        # X on q0 reads -1 on both qudits: D0 = -factor, L0 = -1, left unscaled. X on q1: D1 = L0 = 1.
+        assert [(m.source, m.generators) for m in dem.mechanisms] == [
+            ("N1[f]@3:q0", [{0: d - factor, 2: d - 1}]), ("N1[f]@6:q1", [{1: 1, 2: 1}])]
+    det, obs = dem.sample(1000, seed=1)
+    assert det.max() < d and obs.max() < d
 
 
 def test_merge_lines_matches_reference():
@@ -183,14 +258,38 @@ def test_merge_pair_is_bit_exact():
     special = [0.0, -0.0, 5e-324, 1e-300, 1e-17, 1e-3, 0.5, 1 - 2 ** -53, 1.0, 1.5, -0.25, float("nan")]
     values = special + list(rng.random(2000)) + list(10.0 ** rng.uniform(-300, 0, 2000))
     for a, b in itertools.chain(itertools.product(special, special), zip(values, values[::-1])):
-        x, y = _merge_pair(a, b), merge_subgroup_probabilities(a, b)
-        assert _bits(x) == _bits(y) or (math.isnan(x) and math.isnan(y)), (a, b)
+        if 0.0 <= a <= 1.0 and 0.0 <= b <= 1.0:
+            x, y = _merge_pair(a, b), merge_subgroup_probabilities(a, b)
+            assert _bits(x) == _bits(y), (a, b)
+        else:
+            with pytest.raises(ValueError, match="not in \\[0, 1\\]"):
+                _merge_pair(a, b)
+            with pytest.raises(ValueError, match="not in \\[0, 1\\]"):
+                merge_subgroup_probabilities(a, b)
+
+
+def test_merge_subgroup_probabilities_edge_cases():
+    """No mechanisms (or only pi = 0 ones) merge to +0.0, not -0.0; probabilities outside [0, 1] are rejected."""
+    for args in [(), (0.0,), (0.0, -0.0), (-0.0,)]:
+        assert _bits(merge_subgroup_probabilities(*args)) == _bits(0.0), args
+    assert merge_subgroup_probabilities(0.25, 0.5) == 1 - 0.75 * 0.5
+    assert merge_subgroup_probabilities(0.3, 1.0) == 1.0
+    for bad in (1.0000001, -1e-9, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            merge_subgroup_probabilities(0.1, bad)
+        with pytest.raises(ValueError):
+            line_probability(bad, 3, 2)
+    dem = DetectorErrorModel(3, 1, 0, [ErrorMechanism(0.2, [{0: 1}], "a"), ErrorMechanism(1.5, [{0: 2}], "b")])
+    with pytest.raises(ValueError, match="1.5"):
+        dem.merge_lines()
 
 
 def test_probe_buffer_growth_keeps_responses(monkeypatch):
-    """Tiny probe blocks and buffers force the buffer growth path; the responses must not change."""
+    """Tiny probe blocks and buffers force the forward kernel's buffer growth path; the responses must not
+    change, and must equal the backward sweep's."""
     c = random_circuit(5, 11, p=0.02)
     expected = compile_unit_responses(c)
+    monkeypatch.setattr(dem_module, "_BACKWARD", False)
     monkeypatch.setattr(dem_module, "_run_probes", functools.partial(dem_module._run_probes, block=3, cap=1))
     got = compile_unit_responses(c)
     assert [loc.responses for loc in got.locations] == [loc.responses for loc in expected.locations]
@@ -216,9 +315,11 @@ def _wide_circuit(d, width=40, rounds=3, p=0.01):
 @pytest.mark.parametrize("threads", [1, 2, 3, 8])
 @pytest.mark.parametrize("block, cap", [(None, 16), (1, 1), (5, 2), (64, 1), (1000, 16)])
 def test_probe_blocks_and_threads_do_not_change_the_model(monkeypatch, threads, block, cap):
-    """The unit-fault pass gives the same model for every block size, buffer size and thread count."""
+    """The forward unit-fault pass gives the same model for every block size, buffer size and thread count,
+    and the same as the backward sweep."""
     circuits = [_wide_circuit(5), _wide_circuit(1000003, width=25), random_circuit(3, 13, p=0.05)]
     expected = [DetectorErrorModel.from_circuit(c) for c in circuits]
+    monkeypatch.setattr(dem_module, "_BACKWARD", False)
     monkeypatch.setattr(dem_module, "_thread_count", lambda: threads)
     monkeypatch.setattr(dem_module, "_PROBE_PARALLEL_MIN", 0)
     monkeypatch.setattr(dem_module, "_run_probes", functools.partial(dem_module._run_probes, block=block, cap=cap))
@@ -306,6 +407,66 @@ def test_symbolic_path_is_used_for_plain_expressions():
     _, _, info = Program._build_ir([_expression_circuit(7, EXPRESSIONS[0])], 1)
     for fn, (_, _, args, _) in zip(info.detector_functions, info.detector_data):
         assert dem_module._symbolic_coefficients(fn, len(args), 7, {}) is not None
+
+
+def _random_expression(rng, n, depth):
+    """A random detector expression over rec[0 .. n - 1]: sums, differences, scalings, negations and %."""
+    if depth <= 0 or rng.random() < 0.25:
+        if rng.random() < 0.8:
+            j = rng.randrange(n)
+            return f"rec[{j if rng.random() < 0.6 else j - n}]"
+        return str(rng.randint(-30, 30))
+    a, b = _random_expression(rng, n, depth - 1), _random_expression(rng, n, depth - 1)
+    op = rng.choice(["+", "-", "*", "%", "neg", "scale", "+", "-"])
+    if op == "neg":
+        return f"-({a})"
+    if op == "scale":
+        return f"{rng.randint(-5, 9)} * ({a})"
+    if op == "%":
+        return f"({a}) % {rng.choice([1, 2, 3]) * rng.choice([2, 3, 4, 5, 6, 7, 9, 1000003])}"
+    return f"({a}) {op} ({b})"
+
+
+@pytest.mark.parametrize("d", [2, 3, 4, 6, 7, 9, 1000003])
+def test_symbolic_forms_match_evaluation_on_random_expressions(d):
+    """The in-place sparse forms give the expression itself mod d, for nested sums and differences, scalings
+    (by non-units too, at composite d), a record used twice, and a sum that cancels."""
+    rng = random.Random(d)
+    checked = 0
+    for k in range(500):
+        n = rng.randint(1, 6)
+        src = _random_expression(rng, n, rng.randint(0, 6))
+        if k < 3:
+            src = ["rec[0] + rec[0] - 2*rec[-1]", "rec[0] - (rec[0] - (rec[0] - rec[0]))", "-(-rec[0])"][k]
+        fn = _compile_detector(src, d)
+        form = dem_module._symbolic_coefficients(fn, n, d, {})
+        if form is None:
+            continue
+        checked += 1
+        assert len(form) == n + 1 and all(0 <= c < d for c in form), src
+        for _ in range(4):
+            x = [rng.randint(-50, 50) for _ in range(n)]
+            assert fn(x) % d == (form[0] + sum(c * v for c, v in zip(form[1:], x))) % d, src
+    assert checked > 200
+
+
+def test_symbolic_forms_take_time_linear_in_the_expression():
+    """Each operation used to build a dense tuple over all the records, so an observable reading every round
+    of a long memory took time quadratic in the rounds just to read its coefficients."""
+    def best(n):
+        fn = _compile_detector(" + ".join(f"{j % 5 + 1}*rec[{j}]" for j in range(n)) + " - rec[0]", 3)
+        times = []
+        for _ in range(3):
+            t = time.perf_counter()
+            form = dem_module._symbolic_coefficients(fn, n, 3, {})
+            times.append(time.perf_counter() - t)
+        assert form[:4] == (0, 0, 2, 0)
+        return min(times)
+
+    best(50)
+    small, large = best(250), best(2000)
+    # Linear work gives a ratio near 8; it was about 45.
+    assert large / small < 20, (small, large)
 
 
 # --------------------------------------------------------------------------
@@ -662,3 +823,103 @@ def test_sort_pairs_matches_numpy():
         np.testing.assert_array_equal(pad_k[2:2 + n], keys[order])
         np.testing.assert_array_equal(pad_v[2:2 + n], vals[order])
         assert list(pad_k[:2]) == [7, 3] and pad_k[-1] == 5
+
+
+# --------------------------------------------------------------------------
+# Sampler with many probability bins
+
+
+def _many_bins_model(d=3, n_det=3, n_bins=40, seed=0, quiet=0):
+    """Mechanisms in n_bins different probability bins (pi from 0.6 down by factors of about 1.3),
+    plus `quiet` mechanisms in other bins whose pi is so small they never fire."""
+    rng = np.random.default_rng(seed)
+    mechs = []
+    for k in range(n_bins):
+        pi = 0.6 / 1.3 ** k
+        for _ in range(int(rng.integers(1, 3))):
+            gens = [{int(t): int(rng.integers(1, d)) for t in rng.choice(n_det + 1, size=int(rng.integers(1, 3)),
+                                                                          replace=False)}
+                    for _ in range(int(rng.integers(1, 3)))]
+            mechs.append(ErrorMechanism(float(pi * (1 - 0.1 * rng.random())), gens, f"m{k}"))
+    for k in range(quiet):
+        mechs.append(ErrorMechanism(2.0 ** (-200 - k), [{int(rng.integers(n_det + 1)): 1}], f"q{k}"))
+    rng.shuffle(mechs)
+    return DetectorErrorModel(d, n_det, 1, mechs)
+
+
+def _bins(dem):
+    p = np.array([m.probability for m in dem.mechanisms])
+    return len(set((p[(p > 0) & (p < 1)].view(np.int64) >> 49).tolist()))
+
+
+def test_sampler_many_bins_matches_exact_distribution():
+    """Shots visit only the bins with a candidate in them; the distribution must stay exact."""
+    dem = _many_bins_model(n_bins=40, quiet=300)
+    assert _bins(dem) > 300
+    assert _chi2_against_exact(dem, 200_000, seed=21) > 1e-4
+
+
+@pytest.mark.parametrize("threads", [1, 3, 8])
+def test_sampler_many_bins_reproducible_across_threads(monkeypatch, threads):
+    dem = _many_bins_model(d=5, n_det=6, n_bins=60, quiet=2000, seed=4)
+    shots = 9 * dem_module._SAMPLE_CHUNK + 5
+    monkeypatch.setattr(dem_module, "_SAMPLE_PARALLEL_WORK", float("inf"))
+    det, obs = dem.sample(shots, seed=7)
+    monkeypatch.setattr(dem_module, "_SAMPLE_PARALLEL_WORK", -1.0)
+    monkeypatch.setattr(dem_module, "_thread_count", lambda: threads)
+    got = dem.sample(shots, seed=7)
+    np.testing.assert_array_equal(det, got[0])
+    np.testing.assert_array_equal(obs, got[1])
+    assert det.any() and not np.array_equal(det, dem.sample(shots, seed=8)[0])
+
+
+def test_sampler_cost_does_not_grow_with_shots_times_bins(monkeypatch):
+    """Every shot used to visit every probability bin, so ~8000 bins of mechanisms that almost never fire
+    cost 8000 steps per shot. Now a block of 256 shots draws one skip per bin and each shot scans a bitmap."""
+    rng = np.random.default_rng(3)
+    probs = 10.0 ** rng.uniform(-300, -12, 40000)
+    dem = DetectorErrorModel(3, 10, 0, [ErrorMechanism(float(p), [{int(i % 10): 1}], "") for i, p in
+                                        enumerate(probs)])
+    assert _bins(dem) > 7000
+    monkeypatch.setattr(dem_module, "_SAMPLE_PARALLEL_WORK", float("inf"))   # one thread
+    dem.sample(256, seed=1)
+    times = []
+    for _ in range(3):
+        t = time.perf_counter()
+        det, _ = dem.sample(40 * 1024, seed=2)
+        times.append(time.perf_counter() - t)
+    assert not det.any()
+    # About 0.03 s now; visiting 8000 bins in each of 40960 shots took about 1 s.
+    assert min(times) < 0.3, times
+
+
+def test_sampler_bins_and_always_on_mechanisms_together():
+    """Bins that fire in most shots, bins that rarely fire, and mechanisms that always fire, in one model."""
+    mechs = [ErrorMechanism(1.0, [{0: 1}], "always"), ErrorMechanism(0.9, [{1: 1}], "often"),
+             ErrorMechanism(0.5, [{1: 2, 2: 1}], "half"), ErrorMechanism(1e-3, [{2: 1}], "rare"),
+             ErrorMechanism(1e-9, [{0: 2}], "very rare"), ErrorMechanism(0.2, [{0: 1, 1: 1, 2: 1}], "fifth")]
+    assert _chi2_against_exact(DetectorErrorModel(3, 2, 1, mechs), 300_000, seed=5) > 1e-4
+
+
+def test_line_groups_hash_path_matches_exact_grouping():
+    """Many lines are grouped by a hash of their entries (checked entry by entry); few are grouped exactly."""
+    rng = np.random.default_rng(9)
+    for n_lines, solo_rate in [(10, 0.0), (64, 0.2), (65, 0.0), (500, 0.0), (2000, 0.1)]:
+        pool = [sorted({int(t): int(rng.integers(1, 5)) for t in rng.choice(30, size=int(rng.integers(1, 5)),
+                                                                            replace=False)}.items())
+                for _ in range(max(n_lines // 4, 1))]
+        lines = [pool[int(rng.integers(len(pool)))] for _ in range(n_lines)]
+        cptr = np.zeros(n_lines + 1, dtype=np.int64)
+        np.cumsum([len(x) for x in lines], out=cptr[1:])
+        ctgt = np.array([t for x in lines for t, _ in x], dtype=np.int64)
+        cval = np.array([v for x in lines for _, v in x], dtype=np.int64)
+        solo = rng.random(n_lines) < solo_rate
+        for marks in (None, solo):
+            got = dem_module._line_groups(cptr, ctgt, cval, marks)
+            want = dem_module._exact_line_groups(cptr, ctgt, cval, marks)
+            np.testing.assert_array_equal(got, want)
+            # Numbered in order of first appearance, equal lines together, solo lines alone.
+            seen = {}
+            for i, x in enumerate(lines):
+                key = i if marks is not None and marks[i] else tuple(x)
+                assert got[i] == seen.setdefault(key, len(seen))

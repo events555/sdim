@@ -467,3 +467,290 @@ def test_file_roundtrip_with_labels_and_numpy_floats(tmp_path):
     assert again.observable_labels == ["logical # 0"]
     assert again.mechanisms[0].probability == 0.1
     assert again.mechanisms[0].generators == [{0: 2, 1: 4}]
+
+
+# --------------------------------------------------------------------------
+# File format: labels, header validation
+
+
+# Every character str.splitlines splits on, plus quotes, backslashes, '#', and non-ASCII text.
+_AWKWARD_LABELS = ["a\nb", "a\rb", "a\r\nb", "a\vb", "a\fb", "a\x1cb", "a\x1db", "a\x1eb", "a\x85b", "a b",
+                   "a b", "  padded  ", " ", "\t tab", 'say "hi"', "back\\slash", '"quoted"', "#hash # tag",
+                   "ψ round 3", "\x00nul", "\U0001f600"]
+
+
+def test_labels_with_line_breaks_and_spaces_round_trip(tmp_path):
+    """Labels used to be written verbatim: a line break split the line and outer spaces were stripped."""
+    n = len(_AWKWARD_LABELS)
+    dem = DetectorErrorModel(5, n, 2, [ErrorMechanism(0.1, [{0: 2, n: 4}], "src")],
+                             list(_AWKWARD_LABELS), ["  L0 ", "x\ny"])
+    path = tmp_path / "m.qdem"
+    dem.write_to_file(path, comment="first line\nsecond line third")
+    again = DetectorErrorModel.read_from_file(path)
+    assert again.detector_labels == _AWKWARD_LABELS
+    assert again.observable_labels == ["  L0 ", "x\ny"]
+    assert again == dem
+    # str() is the same format without the header, and every label sits on one line of it.
+    assert len(str(dem).splitlines()) == 3 + n + 2 + 1
+
+
+def test_unquoted_labels_from_older_files_still_read(tmp_path):
+    path = tmp_path / "old.qdem"
+    path.write_text("# sdim compact qudit detector error model (format: qdem v1)\n"
+                    "DIMENSION 3\nDETECTORS 3\nOBSERVABLES 1\n"
+                    "DETECTOR D0 Z#1 round 0\nDETECTOR D2 \"not closed\nLOGICAL_OBSERVABLE L0 logical # 0\n"
+                    "ERROR(0.1) D0=1 L0=2 # N1[f]@3:q0\n")
+    dem = DetectorErrorModel.read_from_file(path)
+    assert dem.detector_labels == ["Z#1 round 0", "", '"not closed']
+    assert dem.observable_labels == ["logical # 0"]
+    assert dem.mechanisms == [ErrorMechanism(0.1, [{0: 1, 3: 2}], "N1[f]@3:q0")]
+
+
+def test_sources_with_line_breaks_stay_on_their_line(tmp_path):
+    dem = DetectorErrorModel(3, 1, 0, [ErrorMechanism(0.1, [{0: 1}], "two\nlines\x85here")])
+    path = tmp_path / "m.qdem"
+    dem.write_to_file(path)
+    again = DetectorErrorModel.read_from_file(path)
+    assert again.mechanisms[0].source == "two lines here"
+    assert again.mechanisms[0].generators == [{0: 1}]
+
+
+@pytest.mark.parametrize("header, message", [
+    ("DIMENSION 1", "at least 2"), ("DIMENSION 0", "at least 2"), ("DIMENSION -3", "at least 2"),
+    ("DIMENSION x", "at least 2"), ("DIMENSION 3.0", "at least 2"), ("DIMENSION", "at least 2"),
+    ("DIMENSION 3 4", "at least 2"), ("DIMENSION 4", "not prime"), ("DIMENSION 1000001", "not prime"),
+])
+def test_read_from_file_validates_dimension(tmp_path, header, message):
+    path = tmp_path / "m.qdem"
+    path.write_text(f"{header}\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1) D0=1\n")
+    with pytest.raises(ValueError, match=message):
+        DetectorErrorModel.read_from_file(path)
+
+
+def test_read_from_file_composite_dimension_on_request(tmp_path):
+    dem = DetectorErrorModel(4, 2, 0, [ErrorMechanism(0.1, [{0: 2, 1: 1}], "a")])
+    path = tmp_path / "m.qdem"
+    dem.write_to_file(path)
+    with pytest.raises(ValueError, match="not prime"):
+        DetectorErrorModel.read_from_file(path)
+    assert DetectorErrorModel.read_from_file(path, check_dimension_prime=False) == dem
+
+
+@pytest.mark.parametrize("text, message", [
+    ("DIMENSION 3\nDETECTORS -1\n", "non-negative"),
+    ("DIMENSION 3\nDETECTORS two\n", "non-negative"),
+    ("DIMENSION 3\nOBSERVABLES\n", "non-negative"),
+    ("DIMENSION 3\nDIMENSION 5\n", "twice"),
+    ("DIMENSION 3\nDETECTORS 1\nDETECTORS 2\n", "twice"),
+    ("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nDETECTOR D1 \"x\"\n", "D1"),
+    ("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 1\nLOGICAL_OBSERVABLE L3 \"x\"\n", "L3"),
+    ("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1 D0=1\n", "expected ERROR"),
+    ("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nERROR(abc) D0=1\n", "expected ERROR"),
+    ("DIMENSION 3\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1) D0=x\n", "bad target"),
+])
+def test_read_from_file_validates_headers_and_labels(tmp_path, text, message):
+    path = tmp_path / "m.qdem"
+    path.write_text(text)
+    with pytest.raises(ValueError, match=message):
+        DetectorErrorModel.read_from_file(path)
+
+
+def test_hand_built_and_read_models_have_the_same_default_labels(tmp_path):
+    dem = DetectorErrorModel(3, 2, 1, [ErrorMechanism(0.25, [{0: 1, 2: 1}], "a")])
+    assert dem.detector_labels == ["", ""] and dem.observable_labels == [""]
+    path = tmp_path / "m.qdem"
+    dem.write_to_file(path)
+    assert DetectorErrorModel.read_from_file(path) == dem
+    assert DetectorErrorModel(3, 3, 0, detector_labels=["x"]).detector_labels == ["x", "", ""]
+    assert dem.to_lines().detector_labels == ["", ""]
+
+
+# --------------------------------------------------------------------------
+# sample() input checks
+
+
+def test_sample_rejects_targets_that_are_not_integers():
+    """A float target used to be truncated to an int and sampled as that target."""
+    for target in (0.5, 1.0, "0", None):
+        dem = DetectorErrorModel(3, 2, 0, [ErrorMechanism(1.0, [{target: 1}], "x")])
+        with pytest.raises(ValueError, match="target"):
+            dem.sample(8, seed=1)
+
+
+def test_sample_rejects_coefficients_that_are_not_integers():
+    for value in (1.5, 2.0, "1"):
+        dem = DetectorErrorModel(3, 2, 0, [ErrorMechanism(1.0, [{0: value}], "x")])
+        with pytest.raises(ValueError, match="coefficient"):
+            dem.sample(8, seed=1)
+
+
+@pytest.mark.parametrize("target", [2, 3, -1, 2 ** 63, 2 ** 64, -2 ** 70, np.int64(5), np.uint64(2 ** 64 - 1)])
+def test_sample_rejects_targets_outside_the_model(target):
+    """Targets beyond int64 used to raise OverflowError; the rest are checked before anything is written."""
+    dem = DetectorErrorModel(3, 1, 1, [ErrorMechanism(1.0, [{0: 1}, {target: 1}], "x")])
+    with pytest.raises(ValueError, match="target"):
+        dem.sample(8, seed=1)
+
+
+def test_sample_reduces_large_coefficients_mod_d():
+    """Coefficients of any size (they used to overflow int64) are reduced mod d."""
+    d = 7
+    big = [2 ** 70 + 3, -(2 ** 80) - 1, 10 ** 30, np.int64(-9), np.uint64(2 ** 63 + 5), True]
+    gen = {0: 1}
+    gen.update({k + 1: v for k, v in enumerate(big)})
+    dem = DetectorErrorModel(d, len(gen), 0, [ErrorMechanism(1.0, [gen], "big")])
+    det, _ = dem.sample(500, seed=2)
+    a = det[:, 0]
+    for k, v in enumerate(big):
+        np.testing.assert_array_equal(det[:, k + 1], (a * (int(v) % d)) % d)
+    assert len(np.unique(a)) == d
+
+
+def test_sample_accepts_numpy_integer_targets():
+    dem = DetectorErrorModel(5, 2, 1, [ErrorMechanism(1.0, [{np.int64(0): np.int32(2), np.int16(2): 1}], "x")])
+    det, obs = dem.sample(100, seed=3)
+    np.testing.assert_array_equal(det[:, 0], (2 * obs[:, 0]) % 5)
+
+
+# --------------------------------------------------------------------------
+# Messages
+
+
+def test_non_linear_and_constant_detectors_are_named_by_index():
+    """The messages used to quote the label, which is '' for most detectors."""
+    for expr, message in [("rec[-1] * rec[-2]", "detector D1 is not linear"),
+                          ("rec[-1] + 1", "detector D1 has a non-zero constant term"),
+                          ("abs(rec[-1]) + 1", "detector D1 has a non-zero constant term")]:
+        c = Circuit(2, 3)
+        c.add_gate("N1", 0, noise_channel="f", prob=0.1)
+        c.add_gate("M", [0, 1])
+        c.add_gate("DETECTOR", expr="rec[-1]")
+        c.add_gate("DETECTOR", expr=expr)
+        with pytest.raises(ValueError, match=re.escape(message)):
+            DetectorErrorModel.from_circuit(c)
+    c = Circuit(2, 3)
+    c.add_gate("M", [0, 1])
+    c.add_gate("DETECTOR", expr="rec[-1]", label="first")
+    c.add_gate("LOGICAL_OBSERVABLE", expr="rec[-1] * rec[-2]", label="Z")
+    with pytest.raises(ValueError, match=re.escape("logical observable L0 ('Z') is not linear")):
+        DetectorErrorModel.from_circuit(c)
+
+
+def test_module_docstring_example_output():
+    """The example at the top of sdim.dem prints what its docstring says."""
+    import sdim.dem as dem_module
+    doc = dem_module.__doc__
+    code = doc.split("```python\n", 1)[1].split("```", 1)[0]
+    expected = doc.split("```plaintext\n", 1)[1].split("```", 1)[0]
+    printed = []
+    namespace = {"print": lambda *args: printed.append(" ".join(map(str, args)))}
+    exec(compile(code, "<sdim.dem example>", "exec"), namespace)
+    assert printed[0].rstrip("\n") == expected.rstrip("\n")
+
+
+# --------------------------------------------------------------------------
+# Large dimensions, older files, labels JSON cannot hold
+
+
+def test_is_prime_is_exact():
+    from sdim.dem import _is_prime
+    n = 20000
+    sieve = [True] * (n + 1)
+    sieve[0] = sieve[1] = False
+    for i in range(2, int(n ** 0.5) + 1):
+        if sieve[i]:
+            sieve[i * i::i] = [False] * len(sieve[i * i::i])
+    assert [k for k in range(n + 1) if _is_prime(k)] == [k for k in range(n + 1) if sieve[k]]
+    assert _is_prime(2 ** 31 - 1) and _is_prime(1099511627791) and _is_prime(1000003)
+    # A strong pseudoprime to the bases 2 .. 23, strong Lucas pseudoprimes, Carmichael numbers.
+    for c in (3825123056546413051, 5459, 5777, 10877, 561, 41041, (2 ** 31 - 1) * 1000003, 1000003 ** 2):
+        assert not _is_prime(c), c
+    assert _is_prime(3.0) and not _is_prime(4.0) and not _is_prime(3.5) and not _is_prime("7")
+
+
+_LARGE_DIMENSION_SCRIPT = r"""
+import sys
+from sdim.dem import DetectorErrorModel, ErrorMechanism, _is_prime
+print(DetectorErrorModel.read_from_file(sys.argv[1]).dimension)
+try:
+    DetectorErrorModel.read_from_file(sys.argv[2])
+except ValueError as e:
+    print("refused", "not prime" in str(e))
+d = 2 ** 61 - 1
+dem = DetectorErrorModel(d, 2, 0, [ErrorMechanism(0.1, [{0: 1, 1: 5}], "a"), ErrorMechanism(0.2, [{0: 3, 1: 15}], "b")])
+print([(m.generators, m.source) for m in dem.to_lines().mechanisms])
+print([_is_prime(p) for p in (2 ** 61 - 1, 2 ** 89 - 1, 2 ** 107 - 1, 2 ** 127 - 1, 2 ** 521 - 1)])
+# Strong pseudoprimes to the bases 2 .. 37 and 2 .. 41 (the second is past the exact Miller-Rabin bound),
+# a prime square, products of large primes, a Mersenne composite.
+print([_is_prime(c) for c in (318665857834031151167461, 3317044064679887385961981, (2 ** 61 - 1) ** 2,
+                              (2 ** 89 - 1) * (2 ** 61 - 1), 2 ** 67 - 1)])
+"""
+
+
+def test_large_prime_dimensions_are_checked_quickly(tmp_path):
+    """The prime check was trial division up to sqrt(d): DIMENSION 2**89 - 1 never finished reading, and
+    to_lines at d = 2**61 - 1 never finished either. (In a subprocess, so the old code fails on the timeout.)"""
+    import os
+    import subprocess
+    import sys
+    import sdim
+    prime, composite = tmp_path / "prime.qdem", tmp_path / "composite.qdem"
+    prime.write_text(f"DIMENSION {2 ** 89 - 1}\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1) D0=1\n")
+    composite.write_text(f"DIMENSION {(2 ** 89 - 1) * (2 ** 61 - 1)}\nDETECTORS 1\nOBSERVABLES 0\nERROR(0.1) D0=1\n")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([os.path.dirname(os.path.dirname(sdim.__file__)), env.get("PYTHONPATH", "")])
+    proc = subprocess.run([sys.executable, "-c", _LARGE_DIMENSION_SCRIPT, str(prime), str(composite)], env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [str(2 ** 89 - 1), "refused True", "[([{0: 1, 1: 5}], 'a+b')]",
+                                        "[True, True, True, True, True]", "[False, False, False, False, False]"]
+
+
+def test_to_lines_is_exact_for_dimensions_above_int32():
+    """At d above 2**31 the numba expansion multiplied residues in int64 and overflowed."""
+    d = 1099511627791        # prime, about 2**40
+    dem = DetectorErrorModel(d, 2, 0, [ErrorMechanism(0.2, [{0: 3, 1: d - 2}], "b")])
+    assert dem.to_lines(max_lines_per_mechanism=10).mechanisms == [
+        ErrorMechanism(0.2, [{0: 1, 1: pow(3, -1, d) * (d - 2) % d}], "b")]
+    d = 2 ** 31 - 1          # the largest dimension the numba expansion takes
+    dem = DetectorErrorModel(d, 2, 0, [ErrorMechanism(0.2, [{0: d - 3, 1: d - 2}], "b")])
+    assert dem.to_lines(max_lines_per_mechanism=10).mechanisms == [
+        ErrorMechanism(0.2, [{0: 1, 1: pow(d - 3, -1, d) * (d - 2) % d}], "b")]
+
+
+def test_v1_labels_that_look_like_json_are_read_verbatim(tmp_path):
+    """Format v1 wrote labels as they are; a v1 label that happened to be a JSON string literal used to have
+    its quotes stripped and its escapes decoded."""
+    backslash = chr(92)
+    label = '"C:' + backslash + "temp" + backslash + 'new"'
+    body = f"DIMENSION 3\nDETECTORS 2\nOBSERVABLES 1\nDETECTOR D0 {label}\nDETECTOR D1 \"x\"\n" \
+           f"LOGICAL_OBSERVABLE L0 \"a b\"\nERROR(0.1) D0=1 # s\n"
+    v1 = tmp_path / "v1.qdem"
+    v1.write_text("# sdim compact qudit detector error model (format: qdem v1)\n# comment\n#\n" + body)
+    dem = DetectorErrorModel.read_from_file(v1)
+    assert dem.detector_labels == [label, '"x"'] and dem.observable_labels == ['"a b"']
+    # The same lines in a v2 file (or one with no header) are JSON string literals.
+    for header in ("# sdim compact qudit detector error model (format: qdem v2)\n", ""):
+        v2 = tmp_path / "v2.qdem"
+        v2.write_text(header + body)
+        dem = DetectorErrorModel.read_from_file(v2)
+        assert dem.detector_labels == ["C:\temp\new", "x"] and dem.observable_labels == ["a b"]
+
+
+def test_labels_with_a_lone_surrogate_pair_are_refused(tmp_path):
+    """JSON reads the escapes of a lone high surrogate and a lone low surrogate after it as one character,
+    so such a label used to come back changed."""
+    high, low = chr(0xD800), chr(0xDFFF)
+    path = tmp_path / "m.qdem"
+    for labels in ([chr(0x1C) + high + low + "2", ""], ["", chr(0xDBFF) + chr(0xDC00)]):
+        dem = DetectorErrorModel(5, 2, 1, [ErrorMechanism(0.25, [{0: 1}], "s")], labels, ["ok"])
+        with pytest.raises(ValueError, match="surrogate"):
+            dem.write_to_file(path)
+    dem = DetectorErrorModel(5, 1, 1, [], [""], [high + low])
+    with pytest.raises(ValueError, match="surrogate"):
+        dem.write_to_file(path)
+    # Lone surrogates on their own, in the other order or apart, and astral characters still round-trip.
+    for label in (high, low, low + high, high + "x" + low, chr(0x1F600), chr(0x103FF)):
+        dem = DetectorErrorModel(5, 1, 0, [], [label])
+        dem.write_to_file(path)
+        assert DetectorErrorModel.read_from_file(path).detector_labels == [label]
