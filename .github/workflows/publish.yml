@@ -32,5 +32,5 @@ jobs:
         env:
           TWINE_PASSWORD: ${{ secrets.OIDC_TOKEN }}
         run: |
-          python -m twine upload dist/* --non-interactive \
+          python -m twine upload dist/* --non-interactive --skip-existing \
           --username __token__ --password $TWINE_PASSWORD

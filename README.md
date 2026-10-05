@@ -6,9 +6,8 @@ Despite the growing research interest in qudits as an alternative way to scale c
 
 The following are relevant details for the project:
 - Supports **only Clifford** operations. 
-- **Prime** dimensions are strongly tested while the "fast" solver for composite dimensions is known to have possible errors
-    - The issue lies in math implementation details that can be found inside the [markdown](sdim/tableau/COMPOSITE.md) located in `sdim/tableau`
-- Does not currently `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`
+- Works in any dimension below 2**31. Prime dimensions use an extended tableau; composite dimensions use a Weyl tableau whose measurements are computed exactly, see the [notes on composite dimensions](https://github.com/events555/sdim/blob/main/sdim/tableau/COMPOSITE.md).
+- Does not currently support `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`
 
 ## Project Installation
 You can install the `sdim` Python module directly from [PyPI](https://pypi.org/project/sdim/) using `pip install sdim`
@@ -60,7 +59,7 @@ Noise gates take these parameters:
 - `N1`: `noise_channel` (`'d'` depolarizing, `'f'` flip, `'p'` phase) and `prob`.
 - `N2`: `prob` for two-qudit depolarizing. A full `prob_dist` over all d^4 Paulis also works for small d, but `sdim.dem` rejects it. Use the older `sdim.dem_legacy` model for those circuits.
 
-The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent line mechanisms, each adding a uniformly random multiple of a single vector. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](sdim/dem.py) explains the math and the file format.
+The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent line mechanisms, each adding a uniformly random multiple of a single vector. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](https://github.com/events555/sdim/blob/main/sdim/dem.py) explains the math and the file format.
 
 `Program(circuit).simulate(shots=n, raw_detector_output=True)` samples detectors with the Pauli frame simulator instead. Its arrays are indexed the other way round, (detector, shot), and cover the n - 1 shots after the noiseless reference shot.
 

@@ -1,13 +1,17 @@
 [tool.poetry]
 name = "sdim"
-version = "1.3.4"
-description = "A tableau Clifford simulator for qudits"
+version = "1.4.0"
+description = "A fast stabilizer simulator for qudits, with Pauli frame sampling and detector error models"
 authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>", "Adeeb Kabir <ask171@rutgers.edu>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
-keywords = ["quantum computing", "Clifford simulator", "qudits"]
+keywords = ["quantum computing", "Clifford simulator", "qudits", "stabilizer", "quantum error correction", "detector error model"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
