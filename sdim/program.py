@@ -6,9 +6,10 @@ from .tableau.tableau_composite import WeylTableau
 from .tableau.tableau_prime import ExtendedTableau
 from .tableau.tableau_gates import *
 from .tableau.tableau_gates import _apply_pauli_powers
+from ._jit import _kernel
 from itertools import product, repeat
 from sympy import isprime
-from numba import njit, prange
+from numba import prange
 from numba.core import types
 from numba.typed import Dict
 import numpy as np
@@ -187,7 +188,7 @@ _TWO32 = np.uint64(0x100000000)
 _INT63_MAX = np.int64(0x7FFFFFFFFFFFFFFF)
 
 
-@njit(cache=True)
+@_kernel
 def _rng_seed(state, seed):
     """Fills the xoshiro256** state from a 64-bit seed with splitmix64."""
     x = seed
@@ -199,7 +200,7 @@ def _rng_seed(state, seed):
         state[i] = r ^ (r >> np.uint64(31))
 
 
-@njit(cache=True)
+@_kernel
 def _rng_next(state):
     """Next 64-bit output of xoshiro256**."""
     s0 = state[0]
@@ -222,13 +223,13 @@ def _rng_next(state):
     return result
 
 
-@njit(cache=True)
+@_kernel
 def _rng_double(state):
     """Uniform float in [0, 1) with 53 random bits."""
     return np.float64(_rng_next(state) >> np.uint64(11)) * (1.0 / 9007199254740992.0)
 
 
-@njit(cache=True)
+@_kernel
 def _rng_below(state, n):
     """Exactly uniform integer in [0, n), for 1 <= n < 2**63."""
     if n <= 0xFFFFFFFF:
@@ -250,7 +251,7 @@ def _rng_below(state, n):
             return r % n
 
 
-@njit(cache=True)
+@_kernel
 def _rng_fill_below(state, n, row, width):
     """
     row[0:width] = independent uniform integers in [0, n), for 1 <= n < 2**32.
@@ -285,7 +286,7 @@ def _rng_fill_below(state, n, row, width):
     state[3] = s3
 
 
-@njit(cache=True)
+@_kernel
 def _rng_next_hit(state, log_q, s, limit):
     """
     Next shot after s, in [s + 1, limit), on which an event of probability p = 1 - exp(log_q)
@@ -316,7 +317,7 @@ _Z_A = 1  # the op's Z update of its first qudit is needed (for M / M_X / RESET:
 _Z_B = 2  # the op's Z update of its second qudit is needed
 
 
-@njit(cache=True)
+@_kernel
 def _z_liveness(op, qa, qb, flags, live):
     """
     Fills flags (zeros, one per op) with the _Z_A/_Z_B bits of the Z updates whose results can
@@ -358,7 +359,7 @@ def _z_liveness(op, qa, qb, flags, live):
             live[a] = True
 
 
-@njit(cache=True)
+@_kernel
 def _add_mod(row, values, d, width):
     for s in range(width):
         v = row[s] + values[s]
@@ -367,7 +368,7 @@ def _add_mod(row, values, d, width):
         row[s] = v
 
 
-@njit(cache=True)
+@_kernel
 def _sub_mod(row, values, d, width):
     for s in range(width):
         v = row[s] - values[s]
@@ -376,7 +377,7 @@ def _sub_mod(row, values, d, width):
         row[s] = v
 
 
-@njit(cache=True)
+@_kernel
 def _add_injected_noise(x, z, a, b, f, two_qudit, noise, k, d, width):
     """
     Adds row k of an injected noise array to the frames: columns (x_a, z_a) for N1 and
@@ -400,7 +401,7 @@ def _add_injected_noise(x, z, a, b, f, two_qudit, noise, k, d, width):
             row[s] = v
 
 
-@njit(cache=True)
+@_kernel
 def _add_one(row, s, value, d):
     v = row[s] + value
     if v >= d:
@@ -408,7 +409,7 @@ def _add_one(row, s, value, d):
     row[s] = v
 
 
-@njit(cache=True)
+@_kernel
 def _apply_sampled_pauli(kind, a, b, s, za_live, zb_live, x, z, d, rng):
     """Draws the non-identity Pauli of an N1 / N2-with-prob gate and applies it on shot s."""
     if kind == _NOISE_N1_D:
@@ -439,7 +440,7 @@ def _apply_sampled_pauli(kind, a, b, s, za_live, zb_live, x, z, d, rng):
             _add_one(z[b], s, z2, d)
 
 
-@njit(cache=True)
+@_kernel
 def _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log_q, next_hit,
                       cdf_offset, cdf_data, cdf_len, rng):
     """Samples and applies noise gate k (on qudits a and b) to the shots col0..col0+width-1."""
@@ -494,7 +495,7 @@ def _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log
             next_hit[k] = h
 
 
-@njit(cache=True)
+@_kernel
 def _init_sampled_noise(rng, seed, modes, log_q, shots, next_hit):
     """
     Seeds the kernel's generator and draws the first shot on which each geometric noise gate
@@ -510,7 +511,7 @@ def _init_sampled_noise(rng, seed, modes, log_q, shots, next_hit):
             next_hit[k] = _rng_next_hit(rng, log_q[k], before_first, shots)
 
 
-@njit(cache=True)
+@_kernel
 def _frame_ops(op, qa, qb, pa, pb, zf, start, end, d, x, z, z_live0, block, records, shots,
                noise, kinds, modes, log_q, next_hit, cdf_offset, cdf_data, cdf_len, rng, lazy):
     """
@@ -818,7 +819,7 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
 _FLOAT_EXACT_BOUND = 1 << 52
 
 
-@njit(cache=True)
+@_kernel
 def _floor_mod_int64(values, d, out):
     """
     out[i] = values[i] % d with Python's sign rule, for d >= 1, without a hardware division.

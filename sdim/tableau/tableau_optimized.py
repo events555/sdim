@@ -22,24 +22,11 @@ Reductions use `_modq`, which avoids the slow 64-bit integer division.  It estim
 in double precision and corrects the estimate exactly with integer arithmetic (see its docstring).
 """
 
-from numba import njit, prange
+from numba import prange
 from numba.core.dispatcher import Dispatcher
 import numpy as np
 
-
-def _kernel(func):
-    """
-    `njit` with numba's on-disk cache when there is somewhere to write it, else without one.
-
-    numba picks the cache directory when the decorator runs (NUMBA_CACHE_DIR, the package's
-    __pycache__ or the user-wide cache directory) and raises RuntimeError if none of them is
-    writable, for example for a read-only install with a read-only home directory.  The package
-    must still import then; the kernels just compile again in each process.
-    """
-    try:
-        return njit(cache=True)(func)
-    except RuntimeError:
-        return njit(func)
+from .._jit import _kernel
 
 
 # @njit(parallel=True)

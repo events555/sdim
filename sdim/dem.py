@@ -144,6 +144,7 @@ import numba
 import numpy as np
 from numba import njit
 
+from ._jit import _kernel
 from .circuit import Circuit
 from .program import Program, _detector_mod
 
@@ -2036,7 +2037,7 @@ def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, 
     return np.cumsum(np.concatenate(counts)), np.concatenate(tgts), np.concatenate(vals)
 
 
-@njit(nogil=True, cache=True)
+@_kernel(nogil=True)
 def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt, rcoef,
                   probe_op, probe_qudit, probe_kind, d, n_targets, max_slots, cap):
     """
@@ -2255,7 +2256,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
     return 0, out_ptr, out_tgt[:w], out_val[:w]
 
 
-@njit(nogil=True, cache=True)
+@_kernel(nogil=True)
 def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, visit, probe_op, probe_qudit,
                      probe_kind, d, n_qudits):
     """
@@ -2487,7 +2488,7 @@ def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, 
     return ptr, tgt, val
 
 
-@njit(cache=True)
+@_kernel
 def _sort_pairs(keys, vals, lo, hi):
     """Sorts keys[lo:hi] in place, moving vals[lo:hi] along with them (insertion sort, or heapsort)."""
     n = hi - lo
@@ -2537,7 +2538,7 @@ def _sort_pairs(keys, vals, lo, hi):
             root = child
 
 
-@njit(cache=True)
+@_kernel
 def _mod_inverse(a, m):
     """The inverse of a mod m in 0 .. m - 1, or -1 if gcd(a, m) != 1."""
     t, new_t, r, new_r = 0, 1, m, a % m
@@ -2550,7 +2551,7 @@ def _mod_inverse(a, m):
     return t % m
 
 
-@njit(cache=True)
+@_kernel
 def _expand_lines(gen_ptr, ent_ptr, ent_tgt, ent_val, d):
     """
     The line mechanisms of `DetectorErrorModel.to_lines`, in canonical form.
@@ -2776,7 +2777,7 @@ def _sample_plan(mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack
     return pack, info, always_off, bin_ptr, np.ascontiguousarray(bin_pmax, dtype=np.float64), bin_log_keep, cost
 
 
-@njit(nogil=True, cache=True)
+@_kernel(nogil=True)
 def _sample_chunks(c_lo, c_hi, det, obs, chunk, states, bin_ptr, bin_pmax, bin_log_keep, info, info_p, always_off,
                    pack, d, thresh, nprime):
     """
