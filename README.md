@@ -8,12 +8,15 @@ The following are relevant details for the project:
 - Supports **only Clifford** operations. 
 - Works in any dimension below 2**31. Prime dimensions use an extended tableau; composite dimensions use a Weyl tableau whose measurements are computed exactly, see the [notes on composite dimensions](https://github.com/events555/sdim/blob/main/sdim/tableau/COMPOSITE.md).
 - Does not currently support `.stim` circuit notation, only a variant based on Scott Aaronson's original `.chp`
+- Runs on Python 3.11 to 3.14, tested with the newest releases of its dependencies and with the oldest ones it supports.
 
 ## Project Installation
-You can install the `sdim` Python module directly from [PyPI](https://pypi.org/project/sdim/) using `pip install sdim`
+You can install the `sdim` Python module directly from [PyPI](https://pypi.org/project/sdim/) using `pip install sdim`. It needs Python 3.11 or newer and installs numpy, sympy, numba and cirq-core. sdim only uses cirq-core; install `cirq` as well if you want Cirq's hardware vendor packages.
+
+The first run after installing compiles sdim's numba kernels, which takes about 10 seconds once. Later runs load them from numba's cache.
 
 ## How to use sdim?
-Take a look at the Python notebooks for an in-depth examples.
+Take a look at the notebooks in [`examples/`](https://github.com/events555/sdim/tree/main/examples) for in-depth examples.
 ```python
 from sdim import Circuit, Program
 
@@ -33,8 +36,10 @@ program = Program(circuit) # Must be given an initial circuit as a constructor a
 result = program.simulate(show_measurement=True) # Runs the program and prints the measurement results. Also returns the results as a list of MeasurementResult objects.
 ```
 
+Besides the Clifford gates (`H`, `P`, `CNOT`, `CZ`, `SWAP`, `X`, `Z` and their inverses), `M` measures in the computational basis, `M_X` in the X basis and `RESET` returns a qudit to |0>. `MUL` multiplies a qudit by a scalar `a` coprime to d, for example `circuit.add_gate('MUL', 0, a=2)` at d = 5. Negative qudit indices count from the end, like Python lists.
+
 ## Detector error models
-`sdim.dem` turns a circuit with noise, detectors and logical observables into a detector error model (DEM). Each noise gate becomes one independent error mechanism, so the model is the same size for any qudit dimension. The tests run it up to d = 1000003.
+`sdim.dem` turns a circuit with noise, detectors and logical observables into a detector error model (DEM). Each noise gate becomes one error mechanism, and gates with the same effect on the detectors are merged into one, so the model is the same size for any qudit dimension. The tests run it up to d = 1000003.
 ```python
 from sdim import Circuit
 from sdim.dem import DetectorErrorModel
@@ -53,13 +58,16 @@ circuit.add_gate('LOGICAL_OBSERVABLE', expr='rec[-1]')
 dem = DetectorErrorModel.from_circuit(circuit)
 detectors, observables = dem.sample(100_000) # int64 arrays of values mod d, shape (shots, detectors)
 dem.write_to_file('model.qdem')
+
+sampler = dem.compile_sampler(seed=7) # Packs the model once, for drawing many small batches
+detectors, observables = sampler.sample(256)
 ```
 
 Noise gates take these parameters:
 - `N1`: `noise_channel` (`'d'` depolarizing, `'f'` flip, `'p'` phase) and `prob`.
 - `N2`: `prob` for two-qudit depolarizing. A full `prob_dist` over all d^4 Paulis also works for small d, but `sdim.dem` rejects it. Use the older `sdim.dem_legacy` model for those circuits.
 
-The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent line mechanisms, each adding a uniformly random multiple of a single vector. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2`. The docstring at the top of [`sdim/dem.py`](https://github.com/events555/sdim/blob/main/sdim/dem.py) explains the math and the file format.
+The dimension has to be prime, every detector and observable must be deterministic without noise, and noise can go up to full mixing (for example `prob <= 1 - 1/d` for flip errors). `from_circuit` checks all three and raises a `ValueError` otherwise. For small d, `dem.to_lines()` splits every mechanism into independent line mechanisms, each adding a uniformly random multiple of a single vector. At d = 2 these match stim's error models for `DEPOLARIZE1` and `DEPOLARIZE2` up to a factor of two: a line adds a uniformly random multiple of its vector, zero included, so a line printed with probability p flips its detectors with probability p/2, which is the number stim prints. The docstring at the top of [`sdim/dem.py`](https://github.com/events555/sdim/blob/main/sdim/dem.py) explains the math and the file format.
 
 `Program(circuit).simulate(shots=n, raw_detector_output=True)` samples detectors with the Pauli frame simulator instead. Its arrays are indexed the other way round, (detector, shot), and cover the n - 1 shots after the noiseless reference shot.
 
