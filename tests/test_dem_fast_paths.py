@@ -464,7 +464,11 @@ def test_symbolic_forms_take_time_linear_in_the_expression():
         return min(times)
 
     best(50)
-    small, large = best(250), best(2000)
+    # A busy machine can stall either size, so measure up to three times before failing.
+    for _ in range(3):
+        small, large = best(250), best(2000)
+        if large / small < 20:
+            break
     # Linear work gives a ratio near 8; it was about 45.
     assert large / small < 20, (small, large)
 

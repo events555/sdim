@@ -1,38 +1,56 @@
-[tool.poetry]
+[project]
 name = "sdim"
 version = "1.4.0"
 description = "A fast stabilizer simulator for qudits, with Pauli frame sampling and detector error models"
-authors = ["Steven Nguyen <steven.n.nguyen@rutgers.edu>", "Adeeb Kabir <ask171@rutgers.edu>"]
+authors = [
+    { name = "Steven Nguyen", email = "steven.n.nguyen@rutgers.edu" },
+    { name = "Adeeb Kabir", email = "ask171@rutgers.edu" },
+]
 license = "GPL-3.0-or-later"
 readme = "README.md"
+requires-python = ">=3.11"
 keywords = ["quantum computing", "Clifford simulator", "qudits", "stabilizer", "quantum error correction", "detector error model"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
+# Each floor passes the tests on Python 3.11; the floors job in .github/workflows/tests.yml
+# installs exactly these. numpy 1.23.2 and numba 0.57 are the first releases with Python 3.11
+# wheels, and sympy releases before 1.9 import distutils, which Python 3.12 removed.
+dependencies = [
+    "numpy>=1.23.2",
+    "sympy>=1.9",
+    "cirq-core>=1.0",
+    "numba>=0.57",
+]
 
-[tool.poetry.urls]
+[project.urls]
 Homepage = "https://events555.github.io/sdim/sdim.html"
 Repository = "https://github.com/events555/sdim"
 Documentation = "https://events555.github.io/sdim/sdim.html"
 
-[tool.poetry.dependencies]
-python = "^3.11"
-numpy = ">=1.25.0"
-sympy = ">=1.12.1"
-cirq = ">=1.0.0"
-Diophantine = "*"
-numba = "*"
-networkx = "^3.4.2"
-
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pdoc = "*"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+# poetry-core writes only the first author into the package metadata; flit_core writes them
+# all. 3.11 is the first flit_core that takes a license expression.
+requires = ["flit_core>=3.11,<5"]
+build-backend = "flit_core.buildapi"
+
+[tool.pytest.ini_options]
+# Warnings that sdim's own modules trigger, such as a dependency deprecating a call sdim makes,
+# fail the tests. numba reports a deprecation in a jitted function from its own files, so its
+# deprecation categories fail the tests too; sdim is the only numba user in the test process.
+# Other warnings keep pytest's default handling.
+filterwarnings = [
+    'error:::sdim(\.|$)',
+    'error::numba.core.errors.NumbaDeprecationWarning',
+    'error::numba.core.errors.NumbaPendingDeprecationWarning',
+]

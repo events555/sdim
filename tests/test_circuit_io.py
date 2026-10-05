@@ -175,7 +175,8 @@ def test_write_keeps_old_readers_working(tmp_path):
     c = Circuit(3, 5)
     c.add_gate("X", 0)
     path = write_circuit(c, "header.chp", directory=str(tmp_path))
-    lines = open(path).read().splitlines()
+    with open(path) as f:
+        lines = f.read().splitlines()
     header = lines[lines.index("#") + 1].split()
     assert header[:2] == ["d", "5"]
 

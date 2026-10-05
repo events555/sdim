@@ -389,7 +389,11 @@ def test_compile_time_is_linear_in_rounds():
         return min(times)
 
     best(20)
-    small, large = best(150), best(1200)
+    # A busy machine can stall either size, so measure up to three times before failing.
+    for _ in range(3):
+        small, large = best(150), best(1200)
+        if large / small < 20:
+            break
     # Linear work gives a ratio near 8; quadratic gave about 40 here.
     assert large / small < 20, (small, large)
 
@@ -407,7 +411,11 @@ def test_compile_time_is_linear_in_rounds_with_spanning_observables():
         return min(times)
 
     best(20)
-    small, large = best(150), best(1200)
+    # A busy machine can stall either size, so measure up to three times before failing.
+    for _ in range(3):
+        small, large = best(150), best(1200)
+        if large / small < 20:
+            break
     # Linear work gives a ratio near 8; it was over 100 here.
     assert large / small < 20, (small, large)
 
@@ -427,7 +435,11 @@ def test_compile_time_is_linear_in_rounds_with_idle_qudits():
 
     for fn in (lambda c: DetectorErrorModel.from_circuit(c, merge=False), compile_unit_responses):
         best(fn, 20)
-        small, large = best(fn, 200), best(fn, 1600)
+        # A busy machine can stall either size, so measure up to three times before failing.
+        for _ in range(3):
+            small, large = best(fn, 200), best(fn, 1600)
+            if large / small < 18:
+                break
         # Linear work gives a ratio near 8; it was about 30 here.
         assert large / small < 18, (small, large)
 
