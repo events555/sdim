@@ -17,6 +17,7 @@ import contextlib
 import copy
 import gc
 import math
+import operator
 import re 
 
 # Gate function dictionary
@@ -1099,6 +1100,12 @@ class Program:
                 self.stabilizer_tableau = WeylTableau(circuit.num_qudits, circuit.dimension)
         else:
             self.stabilizer_tableau = tableau
+            if type(tableau.num_qudits) is not int or type(tableau.dimension) is not int:
+                # NumPy sizes break pow(a, -1, d) in MUL (and float ones never worked: TypeError here).
+                # A copy keeps the caller's tableau as it is.
+                self.stabilizer_tableau = copy.copy(tableau)
+                self.stabilizer_tableau.num_qudits = operator.index(tableau.num_qudits)
+                self.stabilizer_tableau.dimension = operator.index(tableau.dimension)
         self.circuits = [circuit]
         self.measurement_results = []
         self.initial_tableau = copy.copy(self.stabilizer_tableau)
@@ -1118,6 +1125,11 @@ class Program:
         
         This means that things like `show_gate` and `verbose` will **not work for any shot after the first**.
 
+        The Pauli frame sampler needs a program that starts in a computational basis state, such as the default |0...0>.
+        If the initial `tableau` is not one, the shots after the reference shot run on the tableau instead, which is as
+        slow as `force_tableau=True`, and the results take the frame sampler's form described below.  Detectors are then
+        evaluated on each shot's outcome shifts from the reference shot, (value - reference value) mod d, as for frame shots.
+
         Args:
             shots (int): The number of times to run the simulation.
             show_measurement (bool): Whether to print the measurement results.
@@ -1128,7 +1140,7 @@ class Program:
             exact (bool): Kept for compatibility. Composite-dimension measurements are always
                 computed exactly, so it has no effect.
             building_error_mechanism (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
-                Not for manual use
+                Not for manual use, and only for programs that start in a computational basis state
             raw_detector_output (bool): Flag for returning 2D matrices for detection events indexed as (sequential detector index, shot)
             options (SimulationOptions): An optional SimulationOptions object.
 
@@ -1160,6 +1172,8 @@ class Program:
         # Every mode checks the detector record references up front, before simulating anything.
         _check_record_references(self.circuits)
         if options.shots > 1 and not options.record_tableau and not options.force_tableau:
+            if not self._starts_in_basis_state():
+                return self._sample_with_tableau(options, building_error_mechanism)
             tableau_options = copy.copy(options)
             tableau_options.shots = 1
             self._tableau_noise_enabled = False
@@ -1295,6 +1309,61 @@ class Program:
         else:
             return self.measurement_results
     
+    def _starts_in_basis_state(self) -> bool:
+        """
+        Whether the initial state is a computational basis state, which the Pauli frame sampler
+        assumes: it gives every qudit a uniformly random Z frame at the start, and only basis
+        states are unchanged by that.  A stabilizer state is one exactly when no generator has an
+        X part mod d.
+        """
+        x_block = self.initial_tableau.x_block
+        # The default tableau has no nonzero entry at all, which is much quicker to see than x mod d.
+        return not x_block.any() or not (x_block % self.initial_tableau.dimension != 0).any()
+
+    def _sample_with_tableau(self, options: SimulationOptions, building_error_mechanism: bool = False) -> tuple:
+        """
+        The frame sampler's simulation for an initial state that is not a computational basis state.
+
+        The noiseless reference shot and the shots after it all run on the tableau, and the results
+        take the frame sampler's form: the reference shot comes first, and detectors are evaluated
+        on the shift of each M / M_X outcome from the reference shot, (value - reference) mod d.
+        """
+        if building_error_mechanism:
+            raise ValueError("Error mechanisms can only be built for a program that starts in a computational basis state.")
+        reference_options = copy.copy(options)
+        reference_options.shots = 1
+        self._tableau_noise_enabled = False
+        try:
+            self._simulate_tableau(reference_options)
+        finally:
+            self._tableau_noise_enabled = True
+        reference_results, reference_tableau = self.measurement_results, self.stabilizer_tableau
+        # Compiles the detectors before the slow shots, so a bad expression fails right away.
+        ir_array, _, detector_info, _ = self._build_ir(self.circuits, options.shots - 1, sample_noise=False)
+
+        self._simulate_tableau(SimulationOptions(shots=options.shots - 1, exact=options.exact))
+        for reference_rounds, rounds in zip(reference_results, self.measurement_results):
+            for reference_shots, shots_list in zip(reference_rounds, rounds):
+                reference_shots.extend(shots_list)
+        # The program's state is the reference shot's, as after the frame sampler.
+        self.measurement_results, self.stabilizer_tableau = reference_results, reference_tableau
+
+        # The M and M_X outcomes in circuit order.  RESET adds a measurement round, but no record.
+        rounds_seen = [0] * len(self.measurement_results)
+        records = []
+        for circuit in self.circuits:
+            for instruction in circuit.operations:
+                if instruction.gate_id in (14, 15, 16):
+                    q = instruction.qudit_index
+                    if instruction.gate_id != 16:
+                        records.append([m.measurement_value for m in self.measurement_results[q][rounds_seen[q]]])
+                    rounds_seen[q] += 1
+        values = np.array(records, dtype=np.int64).reshape(len(records), options.shots)
+        shifts = (values[:, 1:] - values[:, :1]) % self.stabilizer_tableau.dimension
+        detector_results = _evaluate_detectors(ir_array['gate_id'], shifts, np.arange(len(records)),
+                                               detector_info, options.shots - 1)
+        return self.measurement_results, self._combine_detector_results(detector_info, detector_results, options.raw_detector_output)
+
     def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
         """
         Applies a gate to the stabilizer tableau.
@@ -1762,20 +1831,59 @@ class Program:
         """
         Appends a circuit to the existing Program.
 
+        A circuit on more qudits than the program adds the extra qudits in |0>: the program then
+        starts in the tensor product of its initial state and |0...0>.  The circuits are not modified.
+        Negative qudit indices count from the end of the program's qudits, as in `c1 + c2`, so in
+        the earlier circuits they move to the new last qudits after a wider circuit is appended.
+
         Args:
             circuit (Circuit): The Circuit object to append.
 
         Raises:
             ValueError: If the circuits have different dimensions.
         """
-        if self.circuits[-1].num_qudits < circuit.num_qudits:
-            self.circuits[-1].num_qudits = circuit.num_qudits
-        else:
-            circuit.num_qudits = self.circuits[-1].num_qudits
         if self.circuits[-1].dimension != circuit.dimension:
             raise ValueError("Circuits must have the same dimension")
+        initial_tableau = self._with_zero_qudits(self.initial_tableau, circuit.num_qudits)
+        stabilizer_tableau = self._with_zero_qudits(self.stabilizer_tableau, circuit.num_qudits)
+        self.initial_tableau, self.stabilizer_tableau = initial_tableau, stabilizer_tableau
         self.circuits.append(circuit)
         
+
+    @staticmethod
+    def _with_zero_qudits(tableau, num_qudits: int):
+        """
+        Returns the tableau extended to num_qudits qudits by qudits in |0>, which get the stabilizer
+        Z (and in an ExtendedTableau the destabilizer X) of their own, or the tableau itself if it
+        has enough qudits.  The tableau is not modified.
+        """
+        n = tableau.num_qudits
+        k = num_qudits - n
+        if k <= 0:
+            return tableau
+
+        def extend(block, new_block):
+            # Rows are qudits and columns generators, so the new qudits also add k columns.
+            columns = block.shape[1]
+            extended = np.zeros((n + k, columns + k), dtype=block.dtype)
+            extended[:n, :columns] = block
+            extended[n:, columns:] = new_block
+            return extended
+
+        def extend_phases(phases):
+            return np.concatenate((phases, np.zeros(k, dtype=phases.dtype)))
+
+        identity = np.eye(k, dtype=np.int64)
+        extended = copy.copy(tableau)
+        extended.num_qudits = num_qudits
+        extended.z_block = extend(tableau.z_block, identity)
+        extended.x_block = extend(tableau.x_block, 0)
+        extended.phase_vector = extend_phases(tableau.phase_vector)
+        if isinstance(tableau, ExtendedTableau):
+            extended.destab_z_block = extend(tableau.destab_z_block, 0)
+            extended.destab_x_block = extend(tableau.destab_x_block, identity)
+            extended.destab_phase_vector = extend_phases(tableau.destab_phase_vector)
+        return extended
 
     def print_measurements(self):
         """
@@ -1792,8 +1900,10 @@ class Program:
             print("No measurements recorded.")
             return
         if shot_count == 1:
-            for result in self.simulate():
-                print(result)
+            # The stored shot, in the order simulate() returns it, without simulating again.
+            for measurements_per_qudit in self.measurement_results:
+                for shots_list in measurements_per_qudit:
+                    print(shots_list[0])
         else:
             for shot_index in range(shot_count):
                 print(f"Shot {shot_index + 1}:")

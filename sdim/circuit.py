@@ -2,6 +2,7 @@ from .gatedata import GateData
 from dataclasses import dataclass
 from typing import Union, Optional, List
 import numpy as np
+import operator
 
 # Keyword parameters accepted by gates that take any.  Catches typos such as probability=0.1,
 # which would otherwise be stored silently while the default prob is used.
@@ -65,6 +66,7 @@ class Circuit:
 
     Raises:
         ValueError: If num_qudits is less than 1 or dimension is less than 2.
+        TypeError: If num_qudits or dimension is not an integer (floats and bools are not).
     """
     num_qudits: int
     dimension: int = 2
@@ -82,6 +84,14 @@ class Circuit:
         if self.dimension >= 2 ** 31:
             # Products of two values mod d must fit in int64 throughout the simulators.
             raise ValueError("Dimension must be less than 2**31")
+        # Store Python ints: a NumPy dimension breaks pow(a, -1, d) and overflows in products.
+        if type(self.num_qudits) is not int or type(self.dimension) is not int:
+            # Floats have no __index__; bools have one, but are not sizes either.
+            for name in ("num_qudits", "dimension"):
+                value = getattr(self, name)
+                if isinstance(value, (bool, np.bool_)) or not hasattr(value, "__index__"):
+                    raise TypeError(f"{name} must be an integer, not {value!r}")
+                setattr(self, name, operator.index(value))
         self.operations = self.operations or []
         self.gate_data = self.gate_data or GateData(self.dimension)
     
@@ -177,18 +187,28 @@ class Circuit:
         Replicates the circuit by the specified number of times.
 
         Args:
-            repititions (int): The number of times to replicate the circuit.
+            repetitions (int): The number of times to replicate the circuit.
 
         Returns:
-            Circuit: A new Circuit object with the replicated operations.
+            Circuit: A new Circuit object with the replicated operations and this circuit's gate data
+                (no operations for repetitions <= 0, as for lists).  This circuit is unchanged.
         """
-        original_operations = list(self.operations)
-        for _ in range(repetitions - 1):
-            self.operations.extend(original_operations)
-        return self
+        return Circuit(self.num_qudits, self.dimension, self.operations * repetitions, self.gate_data)
     
+    __rmul__ = __mul__
+
     def __imul__(self, repetitions:int):
-        return self.__mul__(repetitions)
+        """
+        Replicates the circuit in place.
+
+        Args:
+            repetitions (int): The number of times to replicate the circuit.
+
+        Returns:
+            Circuit: This Circuit object, with its operations replicated.
+        """
+        self.operations *= repetitions
+        return self
     
     def __add__(self, other):
         """
