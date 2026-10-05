@@ -305,7 +305,11 @@ def test_mul_with_a_huge_scalar_works_in_frame_mode(d, a):
 @pytest.mark.parametrize("d,a", [(5, 10 ** 19 + 5), (6, 2 ** 70), (4, 2)])
 def test_mul_scalar_must_be_coprime_in_every_mode(d, a):
     c = Circuit(1, d)
-    c.add_gate("MUL", 0, a=a)
+    with pytest.raises(ValueError, match="not coprime"):
+        c.add_gate("MUL", 0, a=a)
+    # The simulators check as well, for instructions that did not come through add_gate.
+    c.add_gate("MUL", 0, a=1)
+    c.operations[-1].params["a"] = a
     c.add_gate("M", 0)
     for run in (lambda: Program(c).simulate(), lambda: Program(c).simulate(shots=3),
                 lambda: Program._build_ir([c], 1)):

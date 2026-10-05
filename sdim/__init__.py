@@ -41,7 +41,7 @@ Measured qudit (3) as (1) and was deterministic
 - **random_circuit**: Functions for generating random quantum circuits.
 - **circuit**: Defines the Circuit class for representing quantum circuits.
 - **tableau**: Submodule for working with tableau representations of quantum states.
-- **diophantine**: NumPy-based implementation of the Diophantine solver.
+- **diophantine**: NumPy-based implementation of the Diophantine solver. The simulators no longer use it.
 - **unitary**: Functions for generating and working with unitary matrices.
 - **dem**: Compact detector error models (DEMs) for noisy qudit circuits.
 - **dem_legacy**: The original DEM, which lists every Pauli error explicitly. Small dimensions only.
@@ -61,7 +61,7 @@ Measured qudit (3) as (1) and was deterministic
 - **write_circuit**: Writes a quantum circuit to a file.
 - **circuit_to_cirq_circuit**: Converts a Circuit to a Cirq circuit.
 - **cirq_statevector_from_circuit**: Generates a Cirq statevector from a Circuit.
-- **generate_random_circuit**: Generates a random quantum circuit.
+- **generate_random_clifford_circuit**: Generates a random Clifford circuit.
 - **generate_and_write_random_circuit**: Generates and writes a random circuit to a file.
 
 """

@@ -1370,7 +1370,6 @@ class Program:
 
         Args:
             instruc (CircuitInstruction): A CircuitInstruction object from a Circuit's operation list.
-            exact (bool): Whether to use exact computation methods.
 
         Returns:
             MeasurementResult: A MeasurementResult object if the gate is a measurement gate, otherwise None.

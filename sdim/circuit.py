@@ -1,6 +1,7 @@
 from .gatedata import GateData
 from dataclasses import dataclass
 from typing import Union, Optional, List
+import math
 import numpy as np
 import operator
 
@@ -11,6 +12,9 @@ _GATE_PARAMS = {
     "N2": {"prob", "prob_dist"},
     "MUL": {"a", "scalar"},
 }
+
+# A single qudit index.  NumPy integers come from indexing arrays and from random generators.
+_INTEGER_TYPES = (int, np.integer)
 
 @dataclass
 class CircuitInstruction:
@@ -65,7 +69,7 @@ class Circuit:
         gate_data (GateData): Contains information about available gates.
 
     Raises:
-        ValueError: If num_qudits is less than 1 or dimension is less than 2.
+        ValueError: If num_qudits is less than 1, or dimension is less than 2 or at least 2**31.
         TypeError: If num_qudits or dimension is not an integer (floats and bools are not).
     """
     num_qudits: int
@@ -99,29 +103,50 @@ class Circuit:
         """
         Adds gate operation(s) to the circuit.
 
+        A one-qudit gate takes only control, and a list there adds the gate to each qudit.  A
+        two-qudit gate (CNOT, CNOT_INV, CZ, CZ_INV, SWAP, N2) takes both control and target.  When
+        one of them is a list, the other qudit is paired with each entry; two lists of the same
+        length are paired up in order.  DETECTOR, LOGICAL_OBSERVABLE and TICK take no qudits.
+
         Args:
             gate_name (str): The name of the gate to add.
-            control (int or List[int], or None, optional): The index or indices of the control qudit(s).  No control index applies only detector data.
-            target (int, List[int], or None, optional): The index or indices of the target qudit(s).
+            control (int or List[int], or None, optional): The index or indices of the control qudit(s), or of the qudit(s) of a one-qudit gate.  Only DETECTOR, LOGICAL_OBSERVABLE and TICK are given without one.
+            target (int, List[int], or None, optional): The index or indices of the target qudit(s).  Only for two-qudit gates.
 
         Optional parameters:
             noise_channel (str): Channel type for N1.  Valid channels are "f", "p", and "d" for flip errors, phase errors, and depolarizing noise, respectively.  Defaults to "d".  The older key `channel` is still accepted.
             prob (float): Error probability for N1, and for N2 when no prob_dist is given.  For N2 it is two-qudit depolarizing: with probability prob, a uniformly random non-identity two-qudit Pauli is applied.  Defaults to 0.01.
             prob_dist (List[float]): Probability distribution for a general two-qudit Pauli channel on N2, used instead of prob.  An n-qudit Pauli channel applies powers of Pauli X and Pauli Z to n distinct qudits, which can be written as a tuple of powers (x_1, z_1,   x_2, z_2,   ...,  x_n, z_n).  The j-th entry in the distribution is the probability that the channel applies an n-qudit Pauli corresponding to the j-th tuple in lexicographic order of n-qudit tuples of Pauli powers.  It has d**4 entries, so it is only practical for small d, and sdim.dem.DetectorErrorModel does not accept it (use sdim.dem_legacy).
+            a (int): The scalar of MUL, which maps |j> to |a j mod d>.  Required.  It must be an integer coprime to the dimension d; only a mod d matters, so negative values and values of at least d are fine.  scalar is another name for it.
 
         Returns:
             Circuit: The current Circuit object with the added operation(s).
 
         Raises:
-            ValueError: If the input combination is invalid.
+            ValueError: If the input combination is invalid: a two-qudit gate without both a control
+                and a target, a one-qudit gate without a qudit or with a target, the same qudit
+                twice, an unknown parameter, or an invalid parameter value (such as a MUL scalar
+                that is not an integer coprime to d).
         """
         # Convert single integers to lists for uniform processing
-        control = [control] if isinstance(control, int) else control
-        target = [target] if isinstance(target, int) else target
+        control = [control] if isinstance(control, _INTEGER_TYPES) else control
+        target = [target] if isinstance(target, _INTEGER_TYPES) else target
 
         gate_name_upper = gate_name.upper()
         primary_name = self.gate_data.aliasMap.get(gate_name_upper, gate_name_upper)
         gate = self.gate_data.gateMap.get(primary_name)
+
+        # A missing qudit used to be stored as None, which the frame sampler read as the last
+        # qudit and the tableau could not apply.  A target given to a one-qudit gate was silently
+        # ignored.
+        if gate and gate.arg_count == 1:
+            if target is not None:
+                raise ValueError(f"{primary_name} acts on one qudit and takes no target; "
+                                 "to apply it to several qudits, give them as a list.")
+            if control is None:
+                raise ValueError(f"{primary_name} acts on one qudit: give its qudit, or a list of qudits.")
+        elif gate and gate.arg_count == 2 and (control is None or target is None):
+            raise ValueError(f"{primary_name} acts on two qudits: give both a control and a target qudit.")
 
         # Accept the older N1 parameter name.  This has to happen before the defaults are filled in,
         # otherwise the default noise_channel would shadow it.
@@ -154,13 +179,27 @@ class Circuit:
                 # Flat inputs are stored as given, so gates sharing one distribution keep sharing it.
                 kwargs["prob_dist"] = dist = dist.reshape(-1)
             _prob_dist_cdf(dist, self.dimension)
+        elif primary_name == "MUL":
+            # The simulators read the scalar as int(a) % d and need it to be invertible mod d.
+            scalar = kwargs.get("a", kwargs.get("scalar"))
+            if scalar is None:
+                raise ValueError("MUL needs its scalar, as a= (or scalar=).")
+            try:
+                value = int(scalar)
+            except (TypeError, ValueError, OverflowError):
+                value = None
+            # int() would truncate 2.5 to 2.  Text such as "2" is fine, the simulators call int() too.
+            if value is None or (not isinstance(scalar, str) and value != scalar):
+                raise ValueError(f"MUL scalar must be an integer, not {scalar!r}.")
+            if math.gcd(value % self.dimension, self.dimension) != 1:
+                raise ValueError(f"MUL scalar {scalar} is not coprime with the dimension {self.dimension}.")
 
         if control is None and target is None: # Detectors only
-            self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), None, None, params=kwargs))
+            self.operations.append(CircuitInstruction(self.gate_data, gate_name_upper, None, None, params=kwargs))
             return
         elif target is None:
             for c in control:
-                self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, None, params=kwargs))
+                self.operations.append(CircuitInstruction(self.gate_data, gate_name_upper, c, None, params=kwargs))
             return
 
         # Generate all combinations of control and target qubits
@@ -179,7 +218,7 @@ class Circuit:
 
         # Add instructions for all qubit pairs
         for c, t in qubit_pairs:
-            self.operations.append(CircuitInstruction(self.gate_data, gate_name.upper(), c, t, params=kwargs))
+            self.operations.append(CircuitInstruction(self.gate_data, gate_name_upper, c, t, params=kwargs))
         return
 
     def __mul__(self, repetitions:int):

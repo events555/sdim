@@ -231,7 +231,7 @@ class DetectorErrorModel:
         # # Construct the absolute path to the file
         # abs_file_path = os.path.join(parent_dir, filename)
 
-        with open(filepath, 'r') as file:
+        with open(filepath, 'r', encoding='utf-8') as file:
             lines = file.readlines()
 
         # Find the line with only '#'
@@ -370,10 +370,8 @@ class DetectorErrorModel:
         dem_from_circuit.dimension = dimension
 
         # Linearly process the circuit instructions for any noise events, mark down the probabilities
-        # TODO: Support for 2-qudit noise channels
-        print(f"Sweeping for error instructions...")
         for instr in circuit.operations:
-            if instr.gate_name == "N1":
+            if instr.name == "N1":
                 channel_prob = float(instr.params['prob']) 
                 channel = instr.params.get('noise_channel', instr.params.get('channel', 'd'))
                 if channel == 'd':
@@ -383,7 +381,7 @@ class DetectorErrorModel:
                     for _ in range(dimension - 1):
                         noise_probabilities.append(channel_prob / (dimension - 1))
 
-            if instr.gate_name == "N2":
+            if instr.name == "N2":
                 channel_probs = instr.params.get('prob_dist', None)
                 if channel_probs is None:
                     nontrivial = dimension ** 4 - 1
@@ -392,12 +390,11 @@ class DetectorErrorModel:
                 
         # Use the Pauli frame sampler to generate detector and logical flip events
         shots = len(noise_probabilities)
-        print(f"Sampling {shots} shots to build the DEM...")
         error_enumerator = Program(circuit)
-        _, detection_events = error_enumerator.simulate(shots=shots, building_error_mechanism=True)
+        # The frame sampler needs at least two shots; the ones past the last mechanism are noiseless.
+        _, detection_events = error_enumerator.simulate(shots=max(shots, 2), building_error_mechanism=True)
 
         # Read out the target index and flip pairs into the circuit
-        print(f"Building DEM...")
         for mechanism in range(shots):
             detector_pairs = []
             logical_pairs = []
@@ -481,7 +478,7 @@ class DetectorErrorModel:
         full_path = Path(path) / filename
         absolute_path = full_path.resolve()
 
-        with open(absolute_path, 'w') as file:
+        with open(absolute_path, 'w', encoding='utf-8') as file:
             file.write(comment + "\n#\n" + str(self))
 
         return

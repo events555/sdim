@@ -18,7 +18,7 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
     Note:
         - Two-qudit gates are: "CNOT", "CNOT_INV", "CZ", "CZ_INV".
         - All other gates are assumed to be single-qudit gates.
-        - Measurement gates (with label "m") are added as extra rounds at the end.
+        - Measurement gates ("M") are added as extra rounds at the end.
     
     Args:
         num_qudits (int): Number of qudits in the circuit.
@@ -27,6 +27,9 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
         measurement_rounds (int, optional): Number of measurement rounds to add at the end.
             In each round, every qudit is measured. Defaults to 0.
         seed (int, optional): Seed for reproducibility. Defaults to None.
+        gate_set (list of str, optional): Gates to sample from instead of the list above. Only the
+            four two-qudit gates above are given two qudits, so every other gate in it must be a
+            one-qudit gate. Defaults to None.
     
     Returns:
         Circuit: A randomly generated Circuit object.
@@ -69,29 +72,21 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
 
 def generate_and_write_random_circuit(num_qudits, num_gates, dimension, measurement_rounds=0, output_file="random_circuit.chp", seed=None):
     """
-    Generates a random quantum circuit and writes it to a file.
+    Generates a random Clifford circuit and writes it to a file.
 
-    This function creates a random circuit with specified gate type percentages
-    and writes the resulting circuit to a file.
+    The circuit comes from generate_random_clifford_circuit and is written with write_circuit,
+    into its default directory: circuits/ in the current working directory.
 
     Args:
-        c_percentage: Percentage of CNOT gates.
-        h_percentage: Percentage of Hadamard gates.
-        p_percentage: Percentage of Phase gates.
-        m_percentage: Percentage of Measurement gates.
         num_qudits: Number of qudits in the circuit.
-        num_gates: Total number of gates in the circuit.
+        num_gates: Total number of gates in the circuit (excluding measurement rounds).
         dimension: Dimension of the qudits.
-        measurement_rounds: Number of measurement rounds. Defaults to 0.
+        measurement_rounds: Number of measurement rounds to add at the end. Defaults to 0.
         output_file: Name of the output file. Defaults to "random_circuit.chp".
         seed: Random seed for reproducibility. Defaults to None.
 
     Returns:
         Circuit: The randomly generated Circuit object.
-
-    Note:
-        The percentages should sum to 100 (not 1).
-        The circuit is written to the specified output file.
     """
     circuit = generate_random_clifford_circuit(num_qudits, num_gates, dimension, measurement_rounds, seed)
     write_circuit(circuit, output_file)

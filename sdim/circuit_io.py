@@ -144,25 +144,30 @@ def read_circuit(filename):
     the gate name, its qudit indices, and its parameters as key="text" or key=value (see
     write_circuit for which values come back with which type).  Files written by older versions
     hold only key="text": prob, a / scalar and prob_dist are read from them as numbers, and the
-    other parameters as text.
+    other parameters as text.  The file is read as UTF-8.
 
     Args:
-        filename (str): The name of the file containing the circuit description.
+        filename (str): Path to the file, absolute or relative to the current working directory.
+            A relative path that does not exist there is looked up relative to the folder above
+            the sdim package (the repository root in a source checkout), as older versions did.
 
     Returns:
         Circuit: A Circuit object representing the circuit described in the file.
 
     Raises:
-        ValueError: If the file has no line with only '#', or a gate has more than two qudit indices.
+        FileNotFoundError: If the file exists in neither place.
+        ValueError: If the file has no line with only '#', a gate has more than two qudit indices,
+            or a gate line is not a valid gate (Circuit.add_gate rejects it).
     """
-    # Get the directory of the current script
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    parent_dir = os.path.join(script_dir, '..')
+    path = filename
+    if not os.path.exists(path):
+        # Older versions resolved every name against the folder above the package.
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        fallback = os.path.join(script_dir, '..', filename)
+        if os.path.exists(fallback):
+            path = fallback
 
-    # Construct the absolute path to the file
-    abs_file_path = os.path.join(parent_dir, filename)
-
-    with open(abs_file_path, 'r') as file:
+    with open(path, 'r', encoding='utf-8') as file:
         lines = file.readlines()
 
     # Find the line with only '#'
@@ -205,17 +210,20 @@ def read_circuit(filename):
             if params_dict is None:
                 params_dict = dict()
             params_dict[key] = _parse_param(key, value, quoted, prob_dist_cache)
-        gates.append((gate_name, gate_qubits, params_dict))
+        gates.append((gate_name, gate_qubits, params_dict, line.strip()))
 
-    num_qudits = max([declared_qudits, 1] + [q + 1 for _, qubits, _ in gates for q in qubits])
+    num_qudits = max([declared_qudits, 1] + [q + 1 for _, qubits, _, _ in gates for q in qubits])
     circuit = Circuit(num_qudits, dimension)
 
     # Append the gates to the circuit
-    for gate_name, gate_qubits, params_dict in gates:
-        if params_dict is not None:
-            circuit.add_gate(gate_name, *gate_qubits, **params_dict)
-        else:
-            circuit.add_gate(gate_name, *gate_qubits)
+    for gate_name, gate_qubits, params_dict, line in gates:
+        try:
+            if params_dict is not None:
+                circuit.add_gate(gate_name, *gate_qubits, **params_dict)
+            else:
+                circuit.add_gate(gate_name, *gate_qubits)
+        except ValueError as error:
+            raise ValueError(f"{filename}: gate line {line!r}: {error}") from error
 
     return circuit
 
@@ -232,12 +240,16 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
     as the int 2), the way files of older versions are read; the simulators convert these
     parameters to numbers anyway.  A value of any other type is written as its str() and comes
     back as that text (under prob, a and scalar, as a number when the text reads as one).
+    The file is written as UTF-8.
 
     Args:
         circuit (Circuit): The Circuit object to write.
         output_file (str): The name of the output file. Defaults to "random_circuit.chp".
         comment (str): An optional comment to include at the beginning of the file.
-        directory (str): Optional directory to save the file. If None, uses the default '../circuits/' relative to the script.
+        directory (str): Optional directory to save the file in, created if needed. If None, uses
+            circuits/ in the current working directory, which is the repository's circuits/ folder
+            when run from the root of a source checkout. (Older versions wrote to the circuits/
+            folder next to the sdim package, which for an installed package is in site-packages.)
 
     Returns:
         str: The path to the written file.
@@ -264,8 +276,8 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
         chp_content += f"{gate_str}\n"
 
     if directory is None:
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        directory = os.path.join(script_dir, '../circuits/')
+        # Not next to the package, which for an installed sdim is inside site-packages.
+        directory = 'circuits'
 
     # Create the directory if it doesn't exist
     os.makedirs(directory, exist_ok=True)
@@ -274,7 +286,7 @@ def write_circuit(circuit: Circuit, output_file: str = "random_circuit.chp", com
     output_path = os.path.join(directory, output_file)
 
     # Write the content to the .chp file
-    with open(output_path, "w") as file:
+    with open(output_path, "w", encoding="utf-8") as file:
         file.write(chp_content)
 
     return output_path
