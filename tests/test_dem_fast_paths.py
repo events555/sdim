@@ -395,7 +395,7 @@ def _outcome(fn):
 @pytest.mark.parametrize("d", [2, 3, 5, 1000003])
 @pytest.mark.parametrize("exprs", EXPRESSIONS)
 def test_symbolic_coefficients_match_probing(d, exprs, monkeypatch):
-    """One symbolic call gives the same coefficients and errors as evaluating on probes."""
+    """One symbolic call gives the same coefficients and errors as the numeric path (every input, or probes)."""
     _, _, info = Program._build_ir([_expression_circuit(d, exprs)], 1)
     fast = _outcome(lambda: _detector_coefficients(info, d))
     monkeypatch.setattr(dem_module, "_symbolic_coefficients", lambda *args: None)

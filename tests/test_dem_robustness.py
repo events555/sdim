@@ -256,7 +256,7 @@ def test_folded_constants_stay_symbolic(src):
 
 
 def test_composite_dimensions_keep_the_numeric_path_for_higher_degrees():
-    """2 x**2 = 2 x as functions on Z_4, though not as polynomials: the probes decide, as before."""
+    """2 x**2 = 2 x as functions on Z_4, though not as polynomials: the numeric path decides, as before."""
     c = _detector_circuit(4, 2, "2*rec[0]*rec[0] + rec[1]")
     dem = DetectorErrorModel.from_circuit(c, check_dimension_prime=False)
     assert str(dem) == str(DetectorErrorModel.from_circuit(_detector_circuit(4, 2, "2*rec[0] + rec[1]"),
@@ -265,17 +265,20 @@ def test_composite_dimensions_keep_the_numeric_path_for_higher_degrees():
         DetectorErrorModel.from_circuit(_detector_circuit(4, 2, "rec[0]*rec[1]"), check_dimension_prime=False)
 
 
-def test_large_products_fall_back_to_the_numeric_path():
-    """Expanding a product of long sums, or a high power of one, is bounded; past the bound the probes decide."""
+def test_large_products_are_too_large_to_check():
+    """Expanding a product of long sums, or a high power of one, is bounded. Past the bound, at prime d and over
+    too many records to evaluate everywhere, the detector is rejected as too large to check: the probes that
+    used to decide it rarely see a product of many records."""
     n = 200
     left = " + ".join(f"rec[{i}]" for i in range(n // 2))
     right = " + ".join(f"rec[{i}]" for i in range(n // 2, n))
     for src in (f"({left}) * ({right})", "(rec[0] + rec[1] + rec[2] + rec[3]) ** 1000"):
         fn = _compile_detector(src, 1000003)
         t = time.perf_counter()
-        assert dem_module._symbolic_coefficients(fn, n, 1000003, {}, "D") is None
+        with pytest.raises(ValueError, match="^D is too large to check for linearity"):
+            dem_module._symbolic_coefficients(fn, n, 1000003, {}, "D")
         assert time.perf_counter() - t < 5
-    with pytest.raises(ValueError, match="not linear"):
+    with pytest.raises(ValueError, match="detector D0 is too large to check for linearity"):
         DetectorErrorModel.from_circuit(_detector_circuit(1000003, n, f"({left}) * ({right})"))
 
 

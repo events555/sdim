@@ -126,7 +126,12 @@ expressions.
 - N2 gates must use `prob`. A custom `prob_dist` is not a subgroup mechanism.
   `sdim.dem_legacy` handles those for small d.
 - Detector and observable expressions must be linear in their measurement
-  records, with no constant term.
+  records, with no constant term. `from_circuit` checks this exactly for
+  plain arithmetic at prime d (and at any d when it has degree at most 1)
+  and for expressions over few records (d**n <= 4096), and other
+  expressions only on random inputs, which can miss one that is not linear
+  (see its docstring). At prime d, plain arithmetic too large to check
+  raises a ValueError.
 - Every detector and observable must be deterministic without noise.
   `from_circuit` checks this.
 - Noise probabilities can go up to the fully mixing value (`1 - 1/d` for
@@ -645,11 +650,28 @@ class DetectorErrorModel:
         Negative qudit indices count back from the end of the circuit's
         qudits, as in `Program`.
 
+        Detector and observable expressions must be linear in their records,
+        with no constant term. This is checked exactly for any expression
+        over n records with d**n <= 4096, which is evaluated on all of
+        Z_d^n, and for plain arithmetic (rec[k], integer constants, unary
+        minus, binary +, - and *, ** by a non-negative integer constant, and
+        % by a non-zero multiple of d) where no product multiplies out more
+        than 4096 pairs of terms, at prime d, or at any d when it has degree
+        at most 1. At prime d, plain arithmetic with a larger product (of
+        long sums of records, say) raises instead, unless d**n <= 4096.
+        Other expressions over more records, such as ones that call abs or
+        use //, unary + or a negative power, and at a composite d plain
+        arithmetic of degree 2 or more or with a larger product, are checked
+        on random inputs: one that is not linear but agrees with a linear
+        expression on all of them is missed, and the model is then wrong for
+        it.
+
         Args:
             circuit (Circuit): Circuit with N1/N2 noise and DETECTOR /
                 LOGICAL_OBSERVABLE instructions.
-            merge (bool): Merge rank-1 mechanisms that act on the same line of
-                detector space, see `merge_lines`. Defaults to True.
+            merge (bool): Merge mechanisms with one generator that act on the
+                same line of detector space, see `merge_lines`. Defaults to
+                True.
             check_dimension_prime (bool): Raise if the dimension is not prime.
                 Defaults to True. With False, a composite d is compiled with
                 the same frame rules, which hold over Z_d; merging then skips
@@ -664,8 +686,10 @@ class DetectorErrorModel:
             ValueError: If the dimension is not prime, an N1 gate has an
                 unknown noise channel, an N2 gate uses `prob_dist`, a noise
                 probability is above the fully mixing value, a two-qudit gate
-                acts on one qudit twice, or a detector or observable is not
-                linear in its records or not deterministic without noise.
+                acts on one qudit twice, or a detector or observable has a
+                non-zero constant term, is found not to be linear in its
+                records, is plain arithmetic too large to check at prime d
+                (see above), or is not deterministic without noise.
             IndexError: If a gate acts on a qudit outside the circuit.
         """
         d = circuit.dimension
@@ -1318,9 +1342,13 @@ class CompiledResponses:
 
 
 # A product of two polynomials is only expanded when their numbers of terms multiply to at most
-# this; a larger one sends the detector to the numeric path. This bounds the work for products
-# and powers of long sums.
+# this, counted after Fermat reduction and merging like terms; a larger one stops the symbolic call
+# (see `_symbolic_coefficients`). This bounds the work for products and powers of long sums.
 _MAX_PRODUCT_TERMS = 4096
+
+
+class _TooManyTerms(TypeError):
+    """A product that `_Polynomial` refuses to expand, see `_MAX_PRODUCT_TERMS`."""
 
 
 @functools.lru_cache(maxsize=64)
@@ -1360,7 +1388,7 @@ class _Polynomial:
     integer constant, and % by a non-zero multiple of d. So when the call
     succeeds, the expression is congruent mod d to the returned polynomial for
     every integer input. Any other operation raises TypeError, and the caller
-    falls back to evaluating the expression on numeric probes.
+    falls back to evaluating the expression on numbers.
 
     c is a sparse dict {monomial: non-zero coefficient}. The monomial rec[j - 1]
     is the int j (1 .. n), and one of degree 2 or more is the sorted tuple of
@@ -1428,7 +1456,7 @@ class _Polynomial:
     def _product(self, other):
         """The product with another polynomial, expanded into a new one; neither factor changes."""
         if len(self.c) * len(other.c) > _MAX_PRODUCT_TERMS:
-            raise TypeError("too many terms to expand")
+            raise _TooManyTerms("too many terms to expand")
         d = self.d
         period = _fermat_period(d)
         # (k1 + A)(k2 + B) = k1 k2 + k2 A + k1 B + A B
@@ -1637,12 +1665,16 @@ def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict, name: str | 
     Coefficients (c_0, c_1, ..., c_n) mod d of a detector function, from one symbolic call.
 
     Returns None when the function is not plain straight-line arithmetic or uses an operation
-    that `_Polynomial` refuses; the caller then probes it numerically. The call gives the
-    function as a polynomial mod d. For prime d that settles exactly whether it is affine on
-    Z_d^n: if not, this raises the ValueError the numeric path raises, naming `name`, or
-    without a name returns None. For composite d a polynomial of degree 2 or more can still be
-    affine (2 x**2 = 2 x mod 4), so it gives None. The result depends only on the code object
-    and n, so it is cached on them.
+    that `_Polynomial` refuses; the caller then decides it numerically (`_numeric_coefficients`).
+    The call gives the function as a polynomial mod d. For prime d that settles exactly whether
+    it is affine on Z_d^n: if not, this raises the ValueError the numeric path raises, naming
+    `name`, or without a name returns None. For composite d a polynomial of degree 2 or more can
+    still be affine (2 x**2 = 2 x mod 4), so it gives None.
+
+    For prime d, plain arithmetic whose expansion stops at `_MAX_PRODUCT_TERMS` also raises
+    (see `_too_large_to_check`), unless Z_d^n is small enough for the numeric path to evaluate
+    everywhere: random probes would rarely see a product of many records. The result depends
+    only on the code object and n, so it is cached on them.
     """
     key = (fn.__code__, n) if type(fn) is types.FunctionType else None
     if key is not None and key in cache:
@@ -1652,6 +1684,10 @@ def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict, name: str | 
         if _is_straight_line_arithmetic(fn):
             try:
                 value = fn(_Records(n, dimension))
+            except _TooManyTerms:
+                value = None
+                if _fermat_period(dimension) and not _can_evaluate_everywhere(n, dimension):
+                    result = _too_large_to_check(fn, n, dimension)
             except Exception:
                 value = None
             if type(value) is _Polynomial:
@@ -1670,19 +1706,95 @@ def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict, name: str | 
     return result
 
 
-def _probed_coefficients(fn, n: int, unique_index: int, name: str, dimension: int) -> list:
+class _ZeroRecords(_Records):
+    """The `rec` argument for reading off the constant term: each rec[j] is a new zero polynomial."""
+
+    __slots__ = ()
+
+    def __getitem__(self, j):
+        zero = super().__getitem__(j)
+        zero.c = {}
+        return zero
+
+
+def _too_large_to_check(fn, n: int, dimension: int):
     """
-    Coefficient of each record position, read by evaluating the detector function on probes.
+    The error for plain arithmetic whose symbolic call stopped at `_MAX_PRODUCT_TERMS`, or None.
 
-    Evaluating on unit vectors gives the coefficients, and further probes check that the
-    function really is linear. `name` names the detector or observable in error messages.
+    The constant term comes first, as on the other paths. It is read off one more call on zero
+    polynomials, which never expands a product. If that call meets an operation `_Polynomial`
+    refuses, the expression is not plain arithmetic after all, and None leaves it to the probes.
+    """
+    try:
+        constant = fn(_ZeroRecords(n, dimension))
+    except Exception:
+        return None
+    if type(constant) is _Polynomial:
+        constant = constant.k
+    elif type(constant) is not int:
+        return None
+    if constant % dimension:
+        return "has a non-zero constant term"
+    return (f"is too large to check for linearity: one of its products multiplies out more than "
+            f"{_MAX_PRODUCT_TERMS} pairs of terms. Use fewer records in each product, or write it as a sum "
+            f"of multiples of records")
 
-    Raises:
-        ValueError: If the function has a constant term or is not linear.
+
+# The numeric path evaluates a detector function on all of Z_d^n when that has at most this many
+# points, which decides exactly whether it is affine. Each point costs about a microsecond, and a
+# repeated expression is only decided once (see `_numeric_coefficients`).
+_MAX_EXHAUSTIVE_POINTS = 2 ** 12
+# Random inputs that the numeric probes try at d = 2. There a polynomial of degree k that is not
+# affine differs from the affine function read off the unit vectors on at least a share 2**-k of
+# the inputs (1 - k/d at prime d > k), so larger d get fewer: 128 / log2(d), but at least 16.
+_RANDOM_PROBES = 128
+
+
+def _can_evaluate_everywhere(n: int, dimension: int) -> bool:
+    """Whether Z_d^n has at most `_MAX_EXHAUSTIVE_POINTS` points (n is small then, since d >= 2)."""
+    return n < _MAX_EXHAUSTIVE_POINTS.bit_length() and dimension ** n <= _MAX_EXHAUSTIVE_POINTS
+
+
+def _exhaustive_coefficients(fn, n: int, dimension: int):
+    """
+    Coefficients (c_0, c_1, ..., c_n) mod d of a detector function, from its value at every point of Z_d^n.
+
+    c_0 is the value at 0 and c_j the value at the unit vector e_j, and the function is affine on
+    Z_d^n exactly when every value is c_0 + sum c_j x_j, at any d. If not, this returns the reason,
+    as `_probed_coefficients` does: "has a non-zero constant term", which is checked first, or
+    "is not linear in its records".
+    """
+    d = dimension
+    if int(fn([0] * n)) % d:
+        return "has a non-zero constant term"
+    points = itertools.product(range(d), repeat=n)
+    next(points)                        # 0, just evaluated
+    values = [0]
+    values += [int(fn(list(x))) % d for x in points]
+    # Point x has index sum x_j d**(n - 1 - j) in this order, so e_j is at d**(n - 1 - j).
+    coeffs = [values[d ** (n - 1 - j)] for j in range(n)]
+    affine = [0]
+    for c in coeffs:
+        affine = [(a + c * x) % d for a in affine for x in range(d)]
+    if values != affine:
+        return "is not linear in its records"
+    return (0, *coeffs)
+
+
+def _probed_coefficients(fn, n: int, dimension: int):
+    """
+    Coefficients (c_0, c_1, ..., c_n) mod d of a detector function, read by evaluating it on probes.
+
+    Evaluating on the zero vector gives the constant term and on unit vectors the coefficients,
+    and further probes look for an input where the function is not affine. Unlike the symbolic
+    call and `_exhaustive_coefficients`, this misses a function that agrees with an affine one on
+    every probe, such as the product of many records at d = 2. The probes depend only on n and d,
+    so the verdict does not depend on where the detector sits. If a probe shows the function is
+    not affine, this returns the reason, as `_exhaustive_coefficients` does.
     """
     base = int(fn([0] * n)) % dimension
     if base != 0:
-        raise ValueError(f"{name} has a non-zero constant term")
+        return "has a non-zero constant term"
 
     def at(values):
         return int(fn(list(values))) % dimension
@@ -1709,12 +1821,39 @@ def _probed_coefficients(fn, n: int, unique_index: int, name: str, dimension: in
         v = [0] * n
         v[j] = 2 % dimension
         probes.append(v)
-    rng = np.random.default_rng(1234 + unique_index)
-    probes += [[int(x) for x in rng.integers(0, dimension, size=n)] for _ in range(16)]
+    rng = np.random.default_rng(1234)
+    count = max(16, math.ceil(_RANDOM_PROBES / math.log2(dimension)))
+    probes += rng.integers(0, dimension, size=(count, n)).tolist()
     for v in probes:
         if at(v) != linear(v):
-            raise ValueError(f"{name} is not linear in its records")
-    return position_coeffs
+            return "is not linear in its records"
+    return (0, *position_coeffs)
+
+
+def _numeric_coefficients(fn, n: int, dimension: int, cache: dict):
+    """
+    Coefficients (c_0, c_1, ..., c_n) mod d of a detector function that `_symbolic_coefficients`
+    leaves undecided, or the reason it is not affine.
+
+    With at most `_MAX_EXHAUSTIVE_POINTS` points in Z_d^n the function is evaluated on all of
+    them, which decides exactly; otherwise it is probed, which can miss a function that is not
+    affine. The verdict is cached on the code object and n when nothing else can change it: no
+    defaults or closure, and the globals sdim compiles detectors with.
+    """
+    key = None
+    if (type(fn) is types.FunctionType and not (fn.__defaults__ or fn.__kwdefaults__ or fn.__closure__)
+            and fn.__globals__ is _detector_mod.__globals__):
+        key = (fn.__code__, n)
+        result = cache.get(key)
+        if result is not None:
+            return result
+    if _can_evaluate_everywhere(n, dimension):
+        result = _exhaustive_coefficients(fn, n, dimension)
+    else:
+        result = _probed_coefficients(fn, n, dimension)
+    if key is not None:
+        cache[key] = result
+    return result
 
 
 def _detector_coefficients(detector_info, dimension: int):
@@ -1724,16 +1863,31 @@ def _detector_coefficients(detector_info, dimension: int):
     sdim compiles each DETECTOR / LOGICAL_OBSERVABLE expression into a
     function of the values of the records it reads (`rec[0]`, `rec[1]`, ...
     are the records listed in its arguments, in order), wrapped in
-    `sdim.program._detector_mod` (normally). When the function is straight-line
-    arithmetic (record lookups, integer constants, unary minus, +, -, *, ** by
-    a constant, %) one call on symbolic `_Polynomial` records gives it exactly
-    as a polynomial mod d. For prime d that proves it affine on Z_d^n, with its
-    coefficients, or proves it is not. Otherwise (also for a composite d and a
-    polynomial of degree 2 or more, or a product too long to expand, see
-    `_MAX_PRODUCT_TERMS`) it is evaluated on the zero vector (the constant
-    term) and on unit vectors (the coefficients), then checked for linearity on
-    doubled unit vectors, random inputs and, for at most 40 records, every
-    pair of unit vectors.
+    `sdim.program._detector_mod` (normally). Whether such a function of n
+    records is affine on Z_d^n is decided by the first of these that applies:
+
+    - Plain straight-line arithmetic (record lookups by constant index,
+      integer constants, unary minus, binary +, - and *, ** by a non-negative
+      integer constant, % by a non-zero multiple of d) whose products stay
+      within `_MAX_PRODUCT_TERMS`: one call on symbolic `_Polynomial` records
+      gives it exactly as a polynomial mod d. Degree at most 1 proves it
+      affine, with its coefficients, and for prime d a higher degree proves
+      it is not.
+    - Z_d^n has at most `_MAX_EXHAUSTIVE_POINTS` points: the function is
+      evaluated on all of them, which decides exactly at any d.
+    - Prime d and plain arithmetic whose expansion stops at
+      `_MAX_PRODUCT_TERMS`: it is rejected for its constant term, if it has
+      one, or else as too large to check.
+    - Anything else (calls such as abs, //, comparisons, unary +, % by other
+      numbers, ** by a negative number or a record, or a polynomial of degree
+      2 or more at composite d): it is evaluated on the zero vector (the
+      constant term) and unit vectors (the coefficients), then checked for
+      linearity on doubled unit vectors, random inputs and, for at most 40
+      records, every pair of unit vectors. A function that is not affine but
+      agrees with an affine one on all of these is missed.
+
+    Each verdict is cached on the expression, so a repeated detector is
+    decided once.
 
     Args:
         detector_info: The DetectorData returned by `Program._build_ir`.
@@ -1747,12 +1901,14 @@ def _detector_coefficients(detector_info, dimension: int):
             the DETECTOR / LOGICAL_OBSERVABLE labels, "" for none.
 
     Raises:
-        ValueError: If an expression has a non-zero constant term or is not
-            linear in its records. The message names the detector (Dk) or
-            observable (Lk) by index, and by label if it has one.
+        ValueError: If an expression has a non-zero constant term, is found
+            not to be linear in its records, or is plain arithmetic too large
+            to check. The message names the detector (Dk) or observable (Lk) by
+            index, and by label if it has one.
     """
     dets, obs, det_labels, obs_labels = [], [], [], []
     cache: dict = {}
+    numeric_cache: dict = {}
     for unique_index, label, arguments, is_logical in detector_info.detector_data:
         fn = detector_info.detector_functions[unique_index]
         n = len(arguments)
@@ -1764,12 +1920,13 @@ def _detector_coefficients(detector_info, dimension: int):
             name += f" ({label!r})"
         form = _symbolic_coefficients(fn, n, dimension, cache, name)
         if form is None:
-            position_coeffs = _probed_coefficients(fn, n, unique_index, name, dimension)
-        else:
+            form = _numeric_coefficients(fn, n, dimension, numeric_cache)
+            if type(form) is str:
+                raise ValueError(f"{name} {form}")
+        elif form[0] != 0:
             # The same checks, in the same order, as the numeric path; every probe would agree.
-            if form[0] != 0:
-                raise ValueError(f"{name} has a non-zero constant term")
-            position_coeffs = form[1:]
+            raise ValueError(f"{name} has a non-zero constant term")
+        position_coeffs = form[1:]
 
         coeffs = {}
         for rec, c in zip(arguments, position_coeffs):
@@ -2368,9 +2525,10 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
         ValueError: If an N1 gate has an unknown noise channel, an N2 gate
             uses `prob_dist`, a noise probability is above the fully mixing
             value, a two-qudit gate acts on one qudit twice, a detector or
-            observable expression has a constant term or is not linear in its
-            records, or a detector or observable is not deterministic without
-            noise.
+            observable expression has a non-zero constant term, is found not
+            to be linear in its records or is plain arithmetic too large to
+            check at prime d (see `DetectorErrorModel.from_circuit`), or a
+            detector or observable is not deterministic without noise.
         IndexError: If a gate acts on a qudit outside the circuit.
     """
     with _gc_paused():

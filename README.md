@@ -39,7 +39,7 @@ result = program.simulate(show_measurement=True) # Runs the program and prints t
 Besides the Clifford gates (`H`, `P`, `CNOT`, `CZ`, `SWAP`, `X`, `Z` and their inverses), `M` measures in the computational basis, `M_X` in the X basis and `RESET` returns a qudit to |0>. `MUL` multiplies a qudit by a scalar `a` coprime to d, for example `circuit.add_gate('MUL', 0, a=2)` at d = 5. Negative qudit indices count from the end, like Python lists.
 
 ## Detector error models
-`sdim.dem` turns a circuit with noise, detectors and logical observables into a detector error model (DEM). Each noise gate becomes one error mechanism, and gates with the same effect on the detectors are merged into one, so the model is the same size for any qudit dimension. The tests run it up to d = 1000003.
+`sdim.dem` turns a circuit with noise, detectors and logical observables into a detector error model (DEM). Each noise gate becomes one error mechanism, so the model does not grow with the qudit dimension. A mechanism adds a random combination of its generators, the changes that the gate's unit X and Z faults make to the detectors and observables. At prime d, mechanisms with a single generator (from N1 `'f'` and `'p'` gates, or from any gate only one of whose unit faults reaches a detector or observable) are merged when their generators are multiples of each other; mechanisms with more generators, such as most N1 `'d'` and N2 gates, are kept as they are. The tests run it up to d = 1000003.
 ```python
 from sdim import Circuit
 from sdim.dem import DetectorErrorModel
