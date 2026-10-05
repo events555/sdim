@@ -15,12 +15,19 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+        numpy: ["latest"]
+        include:
+          # The version poetry.lock pins; numpy 1.x differs from 2.x on object arrays.
+          - python-version: "3.11"
+            numpy: "1.26.4"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e . pytest stim
+      - if: matrix.numpy != 'latest'
+        run: pip install "numpy==${{ matrix.numpy }}"
       # test_tomography.py takes about 15 minutes; it runs on manual dispatch only.
       - run: python -m pytest -q --ignore=tests/test_tomography.py
       - if: github.event_name == 'workflow_dispatch'

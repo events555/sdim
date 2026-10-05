@@ -1124,8 +1124,8 @@ class Program:
             show_gate (bool): Whether to print the gate name at each time step.
             record_tableau (bool): Whether to record the tableau after each measurement.
             force_tableau (bool): Whether to force the use of the tableau method.
-            exact (bool): Whether to use the Diophantine solver instead of column reduction.
-                Much slower but fails less often.
+            exact (bool): Kept for compatibility. Composite-dimension measurements are always
+                computed exactly, so it has no effect.
             building_error_mechanism (bool): Flag to generate exhaustive noise sequences to sample detector and logical operator shift data.
                 Not for manual use
             raw_detector_output (bool): Flag for returning 2D matrices for detection events indexed as (sequential detector index, shot)
