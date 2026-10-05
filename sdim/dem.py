@@ -131,6 +131,7 @@ from pathlib import Path
 import contextlib
 import copy
 import dis
+import functools
 import gc
 import itertools
 import json
@@ -417,6 +418,36 @@ def _as_integer(x, what: str) -> int:
         raise ValueError(f"a generator has {what} {x!r}, which is not an integer") from None
 
 
+def _plain_int(x):
+    """x as a Python int if it is an integer of any type (a NumPy integer, say), else x itself."""
+    if type(x) is int:
+        return x
+    try:
+        return operator.index(x)
+    except TypeError:
+        return x
+
+
+def _all_ints(gens: list) -> bool:
+    """Whether every target and coefficient of these generators is a Python int."""
+    return (set(map(type, itertools.chain.from_iterable(gens))) <= {int}
+            and set(map(type, itertools.chain.from_iterable(g.values() for g in gens))) <= {int})
+
+
+def _normalize_generators(mechanisms) -> None:
+    """
+    Makes every integer target and coefficient in the mechanisms' generators a Python int.
+
+    A mechanism with an entry of another type gets new generator dicts, in the same order.
+    Entries that are not integers (floats, say) stay as they are, for `sample` to reject.
+    """
+    if _all_ints([g for m in mechanisms for g in m.generators]):
+        return
+    for m in mechanisms:
+        if any(type(t) is not int or type(v) is not int for g in m.generators for t, v in g.items()):
+            m.generators = [{_plain_int(t): _plain_int(v) for t, v in g.items()} for g in m.generators]
+
+
 def depolarizing_subgroup_probability(p: float, dimension: int, num_qudits: int) -> float:
     """
     Converts a depolarizing probability into a subgroup mechanism probability.
@@ -543,7 +574,9 @@ class DetectorErrorModel:
     A detector error model made of independent `ErrorMechanism`s.
 
     Build one from a circuit with `from_circuit`, or load one with
-    `read_from_file`.
+    `read_from_file`. The constructor turns NumPy integers in the dimension,
+    the counts and the generators of the given mechanisms into Python ints
+    (one pass over their entries), so every method computes with exact ints.
 
     Attributes:
         dimension (int): Qudit dimension d.
@@ -565,6 +598,11 @@ class DetectorErrorModel:
     observable_labels: list = field(default_factory=list)
 
     def __post_init__(self):
+        # NumPy integers have no three-argument pow and overflow int64 (d ** k in to_lines, say).
+        self.dimension = _plain_int(self.dimension)
+        self.num_detectors = _plain_int(self.num_detectors)
+        self.num_observables = _plain_int(self.num_observables)
+        _normalize_generators(self.mechanisms)
         self.detector_labels = _padded_labels(self.detector_labels, self.num_detectors)
         self.observable_labels = _padded_labels(self.observable_labels, self.num_observables)
 
@@ -637,7 +675,7 @@ class DetectorErrorModel:
         Raises:
             ValueError: If two merged mechanisms have probabilities outside [0, 1].
         """
-        d = self.dimension
+        d = _plain_int(self.dimension)
         merged: dict = {}
         sources: dict = {}
         others: list = []
@@ -698,7 +736,7 @@ class DetectorErrorModel:
                 needs Z_d to be a field), a mechanism needs more than
                 `max_lines_per_mechanism` lines, or a probability is not in [0, 1].
         """
-        d = self.dimension
+        d = _plain_int(self.dimension)
         if not _is_prime(d):
             raise ValueError(f"to_lines needs a prime dimension, not {d}: the split into independent line "
                              "mechanisms only holds when Z_d is a field")
@@ -718,7 +756,7 @@ class DetectorErrorModel:
             if lines is not None:
                 out.mechanisms = lines
                 return out
-            # Targets or coefficients that are not plain ints: expand one dict at a time.
+            # d above 2**31 - 1, or entries that are not integers: expand one dict at a time.
             for mech, pl in zip(mechs, pls):
                 for direction in _projective_points(d, mech.rank):
                     combined: dict = {}
@@ -1092,28 +1130,67 @@ class CompiledResponses:
     locations: list
 
 
-class _LinearForm:
+# A product of two polynomials is only expanded when their numbers of terms multiply to at most
+# this; a larger one sends the detector to the numeric path. This bounds the work for products
+# and powers of long sums.
+_MAX_PRODUCT_TERMS = 4096
+
+
+@functools.lru_cache(maxsize=64)
+def _fermat_period(d: int) -> int:
+    """d - 1 if d is prime, else 0. For prime d, x ** e = x ** ((e - 1) % (d - 1) + 1) on Z_d for every e >= 1."""
+    return d - 1 if _is_prime(d) else 0
+
+
+def _powers(m) -> tuple:
+    """A monomial of `_Polynomial.c` as its tuple of (position, exponent) pairs."""
+    return ((m, 1),) if type(m) is int else m
+
+
+def _monomial_product(a: tuple, b: tuple, period: int):
     """
-    An affine form k + s * (c_1 rec[0] + ... + c_n rec[n - 1]), coefficients mod d.
+    The `_Polynomial.c` key of the product of two monomials given as (position, exponent) pairs.
+
+    With period = d - 1 (prime d) exponents are reduced to 1 .. d - 1, which keeps the function
+    on Z_d the same, since x ** d = x there.
+    """
+    powers = dict(a)
+    for j, e in b:
+        e += powers.get(j, 0)
+        powers[j] = (e - 1) % period + 1 if period else e
+    m = tuple(sorted(powers.items()))
+    return m[0][0] if len(m) == 1 and m[0][1] == 1 else m
+
+
+class _Polynomial:
+    """
+    A polynomial k + s * (sum of c[m] * m over monomials m in the records), coefficients mod d.
 
     `_detector_coefficients` calls a compiled detector expression once, on a
-    `_Records` sequence of these forms. The operations below are the only ones
+    `_Records` sequence of these. The operations below are the only ones
     defined, and each one turns values congruent mod d to its operands into a
-    value congruent mod d to its result: + and -, multiplication by a constant
-    (or by a form with no record terms), and % by a non-zero multiple of d. So
-    when the call succeeds, the expression is congruent mod d to the returned
-    form for every integer input. Any other operation raises TypeError, and
-    the caller falls back to evaluating the expression on numeric probes.
+    value congruent mod d to its result: + and -, *, ** by a non-negative
+    integer constant, and % by a non-zero multiple of d. So when the call
+    succeeds, the expression is congruent mod d to the returned polynomial for
+    every integer input. Any other operation raises TypeError, and the caller
+    falls back to evaluating the expression on numeric probes.
 
-    c is a sparse dict {position j (1 .. n): non-zero coefficient}, and the
-    scale s is a unit mod d. In the expressions this is used on (straight-line
-    arithmetic, see `_is_straight_line_arithmetic`) every value is used
-    exactly once, and `_Records` hands out a new form for every rec[j], so an
-    operation may reuse its operands: a sum adds the smaller dict into the
-    larger one, and negation and multiplication by a constant only change k
-    and s. An expression over many records (an observable that reads every
-    round, say) thus costs time about linear in its length, where dense
-    coefficient tuples cost its length times the number of records.
+    c is a sparse dict {monomial: non-zero coefficient}. The monomial rec[j - 1]
+    is the int j (1 .. n), and one of degree 2 or more is the sorted tuple of
+    its (j, exponent) pairs. For prime d every exponent stays in 1 .. d - 1
+    (x ** d = x on Z_d), and two such polynomials with the same values on
+    Z_d^n are the same polynomial, so the expression is affine on Z_d^n exactly
+    when no monomial of degree 2 or more is left. The scale s is a unit mod d.
+
+    In the expressions this is used on (straight-line arithmetic, see
+    `_is_straight_line_arithmetic`) every value is used exactly once, and
+    `_Records` hands out a new polynomial for every rec[j], so an operation may
+    reuse its operands: a sum adds the smaller dict into the larger one, and
+    negation and multiplication by a constant only change k and s. An
+    expression over many records (an observable that reads every round, say)
+    thus costs time about linear in its length, where dense coefficient tuples
+    cost its length times the number of records. Products and powers of
+    polynomials with records in both factors are expanded into new ones.
     """
 
     __slots__ = ("k", "s", "c", "n", "d")
@@ -1125,24 +1202,29 @@ class _LinearForm:
         self.n = n
         self.d = d
 
-    def coefficients(self) -> tuple:
-        """The dense tuple (c_0, c_1, ..., c_n) mod d, c_0 being the constant term."""
+    def coefficients(self):
+        """
+        The dense tuple (c_0, c_1, ..., c_n) mod d, c_0 being the constant term, or None if a
+        monomial of degree 2 or more is left.
+        """
         out = [0] * (self.n + 1)
         out[0] = self.k
         s, d = self.s, self.d
-        for j, v in self.c.items():
-            out[j] = v * s % d
+        for m, v in self.c.items():
+            if type(m) is not int:
+                return None
+            out[m] = v * s % d
         return tuple(out)
 
     def _form(self, other):
-        if type(other) is _LinearForm and other.n == self.n:
+        if type(other) is _Polynomial and other.n == self.n:
             return other
         if type(other) is int:
-            return _LinearForm(other % self.d, 1, {}, self.n, self.d)
-        raise TypeError("not a linear operation")
+            return _Polynomial(other % self.d, 1, {}, self.n, self.d)
+        raise TypeError("not a polynomial operation")
 
     def _scaled(self, m: int):
-        """The form times the constant m, in place."""
+        """The polynomial times the constant m, in place."""
         d = self.d
         self.k = self.k * m % d
         s = self.s * m % d
@@ -1155,6 +1237,26 @@ class _LinearForm:
         else:
             self.s = s
         return self
+
+    def _product(self, other):
+        """The product with another polynomial, expanded into a new one; neither factor changes."""
+        if len(self.c) * len(other.c) > _MAX_PRODUCT_TERMS:
+            raise TypeError("too many terms to expand")
+        d = self.d
+        period = _fermat_period(d)
+        # (k1 + A)(k2 + B) = k1 k2 + k2 A + k1 B + A B
+        c = {}
+        for poly, k in ((self, other.k), (other, self.k)):
+            if k:
+                for m, v in poly.c.items():
+                    c[m] = (c.get(m, 0) + v * poly.s * k) % d
+        b = [(_powers(m), v * other.s % d) for m, v in other.c.items()]
+        for m, v in self.c.items():
+            a, v = _powers(m), v * self.s % d
+            for bm, w in b:
+                key = _monomial_product(a, bm, period)
+                c[key] = (c.get(key, 0) + v * w) % d
+        return _Polynomial(self.k * other.k % d, 1, {m: v for m, v in c.items() if v}, self.n, d)
 
     def __add__(self, other):
         other = self._form(other)
@@ -1195,24 +1297,43 @@ class _LinearForm:
     def __mul__(self, other):
         if type(other) is int:
             return self._scaled(other)
-        if type(other) is _LinearForm and other.n == self.n:
+        if type(other) is _Polynomial and other.n == self.n:
             if not other.c:
                 return self._scaled(other.k)
             if not self.c:
                 return other._scaled(self.k)
-            raise TypeError("product of two records")
-        raise TypeError("not a linear operation")
+            return self._product(other)
+        raise TypeError("not a polynomial operation")
 
     __rmul__ = __mul__
+
+    def __pow__(self, e, mod=None):
+        if type(e) is not int or e < 0 or mod is not None:
+            raise TypeError("not a polynomial operation")
+        d = self.d
+        if e == 0 or not self.c:
+            return _Polynomial(pow(self.k, e, d), 1, {}, self.n, d)
+        period = _fermat_period(d)
+        if period:
+            # Every function f on Z_d^n has f ** d = f (Fermat), so only e mod d - 1 matters.
+            e = (e - 1) % period + 1
+        result, power = None, self
+        while True:
+            if e & 1:
+                result = power if result is None else result._product(power)
+            e >>= 1
+            if not e:
+                return result
+            power = power._product(power)
 
     def __mod__(self, other):
         if type(other) is int and other != 0 and other % self.d == 0:
             return self
-        raise TypeError("not a linear operation")
+        raise TypeError("not a polynomial operation")
 
     # Anything that could branch on a value or turn it into something else is refused.
     def _refuse(self, *args):
-        raise TypeError("not a linear operation")
+        raise TypeError("not a polynomial operation")
 
     __bool__ = __index__ = __int__ = __float__ = __str__ = __format__ = _refuse
     __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = _refuse
@@ -1220,7 +1341,7 @@ class _LinearForm:
 
 
 class _Records:
-    """The `rec` argument of the symbolic call: rec[j] is a new form 1 * rec[j] each time, as a list would index."""
+    """The `rec` argument of the symbolic call: each rec[j] is a new polynomial 1 * rec[j], as a list would index."""
 
     __slots__ = ("n", "d")
 
@@ -1233,36 +1354,59 @@ class _Records:
 
     def __getitem__(self, j):
         if type(j) is not int:
-            raise TypeError("not a linear operation")
+            raise TypeError("not a polynomial operation")
         if j < 0:
             j += self.n
         if not 0 <= j < self.n:
             raise IndexError("record index out of range")
-        return _LinearForm(0, 1, {j + 1: 1} if self.d > 1 else {}, self.n, self.d)
+        return _Polynomial(0, 1, {j + 1: 1} if self.d > 1 else {}, self.n, self.d)
 
 
 # Bytecode a detector expression may contain for the single symbolic evaluation: loading the
-# record list and integer constants, indexing, unary minus, and the binary operators +, -, * and %.
-# Anything else (calls, names, branches, comparisons, ...) takes the numeric path.
-_LINEAR_OPNAMES = frozenset({
+# record list and integer constants, indexing, unary minus, and the binary operators +, -, *, **
+# and %. Anything else (calls, names, branches, comparisons, ...) takes the numeric path.
+_ARITHMETIC_OPNAMES = frozenset({
     "RESUME", "NOP", "CACHE", "EXTENDED_ARG", "RETURN_VALUE",
     "LOAD_FAST", "LOAD_FAST_CHECK", "LOAD_FAST_LOAD_FAST", "LOAD_FAST_BORROW",
     "LOAD_FAST_BORROW_LOAD_FAST_BORROW", "LOAD_CONST", "LOAD_SMALL_INT",
     "BINARY_SUBSCR", "UNARY_NEGATIVE", "BINARY_OP",
     "BINARY_ADD", "BINARY_SUBTRACT", "BINARY_MULTIPLY", "BINARY_MODULO",
 })
-_LINEAR_BINARY_OPS = frozenset({"+", "-", "*", "%", "[]"})
+_ARITHMETIC_BINARY_OPS = frozenset({"+", "-", "*", "**", "%", "[]"})
 
 
 _CALL_OPNAMES = frozenset({"LOAD_GLOBAL", "PUSH_NULL", "PRECALL", "CALL"})
 
 
+def _opcodes(names) -> bytes:
+    """The opcodes this Python has for these instruction names, as the bytes `bytes.translate` deletes."""
+    return bytes(sorted({dis.opmap[name] for name in names if name in dis.opmap}))
+
+
+# `_is_straight_line_arithmetic` reads co_code itself: an opcode byte and an argument byte per
+# instruction, with the inline caches after some instructions as zero bytes (CACHE). Opcodes
+# differ between Python versions, so they are looked up by name, and the BINARY_OP arguments of
+# the operators above are read off this Python's own bytecode for them.
+_ARITHMETIC_OPCODES = _opcodes(_ARITHMETIC_OPNAMES)
+_CALL_OR_ARITHMETIC_OPCODES = _opcodes(_ARITHMETIC_OPNAMES | _CALL_OPNAMES)
+_BINARY_OP = dis.opmap.get("BINARY_OP")
+_LOAD_CONST = dis.opmap["LOAD_CONST"]
+_EXTENDED_ARG = dis.opmap["EXTENDED_ARG"]
+_ARGUMENT_OPCODES = frozenset({_BINARY_OP, _LOAD_CONST, _EXTENDED_ARG})
+_ARITHMETIC_BINARY_OP_ARGS = frozenset(
+    ins.arg for ins in dis.get_instructions(compile("a + a, a - a, a * a, a ** a, a % a, a[a]", "<ops>", "eval"))
+    if ins.opname == "BINARY_OP" and ins.argrepr in _ARITHMETIC_BINARY_OPS)
+
+
 def _is_straight_line_arithmetic(fn) -> bool:
-    """True if `fn` is a one-argument function whose bytecode only uses `_LINEAR_OPNAMES`.
+    """True if `fn` is a one-argument function whose bytecode only uses `_ARITHMETIC_OPNAMES`.
 
     sdim.program compiles detectors as `lambda rec : _detector_mod((expr), d)`, and
     `_detector_mod(x, d)` is `x % d` for anything but int64 arrays. Calls to that one helper are
     allowed too, when the name really refers to sdim's own function.
+
+    The scan walks co_code directly; `dis.get_instructions` takes microseconds per instruction,
+    which made it most of the work of reading a long observable.
     """
     if type(fn) is not types.FunctionType or fn.__defaults__ or fn.__kwdefaults__ or fn.__closure__:
         return False
@@ -1272,44 +1416,62 @@ def _is_straight_line_arithmetic(fn) -> bool:
     if (code.co_argcount != 1 or code.co_kwonlyargcount or (code.co_names and not wraps_mod) or code.co_freevars
             or code.co_cellvars or code.co_flags & (0x04 | 0x08)):   # *args, **kwargs
         return False
-    for ins in dis.get_instructions(code):
-        name = ins.opname
-        if wraps_mod and name in _CALL_OPNAMES:
-            if name == "LOAD_GLOBAL" and ins.argval != "_detector_mod":
+    # With calls allowed, co_names is ("_detector_mod",), the only name LOAD_GLOBAL can load.
+    ops, args = code.co_code[::2], code.co_code[1::2]
+    if ops.translate(None, _CALL_OR_ARITHMETIC_OPCODES if wraps_mod else _ARITHMETIC_OPCODES):
+        return False
+    # The arguments that matter: the operator of each BINARY_OP and the constant each LOAD_CONST
+    # loads. EXTENDED_ARG holds the high bits of the next instruction's argument.
+    consts = code.co_consts
+    arg = 0
+    for op, low in zip(ops, args):
+        if op in _ARGUMENT_OPCODES:
+            arg |= low
+            if op == _EXTENDED_ARG:
+                arg <<= 8
+                continue
+            if (op == _BINARY_OP and arg not in _ARITHMETIC_BINARY_OP_ARGS
+                    or op == _LOAD_CONST and type(consts[arg]) is not int):
                 return False
-            continue
-        if name not in _LINEAR_OPNAMES:
-            return False
-        if name == "BINARY_OP" and ins.argrepr not in _LINEAR_BINARY_OPS:
-            return False
-        if name in ("LOAD_CONST", "LOAD_SMALL_INT") and type(ins.argval) is not int:
-            return False
+        arg = 0
     return True
 
 
-def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict):
+def _symbolic_coefficients(fn, n: int, dimension: int, cache: dict, name: str | None = None):
     """
     Coefficients (c_0, c_1, ..., c_n) mod d of a detector function, from one symbolic call.
 
     Returns None when the function is not plain straight-line arithmetic or uses an operation
-    that `_LinearForm` refuses; the caller then probes it numerically. The result depends only
-    on the code object and n, so it is cached on them.
+    that `_Polynomial` refuses; the caller then probes it numerically. The call gives the
+    function as a polynomial mod d. For prime d that settles exactly whether it is affine on
+    Z_d^n: if not, this raises the ValueError the numeric path raises, naming `name`, or
+    without a name returns None. For composite d a polynomial of degree 2 or more can still be
+    affine (2 x**2 = 2 x mod 4), so it gives None. The result depends only on the code object
+    and n, so it is cached on them.
     """
     key = (fn.__code__, n) if type(fn) is types.FunctionType else None
     if key is not None and key in cache:
-        return cache[key]
-    result = None
-    if _is_straight_line_arithmetic(fn):
-        try:
-            value = fn(_Records(n, dimension))
-        except Exception:
-            value = None
-        if type(value) is _LinearForm:
-            result = value.coefficients()
-        elif type(value) is int:
-            result = (value % dimension,) + (0,) * n
-    if key is not None:
-        cache[key] = result
+        result = cache[key]
+    else:
+        result = None
+        if _is_straight_line_arithmetic(fn):
+            try:
+                value = fn(_Records(n, dimension))
+            except Exception:
+                value = None
+            if type(value) is _Polynomial:
+                result = value.coefficients()
+                if result is None and _fermat_period(dimension):
+                    # Not affine: the numeric path's error, which checks the constant term first.
+                    result = "has a non-zero constant term" if value.k else "is not linear in its records"
+            elif type(value) is int:
+                result = (value % dimension,) + (0,) * n
+        if key is not None:
+            cache[key] = result
+    if type(result) is str:
+        if name is None:
+            return None
+        raise ValueError(f"{name} {result}")
     return result
 
 
@@ -1368,12 +1530,15 @@ def _detector_coefficients(detector_info, dimension: int):
     function of the values of the records it reads (`rec[0]`, `rec[1]`, ...
     are the records listed in its arguments, in order), wrapped in
     `sdim.program._detector_mod` (normally). When the function is straight-line
-    arithmetic (record lookups, integer constants, unary minus, +, -, *, %)
-    one call on symbolic `_LinearForm` records gives its coefficients mod d
-    exactly and proves it affine mod d. Otherwise it is evaluated on the zero
-    vector (the constant term) and on unit vectors (the coefficients), then
-    checked for linearity on doubled unit vectors, random inputs and, for at
-    most 40 records, every pair of unit vectors.
+    arithmetic (record lookups, integer constants, unary minus, +, -, *, ** by
+    a constant, %) one call on symbolic `_Polynomial` records gives it exactly
+    as a polynomial mod d. For prime d that proves it affine on Z_d^n, with its
+    coefficients, or proves it is not. Otherwise (also for a composite d and a
+    polynomial of degree 2 or more, or a product too long to expand, see
+    `_MAX_PRODUCT_TERMS`) it is evaluated on the zero vector (the constant
+    term) and on unit vectors (the coefficients), then checked for linearity on
+    doubled unit vectors, random inputs and, for at most 40 records, every
+    pair of unit vectors.
 
     Args:
         detector_info: The DetectorData returned by `Program._build_ir`.
@@ -1402,7 +1567,7 @@ def _detector_coefficients(detector_info, dimension: int):
             name = f"detector D{len(dets)}"
         if label:
             name += f" ({label!r})"
-        form = _symbolic_coefficients(fn, n, dimension, cache)
+        form = _symbolic_coefficients(fn, n, dimension, cache, name)
         if form is None:
             position_coeffs = _probed_coefficients(fn, n, unique_index, name, dimension)
         else:
@@ -1536,17 +1701,19 @@ def _lines_from_arrays(mechs: list, pls: list, d: int):
     The mechanisms of `DetectorErrorModel.to_lines`, expanded and merged in numba.
 
     pls[i] is the line probability of mechs[i], and d is prime. Returns None if
-    a target or coefficient is not a Python int that fits in int64, or if d is
-    above 2**31 - 1 (`_expand_lines` multiplies residues in int64, so it needs
-    d * d to fit); the caller then expands one dict at a time, exactly.
+    a target or coefficient is not an integer (NumPy integers are converted) or
+    a target does not fit in int64, or if d is above 2**31 - 1 (`_expand_lines`
+    multiplies residues in int64, so it needs d * d to fit); the caller then
+    expands one dict at a time, exactly.
     """
     if d > _MAX_SAMPLE_DIMENSION:
         return None
     gens = [g for m in mechs for g in m.generators]
-    kinds = set(map(type, itertools.chain.from_iterable(gens)))
-    kinds |= set(map(type, itertools.chain.from_iterable(g.values() for g in gens)))
-    if not kinds <= {int}:
-        return None
+    if not _all_ints(gens):
+        # NumPy integers in mechanisms added after the constructor normalized the rest.
+        gens = [{_plain_int(t): _plain_int(v) for t, v in g.items()} for g in gens]
+        if not _all_ints(gens):
+            return None
     gen_ptr = np.zeros(len(mechs) + 1, dtype=np.int64)
     gen_ptr[1:] = np.cumsum(np.fromiter((len(m.generators) for m in mechs), dtype=np.int64, count=len(mechs)))
     ent_ptr = np.zeros(len(gens) + 1, dtype=np.int64)
@@ -1792,7 +1959,8 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     """
     if backward is None:
         backward = _BACKWARD
-    d = circuit.dimension
+    # A NumPy integer dimension would overflow in the coefficient arithmetic below.
+    d = _plain_int(circuit.dimension)
     n_qudits = circuit.num_qudits
 
     # One pass over the circuit: the non-noise ops, and each noise gate with its IR index
@@ -2958,7 +3126,11 @@ def _canonical_line(gen: dict, d: int):
     items = sorted((t, v % d) for t, v in gen.items() if v % d)
     if not items or math.gcd(items[0][1], d) != 1:
         return None, dict(items)
-    inv = pow(items[0][1], -1, d)
+    try:
+        inv = pow(items[0][1], -1, d)
+    except TypeError:
+        # A NumPy integer, in a mechanism added after the constructor normalized the rest.
+        return _canonical_line({operator.index(t): operator.index(v) for t, v in gen.items()}, d)
     scaled = {t: (v * inv) % d for t, v in items}
     # scaled is built in sorted order, so its items are already the sorted key.
     return tuple(scaled.items()), scaled
