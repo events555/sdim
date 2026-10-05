@@ -17,17 +17,24 @@ jobs:
         python-version: ["3.11", "3.12"]
         numpy: ["latest"]
         include:
-          # The version poetry.lock pins; numpy 1.x differs from 2.x on object arrays.
+          # The versions poetry.lock pins. numpy 1.x differs from 2.x on object arrays, and
+          # cirq releases after 1.4 require numpy 2, so the two are pinned together. Only
+          # cirq-core is installed: the cirq metapackage pulls in the vendor packages, and
+          # resolving their old pins against numpy 1.26 builds half of them from source.
           - python-version: "3.11"
             numpy: "1.26.4"
+            cirq: "1.4.1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e . pytest stim
+      - if: matrix.numpy == 'latest'
+        run: pip install -e . pytest stim
       - if: matrix.numpy != 'latest'
-        run: pip install "numpy==${{ matrix.numpy }}"
+        run: |
+          pip install "numpy==${{ matrix.numpy }}" "cirq-core==${{ matrix.cirq }}" sympy numba networkx Diophantine pytest stim
+          pip install --no-deps -e .
       # test_tomography.py takes about 15 minutes; it runs on manual dispatch only.
       - run: python -m pytest -q --ignore=tests/test_tomography.py
       - if: github.event_name == 'workflow_dispatch'
