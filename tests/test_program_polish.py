@@ -3,6 +3,7 @@ Regression tests for sdim.program: detectors with coefficients far beyond int64 
 simulate down, the attributes the Program docstring lists, and what seeding reproduces.
 """
 
+import inspect
 import random
 import re
 
@@ -53,8 +54,9 @@ def test_unreduced_coefficients_at_a_large_dimension(k):
 
 def test_documented_program_attributes_exist():
     """The Program docstring listed a `circuit` attribute, which does not exist."""
-    section = Program.__doc__.split("Attributes:")[1].split("Args:")[0]
-    names = re.findall(r"^ {8}(\w+):", section, re.MULTILINE)
+    # cleandoc: Python 3.13 strips the docstring's common indentation itself, older versions do not.
+    section = inspect.cleandoc(Program.__doc__).split("Attributes:")[1].split("Args:")[0]
+    names = re.findall(r"^ {4}(\w+):", section, re.MULTILINE)
     assert {"circuits", "initial_tableau"} <= set(names)
     first, second = Circuit(1, 3), Circuit(2, 3)
     program = Program(first)
