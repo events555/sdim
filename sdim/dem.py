@@ -1146,9 +1146,10 @@ class CompiledDemSampler:
     the seed gives (see `DetectorErrorModel.sample`), so consecutive calls
     continue one stream: their rows, put together, are the rows of
     `DetectorErrorModel.sample(total, seed)`, however the shots are split
-    between the calls and whatever the number of threads. The stream does
-    not repeat, however many shots it gives. A call that raises leaves the
-    stream where it was, or, if an interrupt (Ctrl-C) comes just as it
+    between the calls and whatever the number of threads. Every 2**18 shots
+    the stream moves on to a new SeedSequence (see `_BlockStream`), so it
+    does not cycle, however many shots it gives. A call that raises leaves
+    the stream where it was, or, if an interrupt (Ctrl-C) comes just as it
     returns, skips the call's rows: no row is ever returned twice.
 
     A call that ends inside a block draws the whole block and keeps the
@@ -2330,13 +2331,19 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     plain = True
     checked = checked_gate = None
     ir_index = -1
+    lo = -n_qudits
     for instr in circuit.operations:
         g = instr.gate_id
+        # The simulators reject a gate on a qudit outside the circuit, the identity included. Checking
+        # here also keeps an index beyond int64 out of the IR arrays. DETECTOR, LOGICAL_OBSERVABLE and
+        # TICK (ids 19 to 21) act on no qudit, and only two-qudit gates have a target.
+        q = instr.qudit_index
+        if q is not None and not lo <= q < n_qudits and g not in (19, 20, 21):
+            raise IndexError(f"a gate acts on qudit {q}, but the circuit has {n_qudits} qudits")
+        q = instr.target_index
+        if q is not None and not lo <= q < n_qudits and (g in _TWO_QUDIT_FRAME_GATES or g == _N2):
+            raise IndexError(f"a gate acts on qudit {q}, but the circuit has {n_qudits} qudits")
         if g == 0:
-            # The identity changes nothing, but the simulators reject one outside the circuit too.
-            q = instr.qudit_index
-            if q is not None and not -n_qudits <= q < n_qudits:
-                raise IndexError(f"a gate acts on qudit {q}, but the circuit has {n_qudits} qudits")
             continue
         ir_index += 1
         if g == _N1 or g == _N2:
@@ -2432,7 +2439,7 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
             if q1 < 0 and q1 >= -n_qudits:
                 q1 += n_qudits
         # Negative indices count back from the end of the circuit (N2's second one just above), as
-        # Program._build_ir counts them; the range check below reports any outside the circuit.
+        # Program._build_ir counts them; the first pass has rejected any outside the circuit.
         if q0 < 0 and q0 >= -n_qudits:
             q0 += n_qudits
         if parsed is None:
@@ -3270,23 +3277,36 @@ def _block_states(pool, first: int, count: int) -> np.ndarray:
     words ^= words >> 16
     # generate_state pairs the 32-bit words as little-endian uint64s on every machine.
     states = words.astype("<u4", copy=False).view("<u8").astype(np.uint64, copy=False).reshape(count, 4)
-    states[~states.any(axis=1), 0] = 1
+    # An all-zero row needs a zero word, which almost never comes, and checking for one first costs much
+    # less than finding the rows.
+    if not states.all():
+        states[~states.any(axis=1), 0] = 1
     return states
 
 
-# _SEED_MULT has order 2**30 mod 2**32, so the words of one SeedSequence repeat after 2**30 words, 2**27 blocks.
-_STREAM_EPOCH = 1 << 27
+# Hash constants 2**j words apart in one SeedSequence agree in their low j + 2 bits (_SEED_MULT**(2**j) = 1
+# mod 2**(j + 2)), so blocks (8 words) 2**k apart get related states: their first draws are correlated for up
+# to about 1 seed in 1000 at k = 6 to 9, a share that grows to every seed by k = 19, and the words start over
+# at k = 27. So each run of 2**10 blocks takes the words of its own SeedSequence, for under 20 us per run of
+# 2**18 shots; a smaller run would cost measurably on small models.
+_STREAM_EPOCH = 1 << 10
 
 
 class _BlockStream:
     """
     The xoshiro256** states of the blocks of one sampler stream, from its seed.
 
-    Blocks 0 .. 2**27 - 1 start from the words of `SeedSequence(seed)` (see
-    `_block_states`). Those words would then repeat, so block c of epoch
-    e = c // 2**27 >= 1 starts from the words, at block c % 2**27, of the
-    SeedSequence with the same entropy and spawn key (e,), so a long-lived
-    `CompiledDemSampler` does not start over after 2**35 shots.
+    Block c of epoch e = c // _STREAM_EPOCH starts from the words, at block
+    c % _STREAM_EPOCH, of `SeedSequence(seed)` for e = 0 and of the
+    SeedSequence with the same entropy and spawn key (e,) for e >= 1 (see
+    `_block_states`). Blocks far apart in the words of one SeedSequence
+    have related states (see `_STREAM_EPOCH`), so blocks that share a
+    SeedSequence are less than 2**10 blocks (2**18 shots) apart. Different
+    epochs have unrelated pools, but a block's first draw depends mostly on
+    the last pool word, so two epochs whose last pool words agree in their
+    low 22 bits or more (one pair of epochs in 2**22, a couple of pairs in
+    2**30 shots) can have correlated first draws in the blocks at the same
+    place in the epoch. Their later draws are not related.
 
     With `ahead`, `states` computes at least that many states at once and
     keeps them for the next calls, since computing them one at a time costs

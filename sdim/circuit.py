@@ -150,7 +150,7 @@ class Circuit:
             a (int): The scalar of MUL, which maps |j> to |a j mod d>.  Required.  It must be an integer coprime to the dimension d; only a mod d matters, so negative values and values of at least d are fine.  scalar is another name for it.
 
         Returns:
-            Circuit: The current Circuit object with the added operation(s).
+            None: The operation(s) are appended to this circuit in place.
 
         Raises:
             ValueError: If the input combination is invalid: a two-qudit gate without both a control

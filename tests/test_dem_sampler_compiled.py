@@ -378,15 +378,15 @@ def test_block_states_continue_seed_sequence(seed):
 
 
 @pytest.mark.parametrize("seed", [0, 2 ** 64 + 3, [3, 1, 4], None])
-def test_stream_takes_new_words_every_2_27_blocks(seed):
-    """One SeedSequence's words repeat after 2**27 blocks, so each run of 2**27 blocks has its own SeedSequence."""
+def test_stream_takes_new_words_every_epoch(seed):
+    """Each run of _STREAM_EPOCH blocks takes the words of its own SeedSequence, with spawn key (run,)."""
     seq = np.random.SeedSequence(seed)
     stream = dem_module._BlockStream(seq.entropy)
-    epoch = 2 ** 27
+    epoch = dem_module._STREAM_EPOCH
     first = stream.states(0, 3)
     np.testing.assert_array_equal(first, dem_module._block_states(seq.pool, 0, 3))
-    # The words alone would start over at block 2**27.
-    np.testing.assert_array_equal(dem_module._block_states(seq.pool, epoch, 3), first)
+    # The words alone start over at block 2**27.
+    np.testing.assert_array_equal(dem_module._block_states(seq.pool, 2 ** 27, 3), first)
     spawned = [np.random.SeedSequence(seq.entropy, spawn_key=(e,)).pool for e in (1, 2)]
     across = stream.states(epoch - 1, 3)
     np.testing.assert_array_equal(across[0], dem_module._block_states(seq.pool, epoch - 1, 1)[0])
@@ -425,12 +425,37 @@ def test_compiled_sampler_computes_block_states_ahead(monkeypatch):
     assert counts == [64, 64, 64]
 
 
-def test_compiled_sampler_does_not_repeat_after_2_27_blocks():
-    dem = _reference_models()["d7"]
-    start = dem.compile_sampler(7).sample(256)
-    late = dem.compile_sampler(7)
-    late._next_block = 2 ** 27  # 2**35 shots on
-    assert not np.array_equal(late.sample(256)[0], start[0])
+# Seeds whose SeedSequence words repeat: some blocks 2**24 blocks on for seed 30, the whole stream 2**25 blocks
+# on for 563, 658, 923 and 1190 and 2**26 blocks on for 9 and 30, and every seed's 2**27 blocks on.
+_REPEATING_SEEDS = [0, 9, 30, 563, 658, 923, 1190]
+
+
+@pytest.mark.parametrize("seed", _REPEATING_SEEDS)
+def test_stream_does_not_repeat_at_power_of_two_offsets(seed):
+    """No 64-bit word of the first 4096 block states comes back in its place 2**k blocks on, for k up to 30."""
+    stream = dem_module._BlockStream(seed)
+    start = stream.states(0, 4096)
+    for k in range(31):
+        assert not (stream.states(2 ** k, 4096) == start).any(), k
+
+
+@pytest.mark.parametrize("seed", _REPEATING_SEEDS[:5])
+def test_compiled_sampler_blocks_far_apart_are_not_correlated(seed):
+    """Blocks 2**k apart in one SeedSequence's words have related states: from about k = 15 on, their first
+    draws, and so the shots before each block's first firing, are correlated for half the seeds or more."""
+    dem = DetectorErrorModel(1000003, 1, 0, [ErrorMechanism(0.01, [{0: 1}])])
+    n_blocks = 1024
+
+    def first_firings(block):
+        sampler = dem.compile_sampler(seed)
+        sampler._next_block = block
+        fired = sampler.sample(256 * n_blocks)[0].reshape(n_blocks, 256) != 0
+        return np.where(fired.any(axis=1), fired.argmax(axis=1), 256)
+
+    start = first_firings(0)
+    for k in range(31):
+        # 0.2 is over six standard deviations of the correlation of independent blocks.
+        assert abs(np.corrcoef(start, first_firings(2 ** k))[0, 1]) < 0.2, k
 
 
 def test_streams_continue_across_new_words(monkeypatch):
