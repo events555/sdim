@@ -63,6 +63,17 @@ every such generator to make its first coefficient 1. The line becomes
 `D0=1 L0=-1`, which prints as `L0=1000002` since coefficients are written as
 residues mod d.
 
+`dem.sample` checks and packs the whole model on every call. To draw many
+small batches (a decoder taking 256 shots at a time, say), compile a sampler
+once. Its calls continue one random stream, so with a seed the batches are,
+row for row, what one `dem.sample` call with that seed returns:
+
+```python
+sampler = dem.compile_sampler(seed=5)
+for _ in range(100):
+    detectors, observables = sampler.sample(256)  # all 100: dem.sample(25_600, seed=5)
+```
+
 ## How it works
 
 Write an n-qudit Pauli error, up to phase, as a vector
@@ -578,6 +589,16 @@ class DetectorErrorModel:
     the counts and the generators of the given mechanisms into Python ints
     (one pass over their entries), so every method computes with exact ints.
 
+    `sample` checks and packs every mechanism on each call. To draw many
+    batches from one model, compile a sampler once and call it instead; its
+    calls continue one random stream:
+
+        sampler = dem.compile_sampler(seed=5)
+        for _ in range(100):
+            detectors, observables = sampler.sample(256)
+
+    The 100 batches are, row for row, `dem.sample(25_600, seed=5)`.
+
     Attributes:
         dimension (int): Qudit dimension d.
         num_detectors (int): Number of detectors.
@@ -852,6 +873,9 @@ class DetectorErrorModel:
         target must be a detector or observable of the model, and
         coefficients are reduced mod d, whatever their size.
 
+        Every call checks and packs the whole model before it draws. To
+        draw many small batches, use `compile_sampler`, which does that once.
+
         Args:
             shots (int): Number of samples.
             seed (int, optional): Seed for the sampler. Fresh entropy is used if None.
@@ -872,37 +896,29 @@ class DetectorErrorModel:
         obs = np.zeros((shots, self.num_observables), dtype=np.int64)
         if not self.mechanisms or shots == 0:
             return det, obs
-        d = int(self.dimension)
-        if not 1 <= d <= _MAX_SAMPLE_DIMENSION:
-            raise ValueError(f"sample() needs a dimension between 1 and 2**31 - 1, not {d}")
-        mech_prob, n_gens, sizes, ent_tgt, ent_val = self._flatten()
-        n_targets = nd + self.num_observables
-        montgomery = d % 2 == 1
-        # int32 pack entries halve the sampler's memory traffic; they hold targets below n_targets and
-        # residues below d.
-        pack_dtype = np.int32 if n_targets <= np.iinfo(np.int32).max else np.int64
-        pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost = _sample_plan(
-            mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack_dtype)
-        # Every block draws one skip per bin, and each shot scans a bitmap of the bins.
-        cost += len(bin_pmax) / _SAMPLE_CHUNK
-        n_chunks = -(-shots // _SAMPLE_CHUNK)
-        states = np.random.SeedSequence(seed).generate_state(4 * n_chunks, dtype=np.uint64).reshape(n_chunks, 4)
-        # xoshiro256** must not start from the all-zero state.
-        states[~states.any(axis=1), 0] = 1
-        # -d^-1 mod 2**32 for Montgomery multiplication (odd d); 0 selects plain % for even d.
-        nprime = np.uint64((-pow(d, -1, 1 << 32)) % (1 << 32) if montgomery else 0)
-        thresh = np.uint64((1 << 32) % d)
-        info_p = info.view(np.float64)
-        n_threads = _thread_count() if n_chunks > 1 and shots * cost > _SAMPLE_PARALLEL_WORK else 1
-        n_tasks = min(n_chunks, n_threads * _SAMPLE_TASKS_PER_THREAD) if n_threads > 1 else 1
-        bounds = [n_chunks * i // n_tasks for i in range(n_tasks + 1)]
-
-        def task(i):
-            _sample_chunks(bounds[i], bounds[i + 1], det, obs, _SAMPLE_CHUNK, states, bin_ptr, bin_pmax,
-                           bin_log_keep, info, info_p, always_off, pack, d, thresh, nprime)
-
-        _run_tasks(task, n_tasks, n_threads)
+        _draw_blocks(_sampler_arrays(self), _BlockStream(seed), 0, det, obs)
         return det, obs
+
+    def compile_sampler(self, seed: int | None = None) -> "CompiledDemSampler":
+        """
+        Checks and packs the model once, for a sampler that draws many batches from it.
+
+        The sampler's `sample(shots)` returns what `sample` does, without the
+        per-call work on the model. Its calls continue one random stream:
+        the rows of consecutive calls, put together, are the rows that
+        `sample(total, seed)` returns. The sampler keeps its own packed copy
+        of the model, so later changes to the model do not reach it.
+
+        Args:
+            seed (int, optional): Seed of the sampler's stream. Fresh entropy is used if None.
+
+        Returns:
+            CompiledDemSampler: The sampler.
+
+        Raises:
+            ValueError: As `sample`, if the model has a mechanism and cannot be sampled.
+        """
+        return CompiledDemSampler(self, seed)
 
     # -------------------------------------------------------------------- io
     def __str__(self) -> str:
@@ -1078,6 +1094,164 @@ class DetectorErrorModel:
         dem.detector_labels = [det_labels.get(i, "") for i in range(dem.num_detectors)]
         dem.observable_labels = [obs_labels.get(i, "") for i in range(dem.num_observables)]
         return dem
+
+
+class CompiledDemSampler:
+    """
+    Draws batches of detector and observable values from a `DetectorErrorModel`.
+
+    Made by `DetectorErrorModel.compile_sampler`, which checks the model and
+    packs it into the sampler's arrays once, so each `sample` call only
+    draws. The arrays are a copy: later changes to the model do not reach
+    the sampler.
+
+    The shots come in blocks of 256, block c drawn from the c-th state that
+    the seed gives (see `DetectorErrorModel.sample`), so consecutive calls
+    continue one stream: their rows, put together, are the rows of
+    `DetectorErrorModel.sample(total, seed)`, however the shots are split
+    between the calls and whatever the number of threads. The stream does
+    not repeat, however many shots it gives. A call that raises leaves the
+    stream where it was, or, if an interrupt (Ctrl-C) comes just as it
+    returns, skips the call's rows: no row is ever returned twice.
+
+    A call that ends inside a block draws the whole block and keeps the
+    rows it does not return for the next call, so between calls a sampler
+    holds up to one block: 256 rows of the model's detectors and
+    observables. Calls from several threads take turns. A sampler cannot
+    be pickled or deep-copied; to sample in several processes, compile one
+    in each, with its own seed.
+
+    Attributes:
+        num_detectors (int): Number of detectors of the model (read-only).
+        num_observables (int): Number of logical observables of the model (read-only).
+    """
+
+    def __init__(self, dem: DetectorErrorModel, seed: int | None = None):
+        # The packed targets are fixed, so the widths of the arrays the kernel writes into must be too.
+        self._num_detectors = dem.num_detectors
+        self._num_observables = dem.num_observables
+        self._arrays = _sampler_arrays(dem) if dem.mechanisms else None
+        self._stream = _BlockStream(seed, ahead=64)
+        self._next_block = 0
+        # The last block drawn, while the calls have returned only its first rows: (det, obs, rows returned).
+        self._rest = None
+        self._lock = threading.Lock()
+
+    @property
+    def num_detectors(self) -> int:
+        """Number of detectors of the model."""
+        return self._num_detectors
+
+    @property
+    def num_observables(self) -> int:
+        """Number of logical observables of the model."""
+        return self._num_observables
+
+    def sample(self, shots: int):
+        """
+        Draws the next `shots` samples of the stream.
+
+        Args:
+            shots (int): Number of samples, a Python or NumPy integer.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: Detector values with shape
+                (shots, num_detectors) and observable values with shape
+                (shots, num_observables), as int64 residues mod d.
+
+        Raises:
+            TypeError: If shots is not an integer.
+            ValueError: If shots is negative.
+        """
+        shots = operator.index(shots)
+        if shots < 0:
+            raise ValueError(f"cannot draw {shots} shots")
+        det = np.zeros((shots, self._num_detectors), dtype=np.int64)
+        obs = np.zeros((shots, self._num_observables), dtype=np.int64)
+        if self._arrays is None or shots == 0:
+            return det, obs
+        with self._lock:
+            block, rest = self._next_block, self._rest
+            done = 0
+            if rest is not None:
+                rest_det, rest_obs, used = rest
+                done = min(shots, _SAMPLE_CHUNK - used)
+                det[:done] = rest_det[used:used + done]
+                obs[:done] = rest_obs[used:used + done]
+                rest = (rest_det, rest_obs, used + done) if used + done < _SAMPLE_CHUNK else None
+            whole = (shots - done) // _SAMPLE_CHUNK * _SAMPLE_CHUNK
+            if whole:
+                block = _draw_blocks(self._arrays, self._stream, block, det[done:done + whole],
+                                     obs[done:done + whole])
+                done += whole
+            if done < shots:
+                rest_det = np.zeros((_SAMPLE_CHUNK, self._num_detectors), dtype=np.int64)
+                rest_obs = np.zeros((_SAMPLE_CHUNK, self._num_observables), dtype=np.int64)
+                block = _draw_blocks(self._arrays, self._stream, block, rest_det, rest_obs)
+                det[done:] = rest_det[:shots - done]
+                obs[done:] = rest_obs[:shots - done]
+                rest = (rest_det, rest_obs, shots - done)
+            # The stream moves on only here, so a call that raised above (an interrupt, say) left it as it was.
+            self._next_block, self._rest = block, rest
+        return det, obs
+
+
+def _sampler_arrays(dem: DetectorErrorModel) -> tuple:
+    """
+    Checks a model that has mechanisms and packs it for `_sample_chunks`.
+
+    Returns (cost, args): the estimated work per shot, and the arguments of
+    `_sample_chunks` after `states`, which are the same for every block.
+
+    Raises:
+        ValueError: As `DetectorErrorModel.sample`.
+    """
+    d = int(dem.dimension)
+    if not 1 <= d <= _MAX_SAMPLE_DIMENSION:
+        raise ValueError(f"sample() needs a dimension between 1 and 2**31 - 1, not {d}")
+    mech_prob, n_gens, sizes, ent_tgt, ent_val = dem._flatten()
+    n_targets = dem.num_detectors + dem.num_observables
+    montgomery = d % 2 == 1
+    # int32 pack entries halve the sampler's memory traffic; they hold targets below n_targets and
+    # residues below d.
+    pack_dtype = np.int32 if n_targets <= np.iinfo(np.int32).max else np.int64
+    pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost = _sample_plan(
+        mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack_dtype)
+    # Every block draws one skip per bin, and each shot scans a bitmap of the bins.
+    cost += len(bin_pmax) / _SAMPLE_CHUNK
+    # -d^-1 mod 2**32 for Montgomery multiplication (odd d); 0 selects plain % for even d.
+    nprime = np.uint64((-pow(d, -1, 1 << 32)) % (1 << 32) if montgomery else 0)
+    thresh = np.uint64((1 << 32) % d)
+    args = (bin_ptr, bin_pmax, bin_log_keep, info, info.view(np.float64), always_off, pack, d, thresh, nprime)
+    return cost, args
+
+
+def _draw_blocks(arrays: tuple, stream: _BlockStream, first: int, det, obs) -> int:
+    """
+    Fills det and obs, zero arrays with one row per shot, from blocks first, first + 1, ... of a stream.
+
+    `arrays` is what `_sampler_arrays` returns, and `stream` gives the
+    blocks' random states. A last block of k < 256 rows gets the first k
+    rows of the whole block, since the kernel finishes each shot before the
+    next and draws nothing for the shots past its end.
+
+    Returns:
+        int: The block after the last one used.
+    """
+    cost, (bin_ptr, bin_pmax, bin_log_keep, info, info_p, always_off, pack, d, thresh, nprime) = arrays
+    shots = det.shape[0]
+    n_chunks = -(-shots // _SAMPLE_CHUNK)
+    states = stream.states(first, n_chunks)
+    n_threads = _thread_count() if n_chunks > 1 and shots * cost > _SAMPLE_PARALLEL_WORK else 1
+    n_tasks = min(n_chunks, n_threads * _SAMPLE_TASKS_PER_THREAD) if n_threads > 1 else 1
+    bounds = [n_chunks * i // n_tasks for i in range(n_tasks + 1)]
+
+    def task(i):
+        _sample_chunks(bounds[i], bounds[i + 1], det, obs, _SAMPLE_CHUNK, states, bin_ptr, bin_pmax,
+                       bin_log_keep, info, info_p, always_off, pack, d, thresh, nprime)
+
+    _run_tasks(task, n_tasks, n_threads)
+    return first + n_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -2868,6 +3042,89 @@ def _open_unit(r):
     return (np.float64(r >> np.uint64(11)) + 0.5) * (1.0 / 9007199254740992.0)
 
 
+# NumPy's SeedSequence.generate_state: its 32-bit word i is x ^ (x >> 16), where
+# x = (pool[i % len(pool)] ^ h_i) * h_(i + 1) mod 2**32 and h_i = _SEED_INIT * _SEED_MULT**i mod 2**32.
+_SEED_INIT = 0x8B51F9DD
+_SEED_MULT = 0x58F38DED
+
+
+def _block_states(pool, first: int, count: int) -> np.ndarray:
+    """
+    The xoshiro256** states of sampler blocks first .. first + count - 1, as a (count, 4) uint64 array.
+
+    Block c starts from the uint64 words 4c .. 4c + 3 of `generate_state` of
+    the SeedSequence whose pool is `pool`, or, if all four are zero (where
+    xoshiro256** must not start), from 1, 0, 0, 0. generate_state always
+    starts at word 0, so a sampler that continues its stream at block
+    `first` computes the words itself, in time linear in `count`.
+    """
+    n = 8 * count
+    hash_const = np.full(n + 1, _SEED_MULT, dtype=np.uint32)
+    hash_const[0] = _SEED_INIT * pow(_SEED_MULT, 8 * first, 1 << 32) % (1 << 32)
+    hash_const = np.multiply.accumulate(hash_const, dtype=np.uint32)
+    # The pool has 4 words, so word 8 * first reads pool[0] and each row of 4 words reads the whole pool.
+    words = hash_const[:-1].reshape(-1, len(pool)) ^ pool
+    words *= hash_const[1:].reshape(words.shape)
+    words ^= words >> 16
+    # generate_state pairs the 32-bit words as little-endian uint64s on every machine.
+    states = words.astype("<u4", copy=False).view("<u8").astype(np.uint64, copy=False).reshape(count, 4)
+    states[~states.any(axis=1), 0] = 1
+    return states
+
+
+# _SEED_MULT has order 2**30 mod 2**32, so the words of one SeedSequence repeat after 2**30 words, 2**27 blocks.
+_STREAM_EPOCH = 1 << 27
+
+
+class _BlockStream:
+    """
+    The xoshiro256** states of the blocks of one sampler stream, from its seed.
+
+    Blocks 0 .. 2**27 - 1 start from the words of `SeedSequence(seed)` (see
+    `_block_states`). Those words would then repeat, so block c of epoch
+    e = c // 2**27 >= 1 starts from the words, at block c % 2**27, of the
+    SeedSequence with the same entropy and spawn key (e,), so a long-lived
+    `CompiledDemSampler` does not start over after 2**35 shots.
+
+    With `ahead`, `states` computes at least that many states at once and
+    keeps them for the next calls, since computing them one at a time costs
+    about as much as drawing the blocks of a small model.
+    """
+
+    def __init__(self, seed, ahead: int = 0):
+        self._seq = np.random.SeedSequence(seed)
+        self._epoch, self._pool = 0, self._seq.pool
+        self._ahead = ahead
+        # The states computed last, those of blocks _kept_first onwards.
+        self._kept_first, self._kept = 0, np.zeros((0, 4), dtype=np.uint64)
+
+    def states(self, first: int, count: int) -> np.ndarray:
+        """The states of blocks first .. first + count - 1, as a (count, 4) uint64 array."""
+        k = first - self._kept_first
+        if 0 <= k and k + count <= len(self._kept):
+            return self._kept[k:k + count]
+        block, left = first, max(count, self._ahead)
+        parts = []
+        while True:
+            epoch, start = divmod(block, _STREAM_EPOCH)
+            n = min(left, _STREAM_EPOCH - start)
+            if epoch != self._epoch:
+                seq = self._seq
+                if epoch:
+                    seq = np.random.SeedSequence(seq.entropy, spawn_key=seq.spawn_key + (epoch,))
+                # Making a SeedSequence costs about as much as a small call, so keep the pool for the epoch.
+                self._epoch, self._pool = epoch, seq.pool
+            parts.append(_block_states(self._pool, start, n))
+            block, left = block + n, left - n
+            if not left:
+                break
+        kept = parts[0] if len(parts) == 1 else np.concatenate(parts)
+        # Both fields change together and only now, so a call that raised above (an interrupt, say) left
+        # the kept states with their own blocks.
+        self._kept_first, self._kept = first, kept
+        return kept[:count]
+
+
 def _sample_plan(mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack_dtype):
     """
     Lays out the arrays of `DetectorErrorModel._flatten` for `_sample_chunks`.
@@ -2889,7 +3146,8 @@ def _sample_plan(mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack
     is below 2**31 (values are below d, which is below 2**31).
 
     This runs in NumPy rather than numba: it is linear work done once per
-    call, and leaving it out of numba saves its compile time on first use.
+    `DetectorErrorModel.sample` call or `compile_sampler`, and leaving it
+    out of numba saves its compile time on first use.
 
     Returns:
         tuple: (pack, info, always_off, bin_ptr, bin_pmax, bin_log_keep, cost),
@@ -2938,7 +3196,8 @@ def _sample_plan(mech_prob, n_gens, sizes, ent_tgt, ent_val, d, montgomery, pack
     info[:, 0] = block_off[:n_live]
     info[:, 1] = mech_prob[live].view(np.int64)
     always_off = np.ascontiguousarray(block_off[n_live:-1])
-    starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]]) if n_live else np.zeros(0, dtype=np.int64)
+    starts = (np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1]))) if n_live
+              else np.zeros(0, dtype=np.int64))
     bin_ptr = np.append(starts, n_live).astype(np.int64)
     bin_pmax = np.maximum.reduceat(mech_prob[live], starts) if n_live else np.zeros(0, dtype=np.float64)
     bin_log_keep = np.array([math.log1p(-p) for p in bin_pmax.tolist()], dtype=np.float64)
