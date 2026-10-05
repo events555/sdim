@@ -16,8 +16,8 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
         "CZ", "CZ_INV"
     
     Note:
-        - Two-qudit gates are: "CNOT", "CNOT_INV", "CZ", "CZ_INV".
-        - All other gates are assumed to be single-qudit gates.
+        - Two-qudit gates ("CNOT", "CNOT_INV", "CZ", "CZ_INV", and "SWAP" or "N2" in a gate_set) act on
+          two distinct random qudits, all other gates on one random qudit.
         - Measurement gates ("M") are added as extra rounds at the end.
     
     Args:
@@ -27,9 +27,9 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
         measurement_rounds (int, optional): Number of measurement rounds to add at the end.
             In each round, every qudit is measured. Defaults to 0.
         seed (int, optional): Seed for reproducibility. Defaults to None.
-        gate_set (list of str, optional): Gates to sample from instead of the list above. Only the
-            four two-qudit gates above are given two qudits, so every other gate in it must be a
-            one-qudit gate. Defaults to None.
+        gate_set (list of str, optional): Gates to sample from instead of the list above, by name or
+            alias, placed on qudits as the note above says. Noise gates (N1, N2) take their default
+            parameters; MUL needs a scalar, so it cannot be in the set. Defaults to None.
     
     Returns:
         Circuit: A randomly generated Circuit object.
@@ -45,11 +45,16 @@ def generate_random_clifford_circuit(num_qudits, num_gates, dimension, measureme
     available_gates = gate_set or ["H", "P", "CNOT", "X", "Z", "H_INV", "P_INV", "CNOT_INV", "X_INV", "Z_INV", "CZ", "CZ_INV"]
 
     
-    # Define the two-qudit gates.
-    two_qudit_gates = {"CNOT", "CNOT_INV", "CZ", "CZ_INV"}
-    
     # Create the Circuit object (assumes Circuit(num_qudits, dimension) is defined).
     circuit = Circuit(num_qudits, dimension)
+
+    # Define the two-qudit gates, by the gate data, so that SWAP, N2 and aliases such as CX count too.
+    gate_data = circuit.gate_data
+    two_qudit_gates = set()
+    for name in available_gates:
+        gate = gate_data.gateMap.get(gate_data.aliasMap.get(name.upper(), name.upper()))
+        if gate is not None and gate.arg_count == 2:
+            two_qudit_gates.add(name)
     
     # Uniformly select num_gates gates.
     for _ in range(num_gates):

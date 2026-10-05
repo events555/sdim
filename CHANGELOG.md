@@ -171,6 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix RESET recording the noiseless outcome in frame mode
 - Fix frame mode (`shots > 1`) failing on circuits without measurements
 - Fix circuit files losing `prob_dist` and other gate parameters on a write/read round trip
+- Fix `read_circuit` dropping negative qudit indices, `Circuit.from_operation_list` dropping gate parameters, and SWAP and N2 in `generate_random_clifford_circuit(gate_set=...)`
 - Fix `circuit_to_cirq_circuit` for SWAP, M_X, RESET, N2 and the detector gates, and the inverses and powers of sdim's cirq gates (`cirq.inverse` of Z gave Z)
 - Fix `dem_legacy.from_circuit` printing progress lines and failing on circuits with no noise or a single noise outcome
 - Fix `pip install sdim` failing on Python 3.15, and package metadata that named only the first author and listed contradictory GPL classifiers

@@ -90,6 +90,8 @@ def test_tableau_noise_and_reset_are_fast_at_large_dimension():
     c.add_gate("N1", 0, prob=1.0, noise_channel="d")
     c.add_gate("N2", 0, 1, prob=1.0)
     c.add_gate("M", [0, 1])
+    # Compile the kernels before the timed call: with a cold numba cache that takes seconds.
+    Program(c).simulate(shots=2, force_tableau=True)
     start = time.time()
     Program(c).simulate(shots=20, force_tableau=True)
     assert time.time() - start < 5.0

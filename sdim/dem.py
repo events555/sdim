@@ -162,6 +162,7 @@ from .circuit import Circuit
 from .program import Program, _detector_mod
 
 # Gate ids, in the order GateData registers the gates.
+_X, _X_INV, _Z, _Z_INV = 1, 2, 3, 4
 _H, _H_INV, _P, _P_INV = 5, 6, 7, 8
 _CNOT, _CNOT_INV, _CZ, _CZ_INV, _SWAP = 9, 10, 11, 12, 13
 _M, _M_X, _RESET = 14, 15, 16
@@ -589,6 +590,11 @@ class DetectorErrorModel:
     `read_from_file`. The constructor turns NumPy integers in the dimension,
     the counts and the generators of the given mechanisms into Python ints
     (one pass over their entries), so every method computes with exact ints.
+    Mechanisms added later may hold NumPy integers too: `str` and
+    `write_to_file` convert their generators the same way, `merge_lines`
+    those of the rank-1 mechanisms it merges, and `to_lines` all of them
+    when it expands them in Python (d above 2**31 - 1); `sample` reads them
+    as Python ints.
 
     `sample` checks and packs every mechanism on each call. To draw many
     batches from one model, compile a sampler once and call it instead; its
@@ -636,6 +642,8 @@ class DetectorErrorModel:
 
         Every N1 or N2 gate with non-zero probability and a visible effect
         becomes one mechanism, so the size of the model does not depend on d.
+        Negative qudit indices count back from the end of the circuit's
+        qudits, as in `Program`.
 
         Args:
             circuit (Circuit): Circuit with N1/N2 noise and DETECTOR /
@@ -700,12 +708,14 @@ class DetectorErrorModel:
         d = _plain_int(self.dimension)
         merged: dict = {}
         sources: dict = {}
+        lines: list = []
         others: list = []
         with _gc_paused():
             for mech in self.mechanisms:
-                if mech.rank != 1:
-                    others.append(mech)
-                    continue
+                (lines if len(mech.generators) == 1 else others).append(mech)
+            # Mechanisms added after the constructor may hold NumPy integers, which overflow here.
+            _normalize_generators(lines)
+            for mech in lines:
                 key, scaled = _canonical_line(mech.generators[0], d)
                 if key is None:
                     merged[object()] = ErrorMechanism(mech.probability, [scaled], mech.source)
@@ -779,6 +789,7 @@ class DetectorErrorModel:
                 out.mechanisms = lines
                 return out
             # d above 2**31 - 1, or entries that are not integers: expand one dict at a time.
+            _normalize_generators(mechs)
             for mech, pl in zip(mechs, pls):
                 for direction in _projective_points(d, mech.rank):
                     combined: dict = {}
@@ -940,15 +951,16 @@ class DetectorErrorModel:
         for i, label in enumerate(self.observable_labels):
             if label:
                 lines.append(f"LOGICAL_OBSERVABLE L{i} {json.dumps(str(label))}")
+        # Mechanisms added after the constructor may hold NumPy integers (a uint64 target minus
+        # num_detectors is a float under NumPy 1.x).
+        _normalize_generators(self.mechanisms)
+        nd = _plain_int(self.num_detectors)
         for m in self.mechanisms:
-            gens = " | ".join(" ".join(self._target_name(t) + f"={v}" for t, v in sorted(g.items()))
-                              for g in m.generators)
+            gens = " | ".join([" ".join([f"D{t}={v}" if t < nd else f"L{t - nd}={v}"
+                                         for t, v in sorted(g.items())]) for g in m.generators])
             tag = f" # {' '.join(str(m.source).splitlines())}" if m.source else ""
             lines.append(f"ERROR({float(m.probability)!r}) {gens}{tag}")
         return "\n".join(lines) + "\n"
-
-    def _target_name(self, t: int) -> str:
-        return f"D{t}" if t < self.num_detectors else f"L{t - self.num_detectors}"
 
     def write_to_file(self, path: str | Path, comment: str = "") -> None:
         """
@@ -1267,7 +1279,7 @@ class NoiseLocation:
     Attributes:
         ir_index (int): Position of the gate in the program IR.
         gate_id (int): 17 for N1, 18 for N2.
-        qudits (tuple): Qudits the gate acts on.
+        qudits (tuple): Qudits the gate acts on (a negative index as the qudit it counts back to).
         channel (str): "d", "f" or "p" for N1, and "d2" for N2.
         probability (float): The gate's `prob` parameter.
         subgroup_probability (float): Probability of the equivalent subgroup mechanism.
@@ -1793,22 +1805,28 @@ def _plain_noise_gate(instr) -> bool:
 
 def _frame_qudits(gid, qa, qb, n_qudits: int):
     """
-    Checks the qudits of the ops that can change a frame.
+    Checks the qudits of the ops that can change a frame, and of the Paulis.
+
+    qa and qb are the IR's qudit indices: `Program._build_ir` has counted negative indices from
+    -n_qudits on back from the end, left the others as they were, and written -1 for no qudit.
 
     Returns (qb, frame_ops, two_ops): qb is a copy with -1 for every single-qudit frame op, so
     the kernels take their one-qudit branch, and frame_ops / two_ops are the frame ops and the
     two-qudit frame ops.
 
     Raises:
-        IndexError: If a frame op acts on a qudit outside 0 .. n_qudits - 1.
+        IndexError: If a frame op or a Pauli acts on a qudit outside the circuit.
         ValueError: If a two-qudit frame op acts on one qudit twice (it has no frame rule).
     """
     frame_mask = np.isin(gid, np.array(sorted(_FRAME_GATES), dtype=np.int64))
-    two_mask = frame_mask & np.isin(gid, np.array(_TWO_QUDIT_FRAME_GATES, dtype=np.int64)) & (qb >= 0)
+    # Any other negative target is outside the circuit, and the range check below reports it.
+    two_mask = frame_mask & np.isin(gid, np.array(_TWO_QUDIT_FRAME_GATES, dtype=np.int64)) & (qb != -1)
     qb = np.where(frame_mask & ~two_mask, -1, qb)
     frame_ops = np.flatnonzero(frame_mask)
     two_ops = np.flatnonzero(two_mask)
-    ent_q = np.concatenate((qa[frame_ops], qb[two_ops]))
+    # A Pauli leaves every frame as it is, but the simulators reject one outside the circuit too.
+    pauli_ops = np.flatnonzero((gid >= _X) & (gid <= _Z_INV))
+    ent_q = np.concatenate((qa[frame_ops], qb[two_ops], qa[pauli_ops]))
     if len(ent_q) and (ent_q.min() < 0 or ent_q.max() >= n_qudits):
         bad = int(ent_q.min() if ent_q.min() < 0 else ent_q.max())
         raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
@@ -2158,6 +2176,10 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     for instr in circuit.operations:
         g = instr.gate_id
         if g == 0:
+            # The identity changes nothing, but the simulators reject one outside the circuit too.
+            q = instr.qudit_index
+            if q is not None and not -n_qudits <= q < n_qudits:
+                raise IndexError(f"a gate acts on qudit {q}, but the circuit has {n_qudits} qudits")
             continue
         ir_index += 1
         if g == _N1 or g == _N2:
@@ -2250,6 +2272,12 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
                 channel, code, rank = "d2", 3, 4
                 pi = p / den[rank]
             q0, q1 = int(instr.qudit_index), int(instr.target_index)
+            if q1 < 0 and q1 >= -n_qudits:
+                q1 += n_qudits
+        # Negative indices count back from the end of the circuit (N2's second one just above), as
+        # Program._build_ir counts them; the range check below reports any outside the circuit.
+        if q0 < 0 and q0 >= -n_qudits:
+            q0 += n_qudits
         if parsed is None:
             if pi > 1.0 + 1e-12:
                 name = f"N2@{ir_index}:q{q0},q{q1}" if code == 3 else f"N1[{channel}]@{ir_index}:q{q0}"
@@ -2272,8 +2300,9 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     probe_loc = np.repeat(np.arange(len(codes), dtype=np.int64), _PROBE_COUNT[code_arr])
     local = np.arange(n_noise_probes, dtype=np.int64) - probe_start[probe_loc]
     probe_code = code_arr[probe_loc]
-    noise_qudit = np.where(_PROBE_QUDIT[probe_code, local] == 0,
-                           np.array(q0s, dtype=np.int64)[probe_loc], np.array(q1s, dtype=np.int64)[probe_loc])
+    q0_arr = np.array(q0s, dtype=np.int64)
+    q1_arr = np.array(q1s, dtype=np.int64)
+    noise_qudit = np.where(_PROBE_QUDIT[probe_code, local] == 0, q0_arr[probe_loc], q1_arr[probe_loc])
     noise_kind = _PROBE_KIND[probe_code, local]
     noise_op = np.array(probe_ops, dtype=np.int64)[probe_loc]
 
@@ -2289,6 +2318,12 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     if len(probe_qudit) and (probe_qudit.min() < 0 or probe_qudit.max() >= n_qudits):
         bad = int(probe_qudit.min() if probe_qudit.min() < 0 else probe_qudit.max())
         raise IndexError(f"a gate acts on qudit {bad}, but the circuit has {n_qudits} qudits")
+    # add_gate cannot see that two indices, one of them negative, are the same qudit.
+    twice = np.flatnonzero((code_arr == 3) & (q0_arr == q1_arr))
+    if len(twice):
+        i = int(twice[0])
+        raise ValueError(f"N2@{ir_indices[i]} acts on qudit {q0s[i]} twice; "
+                         "a two-qudit gate needs two different qudits")
 
     n_targets = n_det + len(obs)
     if backward:
@@ -3389,17 +3424,22 @@ def _canonical_line(gen: dict, d: int):
     Returns (key, scaled), key being the hashable tuple of scaled's items. If no entry is
     non-zero mod d, or the first one is not invertible mod d (composite d), the vector cannot
     be scaled that way: the result is (None, the reduced, sorted vector), and the caller does
-    not merge it with any other.
+    not merge it with any other. The entries are Python ints (`merge_lines` converts NumPy
+    integers first).
     """
-    items = sorted((t, v % d) for t, v in gen.items() if v % d)
-    if not items or math.gcd(items[0][1], d) != 1:
-        return None, dict(items)
-    try:
+    items = sorted(gen.items())
+    lead = items[0][1] % d if items else 0
+    if lead and math.gcd(lead, d) == 1:
+        # The usual case. A unit multiple of an entry is 0 mod d only if the entry is, so one
+        # pass reduces, drops the zeros and scales.
+        inv = pow(lead, -1, d)
+        scaled = {t: r for t, v in items if (r := v * inv % d)}
+    else:
+        items = [(t, v % d) for t, v in items if v % d]
+        if not items or math.gcd(items[0][1], d) != 1:
+            return None, dict(items)
         inv = pow(items[0][1], -1, d)
-    except TypeError:
-        # A NumPy integer, in a mechanism added after the constructor normalized the rest.
-        return _canonical_line({operator.index(t): operator.index(v) for t, v in gen.items()}, d)
-    scaled = {t: (v * inv) % d for t, v in items}
+        scaled = {t: (v * inv) % d for t, v in items}
     # scaled is built in sorted order, so its items are already the sorted key.
     return tuple(scaled.items()), scaled
 

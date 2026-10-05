@@ -282,21 +282,35 @@ def test_large_products_fall_back_to_the_numeric_path():
 _HUGE_EXPONENT_SCRIPT = r"""
 from sdim.circuit import Circuit
 from sdim.dem import DetectorErrorModel
-for expr in ("rec[0] ** (10**18 + 1)", "rec[0] ** (10**18)"):
+
+def circuit(expr):
     c = Circuit(1, 3)
     c.add_gate("N1", 0, noise_channel="f", prob=0.5)
     c.add_gate("M", 0)
     c.add_gate("DETECTOR", expr=expr)
+    return c
+
+# Compile the kernels, then allow 1 GB more address space: evaluated on integers, the powers below fill
+# gigabytes before the timeout, and with the cap they raise MemoryError instead. (No cap outside Linux.)
+DetectorErrorModel.from_circuit(circuit("rec[0]"))
+try:
+    import resource
+    with open("/proc/self/status") as status:
+        size = next(int(line.split()[1]) * 1024 for line in status if line.startswith("VmSize:"))
+    resource.setrlimit(resource.RLIMIT_AS, (size + 2 ** 30, resource.getrlimit(resource.RLIMIT_AS)[1]))
+except (ImportError, OSError, ValueError):
+    pass
+for expr in ("rec[0] ** (10**18 + 1)", "rec[0] ** (10**18)"):
     try:
-        print([m.generators for m in DetectorErrorModel.from_circuit(c).mechanisms])
+        print([m.generators for m in DetectorErrorModel.from_circuit(circuit(expr)).mechanisms])
     except ValueError as e:
         print(e)
 """
 
 
 def test_huge_exponents_reduce_by_fermat():
-    """Exponents used to be evaluated on integer probes: 2 ** (10**18 + 1) never finished. (In a subprocess,
-    so the old code fails on the timeout.)"""
+    """Exponents used to be evaluated on integer probes: 2 ** (10**18 + 1) never finished. (In a subprocess
+    with capped memory, so the old code fails on a MemoryError or the timeout.)"""
     import sdim
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([os.path.dirname(os.path.dirname(sdim.__file__)), env.get("PYTHONPATH", "")])

@@ -16,6 +16,35 @@ _GATE_PARAMS = {
 # A single qudit index.  NumPy integers come from indexing arrays and from random generators.
 _INTEGER_TYPES = (int, np.integer)
 
+
+def _qudit_list(qudits, name: str, _index=operator.index):
+    """
+    The control or target argument of add_gate (one qudit index, or an iterable of them, but
+    not None) as a list of Python ints.
+
+    NumPy integers become Python ints: the simulators' index arithmetic overflows an int8 index
+    on 128 or more qudits, and turns a uint64 one into a float under NumPy 1.x.
+
+    Raises:
+        ValueError: If a list holds None.
+        TypeError: If an index is not an integer.
+    """
+    if type(qudits) is not list:
+        if isinstance(qudits, _INTEGER_TYPES):
+            return [_index(qudits)]
+        # An iterator can only be read once, and the check below reads the entries again.
+        qudits = list(qudits)
+    try:
+        # add_gate("M", [q]) is common enough for its own case.
+        return [_index(qudits[0])] if len(qudits) == 1 else [*map(_index, qudits)]
+    except TypeError:
+        # Stored as is, None was later read as the last qudit.  (`None in qudits` compares with ==,
+        # which raises for a NumPy array entry.)
+        if any(q is None for q in qudits):
+            raise ValueError(f"The {name} list holds None; give a qudit index for each entry.") from None
+        raise
+
+
 @dataclass
 class CircuitInstruction:
     """
@@ -107,6 +136,7 @@ class Circuit:
         two-qudit gate (CNOT, CNOT_INV, CZ, CZ_INV, SWAP, N2) takes both control and target.  When
         one of them is a list, the other qudit is paired with each entry; two lists of the same
         length are paired up in order.  DETECTOR, LOGICAL_OBSERVABLE and TICK take no qudits.
+        Qudit indices are stored as Python ints, NumPy integers included.
 
         Args:
             gate_name (str): The name of the gate to add.
@@ -125,12 +155,19 @@ class Circuit:
         Raises:
             ValueError: If the input combination is invalid: a two-qudit gate without both a control
                 and a target, a one-qudit gate without a qudit or with a target, the same qudit
-                twice, an unknown parameter, or an invalid parameter value (such as a MUL scalar
-                that is not an integer coprime to d).
+                twice, None in a list of qudits, an unknown parameter, or an invalid parameter value
+                (such as a MUL scalar that is not an integer coprime to d).
+            TypeError: If a qudit index is not an integer.
         """
-        # Convert single integers to lists for uniform processing
-        control = [control] if isinstance(control, _INTEGER_TYPES) else control
-        target = [target] if isinstance(target, _INTEGER_TYPES) else target
+        # Lists of Python ints for uniform processing (see _qudit_list)
+        if type(control) is int:
+            control = [control]
+        elif control is not None:
+            control = _qudit_list(control, "control")
+        if type(target) is int:
+            target = [target]
+        elif target is not None:
+            target = _qudit_list(target, "target")
 
         gate_name_upper = gate_name.upper()
         primary_name = self.gate_data.aliasMap.get(gate_name_upper, gate_name_upper)
@@ -320,7 +357,8 @@ class Circuit:
         Creates a Circuit object from a list of operations.
 
         Args:
-            operation_list (list): A list of operations, either as tuples or CircuitInstructions.
+            operation_list (list): A list of operations, either as tuples (gate name, qudits) or
+                CircuitInstructions, which keep their parameters.
             num_qudits (int): The number of qudits in the circuit.
             dimension (int): The dimension of each qudit.
 
@@ -342,7 +380,8 @@ class Circuit:
                 else:
                     raise ValueError(f"Unsupported number of qudits for gate {gate_name}")
             elif isinstance(op, CircuitInstruction):  # If the operation is a CircuitInstruction
-                circuit.add_gate(op.gate_name, op.qudit_index, op.target_index)
+                # With its parameters: MUL's scalar, a noise gate's prob, a detector's expression.
+                circuit.add_gate(op.gate_name, op.qudit_index, op.target_index, **(op.params or {}))
             else:
                 raise ValueError(f"Unsupported operation type: {type(op)}")
         return circuit

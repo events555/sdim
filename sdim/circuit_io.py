@@ -141,10 +141,10 @@ def read_circuit(filename):
 
     The file holds an optional comment, a line with only '#', an optional dimension line
     "d <dimension>" (with "qudits=<n>" in files written by write_circuit), then one gate per line:
-    the gate name, its qudit indices, and its parameters as key="text" or key=value (see
-    write_circuit for which values come back with which type).  Files written by older versions
-    hold only key="text": prob, a / scalar and prob_dist are read from them as numbers, and the
-    other parameters as text.  The file is read as UTF-8.
+    the gate name, its qudit indices (negative ones count back from the end), and its parameters
+    as key="text" or key=value (see write_circuit for which values come back with which type).
+    Files written by older versions hold only key="text": prob, a / scalar and prob_dist are read
+    from them as numbers, and the other parameters as text.  The file is read as UTF-8.
 
     Args:
         filename (str): Path to the file, absolute or relative to the current working directory.
@@ -192,13 +192,15 @@ def read_circuit(filename):
                     declared_qudits = int(part.split('=', 1)[1])
             gate_lines = gate_lines[1:]
 
-    # Parse every gate line: qudit indices are the purely numerical arguments, parameters are key=value.
+    # Parse every gate line: qudit indices are the integer arguments (negative ones count from the end),
+    # parameters are key=value.
     gates = []
     prob_dist_cache = {}
     for line in gate_lines:
         tokens = _split_gate_line(line)
         gate_name = tokens[0][0].upper()
-        gate_qubits = [int(word) for word, value, _ in tokens[1:] if value is None and word.isdigit()]
+        gate_qubits = [int(word) for word, value, _ in tokens[1:]
+                       if value is None and (word.isdigit() or word[:1] == "-" and word[1:].isdigit())]
         if len(gate_qubits) > 2:
             raise ValueError(f"Unexpected number of arguments for gate {gate_name}")
         params_dict = None
@@ -212,7 +214,9 @@ def read_circuit(filename):
             params_dict[key] = _parse_param(key, value, quoted, prob_dist_cache)
         gates.append((gate_name, gate_qubits, params_dict, line.strip()))
 
-    num_qudits = max([declared_qudits, 1] + [q + 1 for _, qubits, _, _ in gates for q in qubits])
+    # Negative indices count back from the end, so they leave a declared count as it is; without one, -k needs k qudits.
+    num_qudits = max([declared_qudits, 1] + [q + 1 if q >= 0 else 0 if declared_qudits else -q
+                                             for _, qubits, _, _ in gates for q in qubits])
     circuit = Circuit(num_qudits, dimension)
 
     # Append the gates to the circuit

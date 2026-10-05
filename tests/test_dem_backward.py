@@ -383,9 +383,10 @@ def test_compile_time_is_linear_in_rounds():
         c = rep_code(rounds, n_data=8, observables="overlap")
         times = []
         for _ in range(3):
-            t = time.perf_counter()
+            # CPU time: under load a call longer than a scheduler time slice also waits for a core.
+            t = time.process_time()
             dem_module._compile(c).mechanisms(True)
-            times.append(time.perf_counter() - t)
+            times.append(time.process_time() - t)
         return min(times)
 
     best(20)
@@ -405,9 +406,10 @@ def test_compile_time_is_linear_in_rounds_with_spanning_observables():
         c = rep_code(rounds, n_data=5, observables="span2", extra=10)
         times = []
         for _ in range(3):
-            t = time.perf_counter()
+            # CPU time: under load a call longer than a scheduler time slice also waits for a core.
+            t = time.process_time()
             DetectorErrorModel.from_circuit(c, merge=False)
-            times.append(time.perf_counter() - t)
+            times.append(time.process_time() - t)
         return min(times)
 
     best(20)
@@ -428,9 +430,10 @@ def test_compile_time_is_linear_in_rounds_with_idle_qudits():
         c = idle_memory(rounds, n_idle=20)
         times = []
         for _ in range(3):
-            t = time.perf_counter()
+            # CPU time: under load a call longer than a scheduler time slice also waits for a core.
+            t = time.process_time()
             fn(c)
-            times.append(time.perf_counter() - t)
+            times.append(time.process_time() - t)
         return min(times)
 
     for fn in (lambda c: DetectorErrorModel.from_circuit(c, merge=False), compile_unit_responses):

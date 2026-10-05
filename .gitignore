@@ -20,9 +20,9 @@
 !/CITATION.cff
 
 # Generated files inside whitelisted directories
-circuits/random*.chp
-circuits/failed*.chp
-circuits/test*.chp
+**/circuits/random*.chp
+**/circuits/failed*.chp
+**/circuits/test*.chp
 **/__pycache__/
 *.pyc
 *.nbi

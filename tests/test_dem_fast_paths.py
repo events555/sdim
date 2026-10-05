@@ -457,9 +457,10 @@ def test_symbolic_forms_take_time_linear_in_the_expression():
         fn = _compile_detector(" + ".join(f"{j % 5 + 1}*rec[{j}]" for j in range(n)) + " - rec[0]", 3)
         times = []
         for _ in range(3):
-            t = time.perf_counter()
+            # CPU time: under load a call longer than a scheduler time slice also waits for a core.
+            t = time.process_time()
             form = dem_module._symbolic_coefficients(fn, n, 3, {})
-            times.append(time.perf_counter() - t)
+            times.append(time.process_time() - t)
         assert form[:4] == (0, 0, 2, 0)
         return min(times)
 
