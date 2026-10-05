@@ -15,6 +15,7 @@ import numpy as np
 import contextlib
 import copy
 import gc
+import math
 import re 
 
 # Gate function dictionary
@@ -316,13 +317,12 @@ _Z_B = 2  # the op's Z update of its second qudit is needed
 
 
 @njit(cache=True)
-def _z_liveness(op, qa, qb, n_qudits):
+def _z_liveness(op, qa, qb, flags, live):
     """
-    Returns (flags, live_at_start): per-op _Z_A/_Z_B bits for the Z updates whose results can
-    reach the X frame, and which qudits' initial random Z can.
+    Fills flags (zeros, one per op) with the _Z_A/_Z_B bits of the Z updates whose results can
+    reach the X frame, and live (False, one per qudit) with which qudits' initial random Z can.
+    The caller allocates both, so the kernel does not need numba's array constructors.
     """
-    live = np.zeros(n_qudits, dtype=np.bool_)
-    flags = np.zeros(op.shape[0], dtype=np.int64)
     for i in range(op.shape[0] - 1, -1, -1):
         g = op[i]
         a = qa[i]
@@ -356,7 +356,6 @@ def _z_liveness(op, qa, qb, n_qudits):
             live[a] = False
         elif g == 15:  # M_X: records z[a] and keeps it; x[a] becomes random
             live[a] = True
-    return flags, live
 
 
 @njit(cache=True)
@@ -378,12 +377,27 @@ def _sub_mod(row, values, d, width):
 
 
 @njit(cache=True)
-def _add_noise_column(row, noise, k, c, d, width):
-    for s in range(width):
-        v = row[s] + noise[k, s, c] % d
-        if v >= d:
-            v -= d
-        row[s] = v
+def _add_injected_noise(x, z, a, b, f, two_qudit, noise, k, d, width):
+    """
+    Adds row k of an injected noise array to the frames: columns (x_a, z_a) for N1 and
+    (x_a, z_a, x_b, z_b) for N2, in that order, skipping Z updates that are not live.
+    """
+    for c in range(4 if two_qudit else 2):
+        q = a if c < 2 else b
+        if c % 2 == 0:
+            row = x[q]
+        elif f & (_Z_A if c == 1 else _Z_B):
+            row = z[q]
+        else:
+            continue
+        for s in range(width):
+            w = noise[k, s, c]
+            if w < 0 or w >= d:  # the division is slow, and injected noise is normally in range
+                w %= d
+            v = row[s] + w
+            if v >= d:
+                v -= d
+            row[s] = v
 
 
 @njit(cache=True)
@@ -433,19 +447,7 @@ def _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log
     mode = modes[k]
     za_live = (f & _Z_A) != 0
     zb_live = (f & _Z_B) != 0
-    if mode == _NOISE_GEOMETRIC:
-        # next_hit[k] is the next shot (over all blocks) on which this gate fires.
-        end = col0 + width
-        h = next_hit[k]
-        lq = log_q[k]
-        while h < end:
-            _apply_sampled_pauli(kind, a, b, h - col0, za_live, zb_live, x, z, d, rng)
-            h = _rng_next_hit(rng, lq, h, shots)
-        next_hit[k] = h
-    elif mode == _NOISE_ALWAYS:
-        for s in range(width):
-            _apply_sampled_pauli(kind, a, b, s, za_live, zb_live, x, z, d, rng)
-    elif mode == _NOISE_PER_SHOT:
+    if mode == _NOISE_PER_SHOT:
         # N2 with prob_dist: one categorical draw per shot, like np.random.choice.
         off = cdf_offset[k]
         first = cdf_data[off]
@@ -474,168 +476,180 @@ def _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log
             _add_one(x[b], s, x2, d)
             if zb_live:
                 _add_one(z[b], s, z2, d)
+    elif mode == _NOISE_GEOMETRIC or mode == _NOISE_ALWAYS:
+        # The gate fires on every shot (ALWAYS), or on the shots next_hit[k], then the next hits
+        # drawn by geometric skipping (GEOMETRIC); next_hit[k] is over all blocks.  One call site
+        # for _apply_sampled_pauli keeps the compiled kernel small.
+        geometric = mode == _NOISE_GEOMETRIC
+        end = col0 + width
+        h = next_hit[k] if geometric else col0
+        lq = log_q[k]
+        while h < end:
+            _apply_sampled_pauli(kind, a, b, h - col0, za_live, zb_live, x, z, d, rng)
+            if geometric:
+                h = _rng_next_hit(rng, lq, h, shots)
+            else:
+                h += 1
+        if geometric:
+            next_hit[k] = h
 
 
 @njit(cache=True)
-def _frame_ops(op, qa, qb, pa, pb, zf, start, end, d, x, z, width, records, col0, shots,
+def _init_sampled_noise(rng, seed, modes, log_q, shots, next_hit):
+    """
+    Seeds the kernel's generator and draws the first shot on which each geometric noise gate
+    fires; the gates then step through the blocks in order, so each gate needs O(1) work per
+    block plus O(1) per error.
+    """
+    _rng_seed(rng, seed)
+    # A typed value rather than the literal -1: numba compiles a separate copy of a callee for
+    # every literal argument it is called with.
+    before_first = np.int64(-1)
+    for k in range(modes.shape[0]):
+        if modes[k] == _NOISE_GEOMETRIC:
+            next_hit[k] = _rng_next_hit(rng, log_q[k], before_first, shots)
+
+
+@njit(cache=True)
+def _frame_ops(op, qa, qb, pa, pb, zf, start, end, d, x, z, z_live0, block, records, shots,
                noise, kinds, modes, log_q, next_hit, cdf_offset, cdf_data, cdf_len, rng, lazy):
     """
-    Applies frame ops start..end-1 to the shots col0..col0+width-1.
+    Applies frame ops start..end-1 to all the shots.
 
-    x[:, :width] and z[:, :width] hold the block's frames, with entries in [0, d).  pa/pb carry
-    per-op data: the record row for M/M_X/RESET, the noise gate index for N1/N2, and
-    (a mod d, a^-1 mod d) for MUL; zf holds the Z-liveness flags.  Measurement-like ops write
-    x mod d into records[row, col0:col0+width].
-    With lazy=True, noise comes from the NoiseModel arrays and the kernel re-randomizes Z after
-    each measurement; with lazy=False, noise comes from the injected array (indexed by shot, so
-    col0 must be 0) and the caller re-randomizes Z, which keeps NumPy's random stream identical
-    to the previous sampler.
+    pa/pb carry per-op data: the record row for M/M_X/RESET, the noise gate index for N1/N2, and
+    (a mod d, a^-1 mod d) for MUL; zf holds the Z-liveness flags.  Frame entries stay in [0, d).
+    Measurement-like ops write their outcome shifts into records[row, :].
+
+    With lazy=True (sampled noise), the shots run in blocks of `block` shots, and x and z are
+    scratch rows for one block: each block starts from x = 0 and a fresh random Z on the qudits
+    in z_live0, noise comes from the NoiseModel arrays (with next_hit and rng set up by
+    _init_sampled_noise), and the kernel re-randomizes the frame after each measurement.
+    With lazy=False (injected noise), x and z hold all the shots, noise comes from the injected
+    array (indexed by shot), and the caller re-randomizes the frame after each measurement, which
+    keeps NumPy's random stream identical to the previous sampler.
+
+    Both paths share this one compiled function, so the first simulation compiles it only once.
     """
-    for i in range(start, end):
-        g = op[i]
-        a = qa[i]
-        f = zf[i]
-        if g == 9:  # CNOT
-            b = qb[i]
-            _add_mod(x[b], x[a], d, width)
-            if f & _Z_A:
-                _sub_mod(z[a], z[b], d, width)
-        elif g == 17 or g == 18:  # noise
-            b = qb[i]
-            k = pa[i]
-            if lazy:
-                mode = modes[k]
-                # Fast path: most gates have no error in most blocks.
-                if mode == _NOISE_NEVER or (mode == _NOISE_GEOMETRIC and next_hit[k] >= col0 + width):
-                    continue
-                _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log_q, next_hit,
-                                  cdf_offset, cdf_data, cdf_len, rng)
-            elif g == 17:
-                _add_noise_column(x[a], noise, k, 0, d, width)
-                if f & _Z_A:
-                    _add_noise_column(z[a], noise, k, 1, d, width)
-            else:
-                _add_noise_column(x[a], noise, k, 0, d, width)
-                if f & _Z_A:
-                    _add_noise_column(z[a], noise, k, 1, d, width)
-                _add_noise_column(x[b], noise, k, 2, d, width)
-                if f & _Z_B:
-                    _add_noise_column(z[b], noise, k, 3, d, width)
-        elif g == 15:  # M_X: the outcome is the Z part, which stays; the X part becomes random
-            zr = z[a]
-            rec = records[pa[i]]
-            for s in range(width):
-                rec[col0 + s] = zr[s]
-            if lazy:
-                _rng_fill_below(rng, d, x[a], width)
-        elif g == 14 or g == 16:  # M, RESET
-            xr = x[a]
-            rec = records[pa[i]]
-            for s in range(width):
-                rec[col0 + s] = xr[s]
-            if g == 16:  # RESET corrects the outcome back to |0>
-                for s in range(width):
-                    xr[s] = 0
-            if lazy and (f & _Z_A):
-                _rng_fill_below(rng, d, z[a], width)
-        elif g == 5:  # H
-            xr = x[a]
-            zr = z[a]
-            if f & _Z_A:
-                for s in range(width):
-                    t = xr[s]
-                    v = zr[s]
-                    xr[s] = d - v if v != 0 else 0
-                    zr[s] = t
-            else:
-                for s in range(width):
-                    v = zr[s]
-                    xr[s] = d - v if v != 0 else 0
-        elif g == 6:  # H inverse
-            xr = x[a]
-            zr = z[a]
-            if f & _Z_A:
-                for s in range(width):
-                    t = xr[s]
-                    xr[s] = zr[s]
-                    zr[s] = d - t if t != 0 else 0
-            else:
-                for s in range(width):
-                    xr[s] = zr[s]
-        elif g == 7:  # P
-            if f & _Z_A:
-                _add_mod(z[a], x[a], d, width)
-        elif g == 8:  # P inverse
-            if f & _Z_A:
-                _sub_mod(z[a], x[a], d, width)
-        elif g == 10:  # CNOT inverse
-            b = qb[i]
-            _sub_mod(x[b], x[a], d, width)
-            if f & _Z_A:
-                _add_mod(z[a], z[b], d, width)
-        elif g == 11:  # CZ
-            b = qb[i]
-            if f & _Z_B:
-                _add_mod(z[b], x[a], d, width)
-            if f & _Z_A:
-                _add_mod(z[a], x[b], d, width)
-        elif g == 12:  # CZ inverse
-            b = qb[i]
-            if f & _Z_B:
-                _sub_mod(z[b], x[a], d, width)
-            if f & _Z_A:
-                _sub_mod(z[a], x[b], d, width)
-        elif g == 13:  # SWAP
-            b = qb[i]
-            if a != b:
-                xa = x[a]
-                xb = x[b]
-                za = z[a]
-                zb = z[b]
-                for s in range(width):
-                    t = xa[s]
-                    xa[s] = xb[s]
-                    xb[s] = t
-                    t = za[s]
-                    za[s] = zb[s]
-                    zb[s] = t
-        elif g == 22:  # MUL: X -> X^a, Z -> Z^(a^-1)
-            ma = pa[i]
-            xr = x[a]
-            for s in range(width):
-                xr[s] = xr[s] * ma % d
-            if f & _Z_A:
-                mi = pb[i]
-                zr = z[a]
-                for s in range(width):
-                    zr[s] = zr[s] * mi % d
-
-
-@njit(cache=True)
-def _frame_lazy(op, qa, qb, pa, pb, zf, z_live0, d, n_qudits, shots, block, records,
-                kinds, modes, log_q, cdf_offset, cdf_data, cdf_len, seed):
-    """Runs the whole frame simulation with sampled noise, one block of shots at a time."""
-    noise = np.zeros((0, 0, 4), dtype=np.int64)
-    rng = np.zeros(4, dtype=np.uint64)
-    _rng_seed(rng, seed)
-    # First shot on which each geometric noise gate fires; the gates then step through the
-    # blocks in order, so each gate needs O(1) work per block plus O(1) per error.
-    next_hit = np.zeros(kinds.shape[0], dtype=np.int64)
-    for k in range(kinds.shape[0]):
-        if modes[k] == _NOISE_GEOMETRIC:
-            next_hit[k] = _rng_next_hit(rng, log_q[k], -1, shots)
-    width = min(block, shots)
-    x = np.zeros((n_qudits, width), dtype=np.int64)
-    z = np.zeros((n_qudits, width), dtype=np.int64)
-    col0 = 0
+    col0 = np.int64(0)
     while col0 < shots:
-        width = min(block, shots - col0)
-        x[:, :] = 0
-        for q in range(n_qudits):
-            if z_live0[q]:
-                _rng_fill_below(rng, d, z[q], width)
-        _frame_ops(op, qa, qb, pa, pb, zf, 0, op.shape[0], d, x, z, width, records, col0, shots,
-                   noise, kinds, modes, log_q, next_hit, cdf_offset, cdf_data, cdf_len, rng, True)
+        if lazy:
+            width = min(block, shots - col0)
+            x[:, :] = 0
+            for q in range(z_live0.shape[0]):
+                if z_live0[q]:
+                    _rng_fill_below(rng, d, z[q], width)
+        else:
+            width = shots
+        for i in range(start, end):
+            g = op[i]
+            a = qa[i]
+            f = zf[i]
+            if g == 9:  # CNOT
+                b = qb[i]
+                _add_mod(x[b], x[a], d, width)
+                if f & _Z_A:
+                    _sub_mod(z[a], z[b], d, width)
+            elif g == 17 or g == 18:  # noise
+                b = qb[i]
+                k = pa[i]
+                if lazy:
+                    mode = modes[k]
+                    # Fast path: most gates have no error in most blocks.
+                    if mode == _NOISE_NEVER or (mode == _NOISE_GEOMETRIC and next_hit[k] >= col0 + width):
+                        continue
+                    _apply_lazy_noise(k, a, b, f, x, z, d, width, col0, shots, kinds, modes, log_q, next_hit,
+                                      cdf_offset, cdf_data, cdf_len, rng)
+                else:
+                    _add_injected_noise(x, z, a, b, f, g == 18, noise, k, d, width)
+            elif g == 15:  # M_X: the outcome is the Z part, which stays; the X part becomes random
+                zr = z[a]
+                rec = records[pa[i]]
+                for s in range(width):
+                    rec[col0 + s] = zr[s]
+                if lazy:
+                    _rng_fill_below(rng, d, x[a], width)
+            elif g == 14 or g == 16:  # M, RESET
+                xr = x[a]
+                rec = records[pa[i]]
+                for s in range(width):
+                    rec[col0 + s] = xr[s]
+                if g == 16:  # RESET corrects the outcome back to |0>
+                    for s in range(width):
+                        xr[s] = 0
+                if lazy and (f & _Z_A):
+                    _rng_fill_below(rng, d, z[a], width)
+            elif g == 5:  # H
+                xr = x[a]
+                zr = z[a]
+                if f & _Z_A:
+                    for s in range(width):
+                        t = xr[s]
+                        v = zr[s]
+                        xr[s] = d - v if v != 0 else 0
+                        zr[s] = t
+                else:
+                    for s in range(width):
+                        v = zr[s]
+                        xr[s] = d - v if v != 0 else 0
+            elif g == 6:  # H inverse
+                xr = x[a]
+                zr = z[a]
+                if f & _Z_A:
+                    for s in range(width):
+                        t = xr[s]
+                        xr[s] = zr[s]
+                        zr[s] = d - t if t != 0 else 0
+                else:
+                    for s in range(width):
+                        xr[s] = zr[s]
+            elif g == 7:  # P
+                if f & _Z_A:
+                    _add_mod(z[a], x[a], d, width)
+            elif g == 8:  # P inverse
+                if f & _Z_A:
+                    _sub_mod(z[a], x[a], d, width)
+            elif g == 10:  # CNOT inverse
+                b = qb[i]
+                _sub_mod(x[b], x[a], d, width)
+                if f & _Z_A:
+                    _add_mod(z[a], z[b], d, width)
+            elif g == 11:  # CZ
+                b = qb[i]
+                if f & _Z_B:
+                    _add_mod(z[b], x[a], d, width)
+                if f & _Z_A:
+                    _add_mod(z[a], x[b], d, width)
+            elif g == 12:  # CZ inverse
+                b = qb[i]
+                if f & _Z_B:
+                    _sub_mod(z[b], x[a], d, width)
+                if f & _Z_A:
+                    _sub_mod(z[a], x[b], d, width)
+            elif g == 13:  # SWAP
+                b = qb[i]
+                if a != b:
+                    xa = x[a]
+                    xb = x[b]
+                    za = z[a]
+                    zb = z[b]
+                    for s in range(width):
+                        t = xa[s]
+                        xa[s] = xb[s]
+                        xb[s] = t
+                        t = za[s]
+                        za[s] = zb[s]
+                        zb[s] = t
+            elif g == 22:  # MUL: X -> X^a, Z -> Z^(a^-1)
+                ma = pa[i]
+                xr = x[a]
+                for s in range(width):
+                    xr[s] = xr[s] * ma % d
+                if f & _Z_A:
+                    mi = pb[i]
+                    zr = z[a]
+                    for s in range(width):
+                        zr[s] = zr[s] * mi % d
+
         col0 += width
 
 
@@ -725,7 +739,9 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
     num_noise = noise_ops.shape[0]
     pa[noise_ops] = np.arange(num_noise, dtype=np.int64)
 
-    zf, z_live0 = _z_liveness(op, qa, qb, n_qudits)
+    zf = np.zeros(num_ops, dtype=np.int64)
+    z_live0 = np.zeros(n_qudits, dtype=np.bool_)
+    _z_liveness(op, qa, qb, zf, z_live0)
     # Records hold values in [0, d) with d < 2**31, so int32 is exact and halves their memory.
     records = np.empty((num_records, shots), dtype=np.int32)
 
@@ -751,8 +767,16 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
         # One draw from NumPy's global generator seeds the kernel's generator.
         seed = np.uint64(np.random.randint(0, 2 ** 64, dtype=np.uint64))
         if shots:
-            _frame_lazy(op, qa, qb, pa, pb, zf, z_live0, d, n_qudits, shots, _frame_block_size(n_qudits, bool(zf.any() or z_live0.any())),
-                        records, kinds, modes, log_q, cdf_offset, cdf_data, cdf_len, seed)
+            block = _frame_block_size(n_qudits, bool(zf.any() or z_live0.any()))
+            width = min(block, shots)
+            x = np.zeros((n_qudits, width), dtype=np.int64)
+            z = np.zeros((n_qudits, width), dtype=np.int64)
+            rng = np.zeros(4, dtype=np.uint64)
+            next_hit = np.zeros(kinds.shape[0], dtype=np.int64)
+            _init_sampled_noise(rng, seed, modes, log_q, shots, next_hit)
+            _frame_ops(op, qa, qb, pa, pb, zf, 0, num_ops, d, x, z, z_live0, block, records, shots,
+                       np.zeros((0, 0, 4), dtype=np.int64), kinds, modes, log_q, next_hit,
+                       cdf_offset, cdf_data, cdf_len, rng, True)
     else:
         # Injected noise: same random draws, in the same order, as the previous sampler.
         if num_noise:
@@ -776,7 +800,7 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
         z = np.ascontiguousarray(np.random.randint(0, d, size=(n_qudits, shots)), dtype=np.int64)
         start = 0
         for pos in record_ops.tolist():
-            _frame_ops(op, qa, qb, pa, pb, zf, start, pos + 1, d, x, z, shots, records, 0, shots,
+            _frame_ops(op, qa, qb, pa, pb, zf, start, pos + 1, d, x, z, z_live0, shots, records, shots,
                        noise, empty_i, empty_i, empty_f, empty_i, empty_i, empty_f, 0, rng, False)
             row = np.random.randint(0, d, size=shots)
             if op[pos] == 15:   # M_X is H_INV, M, then H: the random Z row ends up as -row in X
@@ -784,7 +808,7 @@ def _run_frame(ir_array: np.ndarray, reference_results: np.ndarray, n_qudits: in
             else:
                 z[qa[pos]] = row
             start = pos + 1
-        _frame_ops(op, qa, qb, pa, pb, zf, start, num_ops, d, x, z, shots, records, 0, shots,
+        _frame_ops(op, qa, qb, pa, pb, zf, start, num_ops, d, x, z, z_live0, shots, records, shots,
                    noise, empty_i, empty_i, empty_f, empty_i, empty_i, empty_f, 0, rng, False)
 
     detector_results = _evaluate_detectors(gate_ids, records, measurement_rows, detector_info, shots)
@@ -833,6 +857,114 @@ def _detector_mod(value, d: int):
         _floor_mod_int64(flat, d, out)
         return out.reshape(value.shape)
     return value % d
+
+
+# A measurement record reference in a detector or observable expression: rec indexed by an
+# integer literal with an optional sign, written rec[-1], rec[0], rec[+1], rec[ - 1], rec [2], ...
+# Brackets that do not index rec (a list literal [5, 7][1], ...) are left as they are.
+_RECORD_REFERENCE = re.compile(r"\brec\s*\[\s*([+-]?)\s*(\d+)\s*\]")
+# Any indexing of rec, to catch references that are not integer literals (rec[i], rec[-1 - 1], ...)
+_REC_INDEXING = re.compile(r"\brec\s*\[")
+
+
+def _resolve_record_references(source: str, num_records: int, name: str) -> tuple[str, list[int]]:
+    """
+    Resolves the measurement record references of a detector or observable expression.
+
+    Records are the M and M_X outcomes, numbered 0, 1, ... in circuit order over the whole
+    program (RESET does not add one).  rec[k] with k >= 0 is record k, and rec[-k] is the k-th
+    most recent record before the detector, like Python indexing, so with n records so far
+    -n <= k < n is required; anything else raises a ValueError naming the detector.  Only
+    indexing of rec is a record reference; other brackets in the expression keep their meaning.
+
+    Returns the expression with every reference rewritten as rec[j], where j is its position in
+    the returned list of distinct absolute record indices (in order of first use).  Two
+    references to the same record (rec[1] and rec[-1] with 2 records, ...) share one position.
+    The compiled detector function is called with the shift rows of those records, in that order.
+    """
+    for match in _REC_INDEXING.finditer(source):
+        if not _RECORD_REFERENCE.match(source, match.start()):
+            raise ValueError(f"{name} indexes rec with something other than an integer: {source!r}. "
+                             "Write record references as integer literals, like rec[-1] or rec[2].")
+    arguments = []
+    position = {}
+
+    def resolve(match):
+        k = int(match.group(1) + match.group(2))
+        if not -num_records <= k < num_records:
+            if num_records == 0:
+                available = "no measurement (M or M_X) comes before it"
+            else:
+                available = (f"only {num_records} measurement{'s' if num_records != 1 else ''} (M or M_X) "
+                             f"{'come' if num_records != 1 else 'comes'} before it, so the index must be "
+                             f"in [{-num_records}, {num_records - 1}]")
+            raise ValueError(f"{name} refers to rec[{k}], but {available}.")
+        absolute = k + num_records if k < 0 else k
+        j = position.get(absolute)
+        if j is None:
+            j = position[absolute] = len(arguments)
+            arguments.append(absolute)
+        return f"rec[{j}]"
+
+    return _RECORD_REFERENCE.sub(resolve, source), arguments
+
+
+def _records_needed(source: str) -> int | None:
+    """
+    The fewest measurement records before a detector with this expression for all of its record
+    references to be in range (rec[k] needs k + 1 for k >= 0, and -k for k < 0), or None when
+    it indexes rec with something other than an integer literal.
+    """
+    needed = 0
+    for match in _REC_INDEXING.finditer(source):
+        reference = _RECORD_REFERENCE.match(source, match.start())
+        if reference is None:
+            return None
+        k = int(reference.group(1) + reference.group(2))
+        needed = max(needed, -k if k < 0 else k + 1)
+    return needed
+
+
+def _detector_name(instruction: CircuitInstruction, index: int) -> str:
+    """
+    How errors name a DETECTOR or LOGICAL_OBSERVABLE: by its index among the detectors (or among
+    the observables), followed by its label unless the label is empty, as in DETECTOR 3 or
+    DETECTOR 6 (label 'parity').  A label such as 5 then cannot be mistaken for an index.
+    """
+    label = instruction.params.get('label', '')
+    if isinstance(label, str) and label == '':
+        return f"{instruction.name} {index}"
+    return f"{instruction.name} {index} (label {label!r})"
+
+
+def _check_record_references(circuits: list) -> None:
+    """
+    Checks the record references of every DETECTOR and LOGICAL_OBSERVABLE expression, as
+    Program._build_ir does, without compiling anything: a ValueError names the first one that
+    refers to a measurement that does not exist (yet) or indexes rec with a non-integer.
+    The tableau simulation does not evaluate detectors, so it runs this check instead.
+    Each distinct expression is parsed once, so repeated detectors cost a dictionary lookup.
+    """
+    seen_measurements = 0
+    counts = {19: 0, 20: 0}
+    needed_by_source = {}
+    for circuit in circuits:
+        for instruction in circuit.operations:
+            gate_id = instruction.gate_id
+            if gate_id == 14 or gate_id == 15:
+                seen_measurements += 1
+            elif gate_id == 19 or gate_id == 20:
+                params = instruction.params
+                if params and 'expr' in params:
+                    source = str(params['expr'])
+                    needed = needed_by_source.get(source, -1)
+                    if needed == -1:
+                        needed = needed_by_source[source] = _records_needed(source)
+                    if needed is None or needed > seen_measurements:
+                        # Raises the error that names the detector and the bad reference.
+                        _resolve_record_references(source, seen_measurements,
+                                                   _detector_name(instruction, counts[gate_id]))
+                counts[gate_id] += 1
 
 
 def _compile_detector(source: str, dimension: int):
@@ -1024,6 +1156,8 @@ class Program:
                 exact=exact,
                 raw_detector_output=raw_detector_output
             )
+        # Every mode checks the detector record references up front, before simulating anything.
+        _check_record_references(self.circuits)
         if options.shots > 1 and not options.record_tableau and not options.force_tableau:
             tableau_options = copy.copy(options)
             tableau_options.shots = 1
@@ -1192,13 +1326,14 @@ class Program:
         """
         def measurement_to_tuple(m: MeasurementResult, meas_round: int = 0, shot: int = 0):
             return (m.qudit_index, meas_round, shot, m.deterministic, m.measurement_value)
-        # TODO: make this check a little less truthy and more explicitly against a list of empty measurement outcomes.
-        # TODO: actually, make sure program is okay even if there are no measurements...for some reason.
         # Ensure the list is not empty and has the expected nested structure.
         if not measurements:
             raise ValueError("Empty measurement results format")
 
-        # TODO: make this robust against all elements of measurements being empty, ie None
+        # A circuit without measurements: no rounds on any qudit.
+        if not any(measurements):
+            return np.empty((len(measurements), 0), dtype=MEASUREMENT_DTYPE)
+
         # find the first non-empty element of the list
         j = 0
         while (not measurements[j]):
@@ -1411,8 +1546,6 @@ class Program:
         for circuit in circuits:
 
             #TODO: Repeater blocks for detectors that link detectors to earlier detector expressions
-            unique_detector_index = 0
-
             for instruction in circuit.operations:
                 if instruction.gate_id == 0:
                     continue
@@ -1426,7 +1559,11 @@ class Program:
                     scalar = instruction.params.get('a', instruction.params.get('scalar'))
                     if scalar is None:
                         raise ValueError("Multiplication gate requires an 'a' parameter.")
-                    scalar = int(scalar)
+                    # Only a mod d matters, and reducing it here keeps any integer a (even one
+                    # beyond int64) in the int64 IR field.  Same check as the tableau's multiply.
+                    scalar = int(scalar) % dimension
+                    if math.gcd(scalar, dimension) != 1:
+                        raise ValueError(f"Scalar {scalar} is not coprime with the dimension {dimension}.")
 
                 ir_list.append((instruction.gate_id, control_index, target_index, scalar))
 
@@ -1570,57 +1707,18 @@ class Program:
                     noise_counter += 1
 
                 if instruction.gate_id in (19, 20):
-
-                    arguments = []
-                    
                     if 'expr' not in instruction.params:
                         raise ValueError("No detector provided.")
-                    
-                    source = instruction.params['expr']
-                    # TODO: Sanitize input.
-                    # Extract argument indices and turn detector expression into a general lambda
-                    # Pattern match for "(+/-)? [index]"
-                    # Replace every instance "rec[-x]" with "rec[pj]", where j is the sequentially found index
-                    # Then replace every instance of "rec[y]" with "rec[pj]" , where y = x % dimension
-                    # After processing everything, delete all instances of "p"
-                    j = 0
-                    matches = list(re.finditer(r"\[(-?\d+)\]", source))
-                    seen_args = set()
-                    for match in matches:
-                        match_string = match.group()
-                        arg = int(match_string[1:-1]) % seen_measurements
-
-                        if arg >= seen_measurements:
-                            raise ValueError(f"Measurement event {arg} hasn't been seen at this point in the circuit.  We currently do not support defining detector instructions with future measurement indices.")
-                        
-                        #print(f"We found arg {arg}")
-
-                        if arg not in seen_args:
-                            absolute_arg = arg % seen_measurements if arg < 0 else arg
-                            #print(f"Processing arg {arg}, which is {absolute_arg} in absolute coords")
-                            arguments.append(absolute_arg)
-
-                            # Replace both the seen argument and absolute coord if applicable
-                            source = source.replace(match_string, '[p' + str(j) + ']')
-                            source = source.replace('[' + str(absolute_arg) + ']', '[p' + str(j) + ']')
-
-                            #print(f"source is now {source}")
-                            seen_args.add(arg)
-                            seen_args.add(absolute_arg)
-                            j += 1
-            
-                    #print('raw DETECTOR HERE IS lambda rec : (' + str(source) + ") % " + str(dimension))
-                    source = source.replace('p', '')
-                    #print(f'DETECTOR HERE IS lambda rec : ({source}) % {dimension} with arguments \n {arguments}')
-                    detector = _compile_detector(str(source), dimension)
-                    # Store lambdas in a map
-                    detector_list.append(detector)
-                    # Store detector data
+                    is_logical = instruction.gate_id == 20
                     label = instruction.params['label'] if 'label' in instruction.params else ''
-                    is_logical = True if instruction.gate_id == 20 else False
-                    detector_data.append((unique_detector_index, label, arguments, is_logical))
+                    name = _detector_name(instruction, num_logical_operators if is_logical else num_detector_events)
+                    # TODO: Sanitize input; the expression is evaluated as Python code.
+                    source, arguments = _resolve_record_references(
+                        str(instruction.params['expr']), seen_measurements, name)
+                    # Store the compiled function, and the detector data that points to it
+                    detector_data.append((len(detector_list), label, arguments, is_logical))
+                    detector_list.append(_compile_detector(source, dimension))
 
-                    unique_detector_index += 1
                     if instruction.gate_id == 19:
                         num_detector_events += 1
                     else:

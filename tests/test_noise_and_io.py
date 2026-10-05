@@ -66,7 +66,7 @@ def generic_read_write_test(has_noise : bool = True):
     passed_test = True
     depth = random.randint(0, 100000)
     dimension = 5
-    num_qudits = random.randint(0, 100)
+    num_qudits = random.randint(2, 100)  # random_multi_qudit_circuit needs at least 2
     c = random_multi_qudit_circuit(depth=depth, dimension=dimension, num_qudits=num_qudits, sample_with_noise_gates=has_noise)
 
     write_circuit(circuit=c, output_file="test_no_noise_io.chp", comment="To go where no test has ever gone.")
