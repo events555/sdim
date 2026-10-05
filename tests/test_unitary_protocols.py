@@ -75,6 +75,19 @@ def test_multiplication_gate_inverse_takes_numpy_integers():
             unitary.GeneralizedMultiplicationGate(d, a) ** -1
 
 
+# Some of these checks are newer than cirq-core 1.0, the declared floor; run the ones it has.
+_CIRQ_CHECKS = [getattr(cirq.testing, name) for name in (
+    "assert_specifies_has_unitary_if_unitary",
+    "assert_has_consistent_qid_shape",
+    "assert_has_consistent_apply_unitary",
+    "assert_all_implemented_act_on_effects_match_unitary",
+    "assert_decompose_is_consistent_with_unitary",
+    "assert_unitary_is_consistent",
+    "assert_controlled_and_controlled_by_identical",
+    "assert_controlled_unitary_consistent",
+) if hasattr(cirq.testing, name)]
+
+
 @pytest.mark.parametrize("d", DIMENSIONS)
 def test_gates_pass_cirq_protocol_checks(d):
     """
@@ -88,14 +101,8 @@ def test_gates_pass_cirq_protocol_checks(d):
             if power is None:
                 continue
             assert cirq.has_unitary(power) is True
-            cirq.testing.assert_specifies_has_unitary_if_unitary(power)
-            cirq.testing.assert_has_consistent_qid_shape(power)
-            cirq.testing.assert_has_consistent_apply_unitary(power)
-            cirq.testing.assert_all_implemented_act_on_effects_match_unitary(power)
-            cirq.testing.assert_decompose_is_consistent_with_unitary(power)
-            cirq.testing.assert_unitary_is_consistent(power)
-            cirq.testing.assert_controlled_and_controlled_by_identical(power)
-            cirq.testing.assert_controlled_unitary_consistent(power)
+            for check in _CIRQ_CHECKS:
+                check(power)
     assert cirq.has_unitary(unitary.GeneralizedMultiplicationGate(d, 0)) is False
 
 
