@@ -13,6 +13,7 @@ from numba import prange
 from numba.core import types
 from numba.typed import Dict
 import numpy as np
+import ast
 import contextlib
 import copy
 import gc
@@ -843,22 +844,42 @@ def _floor_mod_int64(values, d, out):
             out[i] = v % d
 
 
+_INT64 = np.dtype(np.int64)
+
+
 def _detector_mod(value, d: int):
     """
-    Returns value % d, the last step of every compiled detector expression.
+    Returns value % d, the last step of every compiled detector expression.  In the frame sampler,
+    ring expressions are evaluated exactly mod d; other expressions are evaluated with NumPy int64
+    arithmetic as before, which is exact as long as their intermediate values stay within int64.
 
     NumPy's int64 remainder costs a hardware division per entry, which dominates detector
     evaluation in the frame sampler, so plain int64 arrays go through _floor_mod_int64 instead.
     Every other input (Python ints, scalars, other dtypes) uses the % operator itself, so the
     result is the same as `value % d` for any input.
     """
-    if (type(value) is np.ndarray and value.dtype == np.int64 and value.ndim > 0
+    if (type(value) is np.ndarray and value.dtype == _INT64 and value.ndim > 0
             and type(d) is int and 0 < d < 2 ** 62):
-        flat = np.ascontiguousarray(value).reshape(-1)
-        out = np.empty(flat.shape[0], dtype=np.int64)
+        flat = np.ascontiguousarray(value)
+        if flat.ndim > 1:
+            flat = flat.reshape(-1)
+        out = np.empty(flat.shape[0], dtype=_INT64)
         _floor_mod_int64(flat, d, out)
-        return out.reshape(value.shape)
+        # Detector values are rows, and reshaping costs as much as the remainder for a few shots.
+        return out if value.ndim == 1 else out.reshape(value.shape)
     return value % d
+
+
+def _pow_mod(base, exponent: int, d: int):
+    """base ** exponent mod d for |base| < d and exponent >= 1, reducing every product mod d."""
+    result = None
+    while True:
+        if exponent & 1:
+            result = base if result is None else _detector_mod(result * base, d)
+        exponent >>= 1
+        if not exponent:
+            return result
+        base = _detector_mod(base * base, d)
 
 
 # A measurement record reference in a detector or observable expression: rec indexed by an
@@ -969,19 +990,424 @@ def _check_record_references(circuits: list) -> None:
                 counts[gate_id] += 1
 
 
+# --------------------------------------------------------------------------
+# Ring expressions in the frame sampler
+#
+# The frame sampler evaluates detector expressions on int64 rows of record values in [0, d).  A sum
+# of a few products already leaves int64 for d near 2**31, as do literals of 2**63 or more and
+# powers of records at any d.  Ring expressions are built from integer literals, rec[j], +, -,
+# unary + and -, *, ** by a non-negative literal and % by a literal that d divides, so they need
+# their operands only mod d.  The frame sampler evaluates one that could leave int64 by calling its
+# compiled function on _RingRows, which reduce operands mod d where needed (see _detector_values).
+
+_INT64_MAX = 2 ** 63 - 1
+
+# A sum of terms c * rec[j], c * c', rec[j] and c with c, c' < 10**4, with any signs.  Each term is
+# below 10**4 * 2**31 < 2**45, and a source shorter than 2**17 characters has fewer than 2**16
+# terms, so evaluating it stays inside int64.  The quantifiers are possessive, which is faster: no
+# source of this shape needs backtracking.
+_LINEAR_TERM = r"(?:[0-9]{1,4}+\s*+\*\s*+)?+(?:rec\[[0-9]++\]|[0-9]{1,4}+)"
+_SMALL_LINEAR = re.compile(rf"[-+\s]*+{_LINEAR_TERM}(?:\s*+[-+][-+\s]*+{_LINEAR_TERM})*+\s*+")
+# The same for literals of any size, and one of its terms, read as (c, c') for c * c', (c, '') for
+# c * rec[j], ('', c) for c and ('', '') for rec[j].
+_ANY_LINEAR_TERM = r"(?:[0-9]++\s*+\*\s*+)?+(?:rec\[[0-9]++\]|[0-9]++)"
+_LINEAR = re.compile(rf"[-+\s]*+{_ANY_LINEAR_TERM}(?:\s*+[-+][-+\s]*+{_ANY_LINEAR_TERM})*+\s*+")
+_LINEAR_TERMS = re.compile(r"(?:([0-9]++)\s*+\*\s*+)?+(?:rec\[[0-9]++\]|([0-9]++))")
+# The tokens of ring expressions: rec[j], integer literals, + - * % ( ), white space and line
+# continuations.  Besides arithmetic with the rows, they only make calls and empty tuples, such as
+# rec[0](1) and (), which fail on _RingRows with _NotRing or a TypeError.  The first pattern is a
+# faster one for the usual spelling: rec[j] as _resolve_record_references writes it and decimal
+# literals.
+_RING_TOKENS_FAST = re.compile(r"[-+*%()\s0-9]*+(?:rec\[[0-9]++\][-+*%()\s0-9]*+)*+")
+_RING_TOKENS = re.compile(r"(?:[-+*%()\s]|\\\r?\n|rec\s*+\[\s*+[-+]?+\s*+[0-9]++\s*+\]"
+                          r"|(?:0[xX][0-9a-fA-F_]++|0[oO][0-7_]++|0[bB][01_]++|[0-9][0-9_]*+)(?![\w.]))*+")
+
+
+class _NotRing(Exception):
+    """An operation that _RingRows cannot follow (see _RingEvaluation)."""
+
+
+class _RingEvaluation:
+    """
+    One call of a compiled detector function on _RingRows, for a dimension d below 2**31.
+
+    `reduced` says whether an operand was reduced mod d, after which the rows hold values only mod
+    d.  `other` says whether a % that is not a ring operation ran, which the rows follow in int64
+    as the compiled function would.  A call that needs both raises _NotRing, as does an operand
+    that is neither an int nor a _RingRow, or a power by anything but an int k >= 0.
+    """
+    __slots__ = ('d', 'reduced', 'other')
+
+    def __init__(self, d: int):
+        self.d = d
+        self.reduced = False
+        self.other = False
+
+    def mark_reduced(self):
+        if self.other:
+            raise _NotRing
+        self.reduced = True
+
+    def term(self, x):
+        """The (row or int, bound on its magnitude) of an operand."""
+        if type(x) is _RingRow:
+            return x.row, x.bound
+        if type(x) is not int:
+            raise _NotRing
+        return (x, abs(x)) if abs(x) <= _INT64_MAX else self.reduce((x, abs(x)))
+
+    def reduce(self, term):
+        """The term mod d: as it is if its magnitude is below d, an int's residue of least magnitude, or the row mod d."""
+        value, bound = term
+        if bound < self.d:
+            return term
+        self.mark_reduced()
+        if type(value) is int:
+            r = value % self.d
+            if r > self.d // 2:
+                r -= self.d
+            return r, abs(r)
+        return _detector_mod(value, self.d), self.d - 1
+
+    def ring(self, op, a, b):
+        """op(a, b) for op in operator.add, sub and mul, on _RingRows and ints."""
+        a, b = self.term(a), self.term(b)
+        combine = operator.mul if op is operator.mul else operator.add
+        # The right operand first: long sums nest to the left, so this reduces their terms rather
+        # than the running sum.  Two reduced operands never leave int64, as (d - 1)**2 < 2**62.
+        if combine(a[1], b[1]) > _INT64_MAX:
+            b = self.reduce(b)
+            if combine(a[1], b[1]) > _INT64_MAX:
+                a = self.reduce(a)
+        return _RingRow(op(a[0], b[0]), combine(a[1], b[1]), self)
+
+    def power(self, base, k):
+        """base ** k for a _RingRow base and an int k >= 0."""
+        if type(k) is not int or k < 0:
+            raise _NotRing
+        term = self.term(base)
+        bound = _power_bound(term[1], k)
+        if bound is None:
+            term = self.reduce(term)
+            bound = _power_bound(term[1], k)
+        if bound is None:
+            self.mark_reduced()
+            return _RingRow(_pow_mod(term[0], k, self.d), self.d - 1, self)
+        # NumPy's integer power squares and multiplies, so no intermediate value is larger than
+        # the bound on the result.
+        return _RingRow(term[0] ** k, bound, self)
+
+    def modulo(self, a, b):
+        """a % b, where a or b is a _RingRow.  % by a nonzero int multiple of d is a ring operation."""
+        if type(b) is int and b and b % self.d == 0:
+            if abs(b) > _INT64_MAX:
+                self.mark_reduced()
+                return a  # a % b is a mod d
+            return _RingRow(_detector_mod(a.row, b), abs(b) - 1, self)
+        if self.reduced:
+            raise _NotRing
+        self.other = True
+        a, b = self.term(a), self.term(b)
+        return _RingRow(a[0] % b[0], max(b[1] - 1, 0), self)  # NumPy gives 0 for % 0
+
+
+def _power_bound(bound: int, k: int):
+    """A bound on |x ** k| for |x| <= bound and k >= 0, or None if it or k could leave int64."""
+    if k > _INT64_MAX or (k >= 63 and bound > 1):
+        return None
+    power = bound ** k
+    return power if power <= _INT64_MAX else None
+
+
+def _ring_operator(op, reflected: bool):
+    """The _RingRow method for op in operator.add, sub and mul, or its reflection."""
+    combine = operator.mul if op is operator.mul else operator.add
+
+    def method(self, other):
+        if type(other) is _RingRow:
+            bound, value = combine(self.bound, other.bound), other.row
+        elif type(other) is int and -_INT64_MAX <= other <= _INT64_MAX:
+            bound, value = combine(self.bound, abs(other)), other
+        else:
+            bound = None
+        if bound is None or bound > _INT64_MAX:
+            return self.evaluation.ring(op, other, self) if reflected else self.evaluation.ring(op, self, other)
+        return _RingRow(op(value, self.row) if reflected else op(self.row, value), bound, self.evaluation)
+    return method
+
+
+class _RingRow:
+    """
+    The values of part of a detector expression, one int64 entry per shot, with a bound on their
+    magnitude over all record rows in [0, d).  Its operators reduce operands mod d only where a
+    value could leave int64, so the row holds the part's int64 values until an operand is reduced,
+    and its values mod d after.
+    """
+    __slots__ = ('row', 'bound', 'evaluation')
+
+    def __init__(self, row, bound, evaluation):
+        self.row = row
+        self.bound = bound
+        self.evaluation = evaluation
+
+    __add__ = _ring_operator(operator.add, False)
+    __radd__ = _ring_operator(operator.add, True)
+    __sub__ = _ring_operator(operator.sub, False)
+    __rsub__ = _ring_operator(operator.sub, True)
+    __mul__ = _ring_operator(operator.mul, False)
+    __rmul__ = _ring_operator(operator.mul, True)
+
+    def __neg__(self):
+        return _RingRow(-self.row, self.bound, self.evaluation)
+
+    def __pos__(self):
+        return self
+
+    def __pow__(self, k):
+        return self.evaluation.power(self, k)
+
+    def __mod__(self, other):
+        return self.evaluation.modulo(self, other)
+
+    def __rmod__(self, other):
+        return self.evaluation.modulo(other, self)
+
+
+def _int_literal(node):
+    """The value of an integer literal (not a bool) with an optional sign, or None."""
+    sign = 1
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        sign = -1 if isinstance(node.op, ast.USub) else 1
+        node = node.operand
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return sign * node.value
+    return None
+
+
+# The nodes of a ring expression's syntax tree.
+_RING_NODES = frozenset([ast.Expression, ast.Constant, ast.Subscript, ast.Name, ast.Load, ast.UnaryOp, ast.UAdd,
+                         ast.USub, ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Mod, ast.Pow])
+
+
+def _ring_tree(source: str, d: int):
+    """
+    The syntax tree of a source made of _RING_TOKENS if it is a ring expression, else None: no
+    call or tuple, every % by an integer literal that d divides and every ** by a non-negative one.
+    _RingRows see only the values of these operands, which may come from arithmetic on literals
+    instead.
+    """
+    try:
+        tree = ast.parse(source.lstrip(), mode='eval')  # alone, leading white space is an unexpected indent
+    except (SyntaxError, RecursionError):
+        return None
+    for node in ast.walk(tree):
+        if type(node) not in _RING_NODES:
+            return None
+        if type(node) is ast.BinOp and type(node.op) in (ast.Mod, ast.Pow):
+            k = _int_literal(node.right)
+            if k is None or (k == 0 or k % d if isinstance(node.op, ast.Mod) else k < 0):
+                return None
+    return tree
+
+
+# The exponent of a ** when it is an integer literal.
+_EXPONENT = re.compile(r"\*\*\s*+[(+\s]*+(0[xXoObB][0-9a-fA-F_]++|[0-9][0-9_]*+)")
+
+
+def _large_powers(source: str) -> bool:
+    """
+    Whether the literal exponents in `source` are large enough (their product above 2**12, or one
+    with more than 18 digits) for a power of a constant to take long to compute, so that the frame
+    sampler evaluates it from its syntax tree (see _ring_tree_values).
+    """
+    product = 1
+    for exponent in _EXPONENT.findall(source):
+        if len(exponent) > 18:
+            return True
+        product *= max(int(exponent, 0), 1)
+    return product > 2 ** 12
+
+
+# A decimal number other than 0.
+_NONZERO_NUMBER = re.compile(r"[1-9][0-9]*+")
+
+
+def _could_leave_int64(source: str, d: int) -> bool:
+    """
+    Whether `source` is made of _RING_TOKENS and its compiled function could leave int64 on records
+    in [0, d), as far as cheap bounds tell; _RingRows decide the rest exactly.
+
+    Most detectors are short sums of records with small coefficients (see _SMALL_LINEAR).  Every
+    value of another sum of terms c * rec[j], c * c', rec[j] and c is at most the sum over its
+    terms of |c| * max(d - 1, 1), |c * c'|, max(d - 1, 1) and |c|.  In any other source of rec[j],
+    decimal literals, + - * % and parentheses, as |a % b| < |b|, every value is at most the sum of
+    max(d - 1, 1) per record and of its numbers other than 0 (literals, and record indices, which
+    only make the bound larger) if it has no *, and else their product times 2 for each + or -.
+    Literals are only read from sources of at most 4000 characters, which cannot hold one too long
+    for int().
+    """
+    if len(source) < 2 ** 17 and _SMALL_LINEAR.fullmatch(source):
+        return False
+    if len(source) <= 4000 and _LINEAR.fullmatch(source):
+        record = max(d - 1, 1)
+        return sum((int(c) if c else 1) * (int(k) if k else record)
+                   for c, k in _LINEAR_TERMS.findall(source)) > _INT64_MAX
+    if _RING_TOKENS_FAST.fullmatch(source):
+        if '**' in source or len(source) > 4000:
+            return True
+        numbers = [int(number) for number in _NONZERO_NUMBER.findall(source)]
+        if '*' not in source:
+            return sum(numbers) + max(d - 1, 1) * source.count('rec') > _INT64_MAX
+        bound = math.prod(numbers) * max(d - 1, 1) ** source.count('rec')
+        return bound << (source.count('+') + source.count('-')) > _INT64_MAX
+    return _RING_TOKENS.fullmatch(source) is not None
+
+
+# For each (source, dimension) of a function from _compile_detector that the frame sampler has
+# evaluated: True for a ring expression that needs _RingRows, the syntax tree of one with large
+# literal exponents (see _large_powers), and False for every other expression, whose function
+# gives its values itself.
+# Emptied when it gets large.
+_RING_SOURCES = {}
+
+
+def _ring_values(function, rows, d: int):
+    """The function's value on _RingRows of the int64 shift rows, as a row, and the evaluation."""
+    evaluation = _RingEvaluation(d)
+    value = function([_RingRow(row, d - 1, evaluation) for row in rows])
+    return (value.row if type(value) is _RingRow else value), evaluation
+
+
+_RING_TREE_OPERATORS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Mod: operator.mod}
+
+
+def _ring_tree_values(tree, rows, d: int):
+    """
+    The value mod d of a ring expression's syntax tree (see _ring_tree) on _RingRows of the int64
+    shift rows, as a row.  Unlike its compiled function, this takes the large powers of constants
+    mod d.  The tree is walked with a stack, as sources can nest deeply.
+    """
+    evaluation = _RingEvaluation(d)
+    rec = [_RingRow(row, d - 1, evaluation) for row in rows]
+    values = []
+    stack = [(tree.body, False)]
+    while stack:
+        node, ready = stack.pop()
+        if isinstance(node, ast.Constant):
+            values.append(node.value)
+        elif isinstance(node, ast.Subscript):
+            values.append(rec[_int_literal(node.slice)])
+        elif not ready:
+            stack.append((node, True))
+            if isinstance(node, ast.BinOp):
+                stack.append((node.right, False))
+                stack.append((node.left, False))
+            else:
+                stack.append((node.operand, False))
+        elif isinstance(node, ast.UnaryOp):
+            value = values.pop()
+            values.append(-value if isinstance(node.op, ast.USub) else value)
+        else:
+            right = values.pop()
+            left = values.pop()
+            if isinstance(node.op, ast.Pow):
+                if type(left) is int and abs(left) > 1 and left.bit_length() * right > 2 ** 16:
+                    evaluation.mark_reduced()
+                    values.append(pow(left, right, d))
+                else:
+                    values.append(left ** right)
+            else:
+                values.append(_RING_TREE_OPERATORS[type(node.op)](left, right))
+    value = values[0] % d
+    return value.row if type(value) is _RingRow else value
+
+
+def _detector_values(function, compiled_from, rows):
+    """
+    The values of a function from _compile_detector on int64 shift rows: exact mod d for a ring
+    expression, and the function's own int64 values for any other.  The first call for each
+    (source, dimension) finds out which, and records it in _RING_SOURCES; a call that fails for
+    another reason, such as rows that do not fit the expression, records nothing.
+    """
+    source, dimension = compiled_from
+    mode = _RING_SOURCES.get(compiled_from)
+    if mode is True:
+        return _ring_values(function, rows, int(dimension))[0]
+    if mode is False:
+        return function(rows)
+    if mode is not None:
+        return _ring_tree_values(mode, rows, int(dimension))
+    mode = False
+    values = None
+    d = int(dimension) if isinstance(dimension, (int, np.integer)) else 0
+    if 1 <= d < 2 ** 31 and _could_leave_int64(source, d):
+        if '**' in source and _large_powers(source):
+            tree = _ring_tree(source, d)
+            if tree is not None:
+                mode = tree
+                values = _ring_tree_values(tree, rows, d)
+        else:
+            try:
+                values, evaluation = _ring_values(function, rows, d)
+            except (_NotRing, TypeError):
+                pass  # not a ring expression, whatever the rows: the function gives its values or raises
+            except MemoryError:
+                raise  # rather than give int64 values that may be wrong
+            except Exception:
+                # Not about the expression (rows that do not fit it, ...): record nothing, so that a
+                # later call decides, and let the function raise its own error.
+                return function(rows)
+            else:
+                # Values with no operand reduced are the function's own.
+                mode = evaluation.reduced
+                if mode and ('%' in source or '**' in source) and _ring_tree(source, d) is None:
+                    mode = False
+                    values = None
+    if len(_RING_SOURCES) >= 2 ** 14:
+        _RING_SOURCES.clear()
+    _RING_SOURCES[compiled_from] = mode
+    return function(rows) if values is None else values
+
+
+def _paired_parentheses(tokens: str, depth: int) -> str:
+    """A pattern for `tokens` with groups of them in parentheses, nested up to `depth` deep."""
+    pattern = tokens
+    for _ in range(depth):
+        pattern = rf"{tokens}(?:\({pattern}\){tokens})*+"
+    return pattern
+
+
+# A source made of rec[j], decimal literals, + - * %, spaces and tabs, and parentheses that pair
+# up (nested up to 16 deep), which is not blank.  It cannot close a parenthesis that it did not
+# open, so past its leading white space it is a complete expression on its own exactly when it is
+# one in parentheses.
+_PLAIN_SOURCE = re.compile(r"(?=[ \t]*+[^ \t])" + _paired_parentheses(r"(?:[-+*% \t0-9]++|rec\[[0-9]++\])*+", 16))
+
+
 def _compile_detector(source: str, dimension: int):
     """
     Compiles a detector expression into `lambda rec : (source) % dimension`.
 
-    When `source` is a complete expression on its own, `(source) % dimension` is that expression
-    modulo dimension, and the function computes the modulo with _detector_mod, which gives the
-    same value faster on int64 arrays.  Anything else is compiled exactly as written.
+    When `source` is a complete expression on its own (past any leading white space),
+    `(source) % dimension` is that expression modulo dimension, and the function computes the
+    modulo with _detector_mod, which gives the same value faster on int64 arrays.  Anything else
+    is compiled exactly as written.  A plain source (see _PLAIN_SOURCE) is complete when the first
+    lambda compiles, so it is compiled once.
+
+    Only a function of the first kind keeps (source, dimension), as `compiled_from`, for the frame
+    sampler: ring expressions are evaluated exactly mod d (see _RingRow); other expressions are
+    evaluated with NumPy int64 arithmetic as before, which is exact as long as their intermediate
+    values stay within int64.
     """
     try:
-        compile(source, '<detector>', 'eval')
-        return eval('lambda rec : _detector_mod((' + source + '), ' + str(dimension) + ')')
+        if not _PLAIN_SOURCE.fullmatch(source):
+            # Alone, leading white space is an unexpected indent; in the parentheses it is not.
+            compile(source.lstrip(), '<detector>', 'eval')
+        function = eval('lambda rec : _detector_mod((' + source + '), ' + str(dimension) + ')')
     except SyntaxError:
         return eval('lambda rec : (' + source + ") % " + str(dimension))
+    function.compiled_from = source, dimension
+    return function
 
 
 def _evaluate_detectors(gate_ids: np.ndarray, records: np.ndarray, measurement_rows: np.ndarray,
@@ -992,6 +1418,11 @@ def _evaluate_detectors(gate_ids: np.ndarray, records: np.ndarray, measurement_r
     Each function gets the list of shift rows (x mod d at each measurement it reads, one int64
     entry per shot) that the frame loop used to hand it.  Shift rows never change once written,
     so evaluating after the frame loop gives the same values as evaluating in place.
+
+    Ring expressions are evaluated exactly mod d: a function from _compile_detector whose ring
+    expression could leave int64 is called on _RingRows (see _detector_values).  Other expressions
+    are evaluated with NumPy int64 arithmetic as before, which is exact as long as their
+    intermediate values stay within int64.
     """
     detector_gates = gate_ids[(gate_ids == 19) | (gate_ids == 20)]
     if detector_info is None:
@@ -1005,7 +1436,12 @@ def _evaluate_detectors(gate_ids: np.ndarray, records: np.ndarray, measurement_r
     for gate_id in detector_gates.tolist():
         function_index, _, arguments, _ = detector_info.detector_data[detector_counter + lo_counter]
         shift_params = [records[measurement_rows[a]].astype(np.int64) for a in arguments]
-        value = detector_info.detector_functions[function_index](shift_params)
+        function = detector_info.detector_functions[function_index]
+        compiled_from = getattr(function, 'compiled_from', None)
+        if compiled_from is None or _RING_SOURCES.get(compiled_from) is False:
+            value = function(shift_params)
+        else:
+            value = _detector_values(function, compiled_from, shift_params)
         if gate_id == 19:
             detector_events[detector_counter] = value
             detector_counter += 1
@@ -1028,7 +1464,9 @@ def simulate_frame(ir_array: np.ndarray, reference_results: np.ndarray,
 
     The frame update loop runs in a compiled kernel and keeps every frame entry reduced mod d,
     so it cannot overflow for any dimension below 2**31.  Detector and observable expressions
-    are evaluated by their compiled Python functions on the measurement shifts.
+    are evaluated on the measurement shifts: ring expressions (see _RingRow) are evaluated
+    exactly mod d; other expressions are evaluated with NumPy int64 arithmetic as before, which
+    is exact as long as their intermediate values stay within int64.
     
     Args:
         ir_array: Array of (gate_id, qudit_index, target_index, scalar) tuples
@@ -1519,7 +1957,8 @@ class Program:
                 m = int(frame_run.record_round[r])
                 if m >= len(self.measurement_results[q]):
                     continue
-                np.add(frame_run.records[r], reference_results[q, m]['measurement_value'], out=values)
+                # The int64 loop: NumPy 1.x would add the int32 records to the reference value in int32.
+                np.add(frame_run.records[r], reference_results[q, m]['measurement_value'], out=values, dtype=np.int64)
                 np.remainder(values, dimension, out=values)
                 deterministic = bool(reference_results[q, m]['deterministic'])
                 self.measurement_results[q][m].extend(map(

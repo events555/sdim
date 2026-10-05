@@ -70,7 +70,7 @@ def _reference_frame(ir_array, reference_results, n_qudits, d, shots, noise_arra
             ref = int(reference_results[a, m]['measurement_value'])
             values[(a, m)] = np.array([(ref + v) % d for v in x[a]], dtype=np.int64)
             if gate_id != 16:
-                shifts.append(np.array([v % d for v in x[a]], dtype=np.int64))
+                shifts.append(np.array([v % d for v in x[a]], dtype=object))
             else:
                 x[a] = 0
             counts[a] += 1

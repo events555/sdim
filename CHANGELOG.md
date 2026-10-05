@@ -161,6 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix `N1` without `noise_channel`, or with the older `channel` key, raising a KeyError in frame mode
 - Fix `Circuit` building a d**4 array for the default `N2` distribution, which took about 10 s at d = 101 and needed 32 GiB at d = 257
 - Fix int64 overflow in the tableau and the frame sampler at large dimensions, which silently changed measurement outcomes
+- Fix frame-sampler detector and observable values that left int64: unreduced coefficients (such as `(10**13 + 7)*rec[-1]` at d = 1000003), dimensions near 2**31, and products or powers of records gave wrong values without an error, and integer literals of 2**63 or more raised OverflowError under NumPy 2 (below 2**64 they gave wrong values under NumPy 1.x). Detector expressions made of integer literals, `rec[j]`, `+`, `-`, `*`, `**` by a non-negative literal and `%` by a literal that d divides are now evaluated exactly mod d; other expressions are evaluated with NumPy int64 arithmetic as before, which is exact as long as their intermediate values stay within int64
+- Fix frame-sampler measurement outcomes under NumPy 1.x for d > 2**30, which added the records to the reference outcome in int32
 - Fix composite-dimension tableaus: periodic reduction mod d flipped signs for even d, measurement could return impossible outcomes, and M, M_X and RESET on a negative qudit index measured in the wrong basis
 - Fix detector expressions that combined absolute indices (`rec[2] + rec[0]` read one record twice) or, in appended circuits, used the first circuit's detectors
 - Fix frame mode for `Program(circuit, tableau=...)`, which assumed the all-zero state and returned random outcomes flagged deterministic
