@@ -1189,11 +1189,12 @@ class Program:
             # building error mechanisms enumerates every noise event up front instead.
             num_shots = options.shots - 1 if not building_error_mechanism else options.shots
 
+            num_qudits = self.stabilizer_tableau.num_qudits
             if building_error_mechanism:
-                ir_array, noise, detector_info = self._build_ir(self.circuits, num_shots, building_error_mechanism)
+                ir_array, noise, detector_info = self._build_ir(self.circuits, num_shots, building_error_mechanism, num_qudits=num_qudits)
                 noise_model = None
             else:
-                ir_array, noise, detector_info, noise_model = self._build_ir(self.circuits, num_shots, sample_noise=False)
+                ir_array, noise, detector_info, noise_model = self._build_ir(self.circuits, num_shots, sample_noise=False, num_qudits=num_qudits)
             
             # Run frame simulation
             frame_run = _run_frame(
@@ -1296,7 +1297,9 @@ class Program:
             self.stabilizer_tableau.modulo()
             if options.show_measurement:
                 print(f"Measurement results for shot {shot + 1}:")
-                self.print_measurements()
+                # Only this shot: the stored results also hold the earlier ones.
+                shot_results = [shots_list[shot] for rounds in self.measurement_results for shots_list in rounds]
+                print("\n".join(map(str, shot_results)) if shot_results else "No measurements recorded.")
 
         # Return results in the desired format.
         if options.shots == 1:
@@ -1368,6 +1371,9 @@ class Program:
         """
         Applies a gate to the stabilizer tableau.
 
+        Negative qudit indices count from the end of the program's qudits, and a measurement
+        result holds the qudit's non-negative index.
+
         Args:
             instruc (CircuitInstruction): A CircuitInstruction object from a Circuit's operation list.
 
@@ -1375,15 +1381,51 @@ class Program:
             MeasurementResult: A MeasurementResult object if the gate is a measurement gate, otherwise None.
 
         Raises:
-            ValueError: If an invalid gate value is provided.
+            ValueError: If an invalid gate value is provided, or a two-qudit gate acts on one qudit twice.
+            IndexError: If a qudit index is outside the program's qudits.
         """
-        if instruc.gate_id not in GATE_FUNCTIONS:
-            raise ValueError("Invalid gate value")
+        try:
+            gate_function = GATE_FUNCTIONS[instruc.gate_id]
+        except KeyError:
+            raise ValueError("Invalid gate value") from None
+        tableau = self.stabilizer_tableau
+        qudit_index, target_index = instruc.qudit_index, instruc.target_index
+        n = tableau.num_qudits
+        # Checked before noise gates are skipped, so the reference shot rejects the same indices
+        # as the other shots.
+        if not (qudit_index is None or 0 <= qudit_index < n) or not (target_index is None or 0 <= target_index < n):
+            qudit_index, target_index = self._qudit_positions(instruc, n)
         if not self._tableau_noise_enabled and instruc.gate_id in (17, 18):
             return None
-        gate_function = GATE_FUNCTIONS[instruc.gate_id]
-        measurement_result = gate_function(self.stabilizer_tableau, instruc.qudit_index, instruc.target_index, instruc.params)
-        return measurement_result
+        return gate_function(tableau, qudit_index, target_index, instruc.params)
+
+    @staticmethod
+    def _qudit_positions(instruc: CircuitInstruction, num_qudits: int) -> tuple:
+        """
+        Returns the qudit and target index of a gate with negative indices counted from the end
+        of the program's num_qudits qudits.  The target of a one-qudit gate, and the indices of
+        DETECTOR, LOGICAL_OBSERVABLE and TICK, are returned as they are, since nothing uses them.
+
+        Raises:
+            IndexError: If an index is not in -num_qudits .. num_qudits - 1.
+            ValueError: If both indices of a two-qudit gate are the same qudit.
+        """
+        positions = [instruc.qudit_index, instruc.target_index]
+        if instruc.gate_id in (19, 20, 21):
+            return tuple(positions)
+        two_qudit = instruc.gate_id in (9, 10, 11, 12, 13, 18)
+        for i in range(2 if two_qudit else 1):
+            index = positions[i]
+            if index is None:
+                continue
+            if not -num_qudits <= index < num_qudits:
+                raise IndexError(f"{instruc.name} acts on qudit {index}, but the program has {num_qudits} qudits.")
+            if index < 0:
+                positions[i] = index + num_qudits
+        if two_qudit and positions[0] == positions[1]:
+            raise ValueError(f"{instruc.name} needs two different qudits, but {instruc.qudit_index} and "
+                             f"{instruc.target_index} are both qudit {positions[0]} of the program's {num_qudits}.")
+        return tuple(positions)
 
     @staticmethod
     def _results_to_array(measurements: list) -> np.ndarray:
@@ -1528,7 +1570,7 @@ class Program:
         
     @staticmethod
     def _build_ir(circuits: list[Circuit], extra_shots: int, 
-    building_error_mechanism : bool = False, sample_noise : bool = True) -> tuple[np.ndarray, np.ndarray, DetectorData] | tuple[np.ndarray, None, DetectorData, NoiseModel]:
+    building_error_mechanism : bool = False, sample_noise : bool = True, num_qudits : int | None = None) -> tuple[np.ndarray, np.ndarray, DetectorData] | tuple[np.ndarray, None, DetectorData, NoiseModel]:
         """
         Builds an intermediate representation (IR) for the given circuits and also precomputes
         an array of sampled Pauli noise outcomes for noise gates (if applicable)
@@ -1541,11 +1583,14 @@ class Program:
             sample_noise (bool): When False (and not building error mechanisms), no noise is sampled here.
                 The noise output is None and a fourth element, a NoiseModel holding each noise gate's
                 parameters, is returned so that simulate_frame can sample the noise as it runs.
+            num_qudits (int, optional): The program's number of qudits, which negative qudit indices
+                count back from.  Defaults to the number of qudits of the widest circuit.
         
         Returns:
             tuple:
                 - A NumPy array of IR instructions with each element as a tuple
-                (gate_id, qudit_index, target_index, scalar).
+                (gate_id, qudit_index, target_index, scalar).  Negative qudit indices from -num_qudits
+                on are replaced by the qudit they count back to, and -1 stands for no qudit.
                 - A NumPy array of shape (num_noise_gates, extra_shots, [x_block, z_block]) containing
                 pre-sampled noise outcomes for each noise gate encountered.
                 If no noise gate is present, an empty array is returned.
@@ -1559,6 +1604,8 @@ class Program:
         detector_list = []
         detector_data = []
         dimension = circuits[0].dimension
+        if num_qudits is None:
+            num_qudits = max(circuit.num_qudits for circuit in circuits)
 
         # Detector related counters
         seen_measurements = 0
@@ -1619,8 +1666,19 @@ class Program:
                 if instruction.gate_id == 0:
                     continue
                 
-                control_index = instruction.qudit_index if instruction.qudit_index is not None else -1
-                target_index = instruction.target_index if instruction.target_index is not None else -1
+                control_index = instruction.qudit_index
+                target_index = instruction.target_index
+                # -1 means no qudit, so negative indices become the qudits they count back to;
+                # out-of-range indices are left as they are.  The sign is tested first because
+                # this runs for every instruction.
+                if control_index is None:
+                    control_index = -1
+                elif control_index < 0 and control_index >= -num_qudits:
+                    control_index += num_qudits
+                if target_index is None:
+                    target_index = -1
+                elif target_index < 0 and target_index >= -num_qudits:
+                    target_index += num_qudits
                 scalar = -1
                 if instruction.gate_id == 22:  # MUL carries its multiplier in the IR scalar field
                     if instruction.params is None:

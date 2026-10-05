@@ -434,25 +434,33 @@ class WeylTableau(Tableau):
         result does not depend on which representatives mod 2d the tableau holds.
 
         Args:
-            qudit_index (int): Index of the qudit to measure.
+            qudit_index (int): Index of the qudit to measure.  A negative index counts from the
+                end, as in NumPy and the gates.
 
         Returns:
             MeasurementResult: The result of the measurement.
+
+        Raises:
+            IndexError: If qudit_index is not in -n .. n - 1.
         """
         d, n, order = self.dimension, self.num_qudits, self.order
+        if not -n <= qudit_index < n:
+            raise IndexError(f"qudit index {qudit_index} is out of range for {n} qudits")
+        # q is an offset into the stacked [z, x] rows below, so it must not be negative.
+        q = qudit_index + n if qudit_index < 0 else qudit_index
         dtype = self._work_dtype()
         vectors = np.vstack((self.z_block, self.x_block)).astype(dtype) % order
         phases = self.phase_vector.astype(dtype) % d
         rows_left = list(range(2 * n))
 
-        x_row = n + qudit_index
+        x_row = n + q
         vectors, phases, pivot = self._eliminate_row(vectors, phases, x_row)
         rows_left.remove(x_row)
         s = 1 if pivot is None else d // gcd(int(pivot[1][x_row]) % d, d)
 
         # Reduce Z_q^-s with the commuting subgroup, one row where it is nonzero at a time.
         target_vector = np.zeros(2 * n, dtype=dtype)
-        target_vector[qudit_index] = (-s) % order
+        target_vector[q] = (-s) % order
         target = (0, target_vector)
         pivots = []
         while True:
@@ -483,7 +491,7 @@ class WeylTableau(Tableau):
 
         measurement_value = int(self._generate_measurement_outcome(kappa, eta, d))
         z_q = np.zeros(2 * n, dtype=dtype)
-        z_q[qudit_index] = 1
+        z_q[q] = 1
         self._set_generators(pivots + [(measurement_value, z_q)])
         return MeasurementResult(qudit_index=qudit_index, deterministic=False, measurement_value=measurement_value)
 
