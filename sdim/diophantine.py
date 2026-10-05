@@ -2,8 +2,9 @@
 Diophantine is a python package for solving systems of diophantine equations 
 (see https://en.wikipedia.org/wiki/Diophantine_equation). It is based on 
 PHP code by Keith Matthews (webmaster@number-theory.org) that implements the 
-algorithm described in the included 'algorithm.pdf' (see
+algorithm described in 'algorithm.pdf' in the upstream repository (see
 http://www.numbertheory.org/lll.html for a list of associated publications).
+sdim vendors the 'numpy' branch as sdim.diophantine.
 
 There are two branches of this code in the GitHub repository
 (see https://github.com/tclose/Diophantine.git), 'master', which uses the
@@ -58,19 +59,12 @@ def solve(A, b):
     N x 1 solution vector, e.g. 
 
     >>> from numpy import array
-    >>> from diophantine import solve
+    >>> from sdim.diophantine import solve
     >>> A = array([[1, 0, 0, 2], [0, 2, 3, 5], [2, 0, 3, 1], [-6, -1, 0, 2],
-                    [0, 1, 1, 1], [-1, 2, 0,1], [-1, -2, 1, 0]]).T
+    ...            [0, 1, 1, 1], [-1, 2, 0,1], [-1, -2, 1, 0]]).T
     >>> b = array([1, 1, 1, 1])
     >>> solve(A, b)
-    [array([
-    [-1],
-    [ 1],
-    [ 0],
-    [ 0],
-    [-1],
-    [-1],
-    [-1]])]
+    [array([-1,  1,  0,  0, -1, -1, -1])]
 
     The returned solution vector will tend to be one with the smallest norms.
     If multiple solutions with the same norm are found they will all be

@@ -890,9 +890,9 @@ def test_sampler_cost_does_not_grow_with_shots_times_bins(monkeypatch):
     dem.sample(256, seed=1)
     times = []
     for _ in range(3):
-        t = time.perf_counter()
+        t = time.process_time()   # one thread, so CPU time; wall time trips on a busy machine
         det, _ = dem.sample(40 * 1024, seed=2)
-        times.append(time.perf_counter() - t)
+        times.append(time.process_time() - t)
     assert not det.any()
     # About 0.03 s now; visiting 8000 bins in each of 40960 shots took about 1 s.
     assert min(times) < 0.3, times

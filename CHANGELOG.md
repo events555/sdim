@@ -135,13 +135,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `N2` takes `prob=` for two-qudit depolarizing noise (a uniformly random non-identity two-qudit Pauli with probability `prob`) and defaults to `prob=0.01`. Without parameters it used to apply a uniform distribution over all d**4 Paulis. A dense `prob_dist` is still accepted
 - **Breaking:** `circuit * n` returns a new circuit and leaves `circuit` unchanged (it used to extend `circuit` in place and return it); `circuit *= n` repeats in place
 - Depend on `cirq-core` instead of the `cirq` metapackage and drop the unused `Diophantine` and `networkx` dependencies; install `cirq` yourself if you need its vendor packages. The dependency floors are the oldest releases that pass the tests: numpy 1.23.2, sympy 1.9, cirq-core 1.0 and numba 0.57
-- `add_gate` rejects unknown noise parameters, malformed `prob_dist`, out-of-range probabilities, a two-qudit gate given one qudit or the same qudit twice, a one-qudit gate given no qudit, and a `MUL` scalar that is not an integer coprime to d
-- Compile the prime-dimension tableau, the Pauli frame sampler and the DEM sampler with numba. A 400-qudit, 13k-gate noisy circuit at d = 1000003 takes about 0.1 s per tableau shot and about 0.5 s for 2000 frame shots. The first run after installing compiles the kernels once (about 10 s); later runs load them from numba's cache, and an install where numba cannot write a cache compiles them in each process
+- **Breaking:** `add_gate` rejects a target on a one-qudit gate (`add_gate('X', 0, 1)` used to drop the target silently; give several qudits as a list). `read_circuit` and `Circuit.from_operation_list` go through `add_gate`, so a .chp line such as `M 0 1` written by an earlier version no longer loads: write it as `M 0` and `M 1`
+- `add_gate` rejects unknown noise parameters, malformed `prob_dist`, out-of-range probabilities, a two-qudit gate given one qudit or the same qudit twice, a one-qudit gate given no qudit, `None` in a list of qudits, and a `MUL` scalar that is not an integer coprime to d; a qudit index that is not an integer raises TypeError
+- Compile the prime-dimension tableau, the Pauli frame sampler and the DEM sampler with numba. A 400-qudit, 13k-gate noisy circuit at d = 1000003 takes about 0.1 s per tableau shot and about 0.5 s for 2000 frame shots. The first run after installing compiles the kernels once (a few seconds for each part of sdim used, up to about 20 s in all); later runs load them from numba's cache, and an install where numba cannot write a cache compiles them in each process
 - Sample noise lazily in the frame sampler, so memory no longer grows with shots times noise gates
 - Detector expressions reject out-of-range `rec[...]` indices with a ValueError instead of wrapping them around the number of records
 - Negative qudit indices count from the end of the program's qudits in every simulation mode, and indices outside the program raise
 - `Program(circuit, tableau=...)` with an initial state other than a computational basis state samples the shots after the reference shot with the tableau, with the same output as the frame sampler
-- `read_circuit` takes a path as given (absolute or relative to the working directory) before the package's circuits folder, `write_circuit` writes to `circuits/` in the working directory instead of next to the installed package, and both read and write .chp files as UTF-8
+- `read_circuit` takes a path as given (absolute or relative to the working directory) before trying it relative to the directory above the package (the repository root in a source checkout), `write_circuit` writes to `circuits/` in the working directory instead of next to the installed package, and both read and write .chp files as UTF-8
 - Dimensions must be below 2**31
 
 ### Added
@@ -177,4 +178,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix `pip install sdim` failing on Python 3.15, and package metadata that named only the first author and listed contradictory GPL classifiers
 - Fix the documentation workflow
 
-[1.4.0]: https://github.com/events555/sdim/releases/tag/v1.4.0
+[1.4.0]: https://pypi.org/project/sdim/1.4.0/

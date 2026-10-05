@@ -6,7 +6,7 @@
 - [x] DEPOLARIZE two-qudit (`N2` with `prob=`)
 - [ ] MEASUREMENT error
 - [ ] RESET error
-- [ ] DETECTOR
+- [x] DETECTOR
 
 ### Helper
 - [ ] Write `MeasurementResults` as a NumPy array
@@ -19,8 +19,8 @@
 - [ ] Measurement error
 - [ ] Reset error
 - [ ] Multiplying circuits (use repeat)
-- [ ] Detector error
-- [ ] Two-qubit depolarizing
+- [x] Detector error
+- [x] Two-qubit depolarizing
 
 ### Helper
 - [ ] Qudit labeling

@@ -124,7 +124,6 @@ class DEMInstruction:
                 return f"ERROR prob={self.argument} {flip_string}"
             
             elif self.instruction_type in (DEMInstructionType.DETECTOR, DEMInstructionType.LOGICAL_OBSERVABLE):
-                #TODO
                 name= "DETECTOR" if self.instruction_type == DEMInstructionType.DETECTOR else "LOGICAL_OBSERVABLE"
                 coord = "" if self.argument == None else f"coord={self.argument}"
 
@@ -452,13 +451,10 @@ class DetectorErrorModel:
             logical_shift = np.zeros(self.num_logicals, dtype=np.int64)
 
             for e in self.shift_list:
-                # print(f"The error mechanism has with probability {e[0]} to fire")
                 select = np.random.choice([0, 1], p=[1 - e[0], e[0]])
                 detector_shift = (detector_shift + select * e[1]) % self.dimension
-                # print(f"The select was {select} with probability {e[0]}")
                 logical_shift = (logical_shift + select * e[2]) % self.dimension
 
-            # print(f"Sample reads with detector shifts: {detector_shift} and logical shifts : {logical_shift}")
             detector_samples.append(detector_shift)
             logical_samples.append(logical_shift)
 

@@ -13,7 +13,7 @@ The following are relevant details for the project:
 ## Project Installation
 You can install the `sdim` Python module directly from [PyPI](https://pypi.org/project/sdim/) using `pip install sdim`. It needs Python 3.11 or newer and installs numpy, sympy, numba and cirq-core. sdim only uses cirq-core; install `cirq` as well if you want Cirq's hardware vendor packages.
 
-The first run after installing compiles sdim's numba kernels, which takes about 10 seconds once. Later runs load them from numba's cache.
+The first run after installing compiles sdim's numba kernels, a few seconds for each part of sdim you use (up to about 20 seconds for all of them). Later runs load them from numba's cache.
 
 ## How to use sdim?
 Take a look at the notebooks in [`examples/`](https://github.com/events555/sdim/tree/main/examples) for in-depth examples.
