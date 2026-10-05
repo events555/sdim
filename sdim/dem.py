@@ -100,11 +100,10 @@ to the end of the circuit, which costs time quadratic in the number of rounds,
 the linear maps from its X and Z frame components to the detectors and
 observables, and updates them with the transpose of each gate's frame rule.
 Each noise gate then reads the responses of its unit faults directly.
-A response lists its targets in the order the fault first reaches them, as
-pushing it forward did; where that order is not clear from which records
-the targets read, a few short backward sweeps ask whether the fault is
-non-zero at single records. Detector and observable coefficients are read
-from sdim's own compiled detector expressions.
+Every response, and every generator built from one, lists its targets in
+increasing order (detectors first, then observables). Detector and
+observable coefficients are read from sdim's own compiled detector
+expressions.
 
 ## Limitations
 
@@ -167,8 +166,6 @@ _SAMPLE_TASKS_PER_THREAD = 8
 _MAX_SAMPLE_DIMENSION = 2 ** 31 - 1
 # With fewer unit-fault probes than this, the forward kernel runs them on the calling thread.
 _PROBE_PARALLEL_MIN = 2048
-# At most about this many (probe, record) questions go into one sweep of `_ask_records`.
-_TOUCH_QUESTIONS_PER_SWEEP = 1 << 20
 # Compute unit-fault responses with one backward sweep (True) or by pushing every unit fault forward
 # to the end of the circuit (False). Both give the same model; the forward kernel is the reference.
 _BACKWARD = True
@@ -591,7 +588,8 @@ class DetectorErrorModel:
                 `to_lines` and `read_from_file` (by default) refuse the model.
 
         Returns:
-            DetectorErrorModel: The compiled model.
+            DetectorErrorModel: The compiled model. Every generator lists its
+                targets in increasing order.
 
         Raises:
             ValueError: If the dimension is not prime, an N1 gate has an
@@ -1061,10 +1059,7 @@ class NoiseLocation:
         subgroup_probability (float): Probability of the equivalent subgroup mechanism.
         responses (list[dict[int, int]]): Sparse response of each unit fault. The
             order is X then Z on each qudit, with only X for "f" and only Z for "p".
-            Each dict lists its targets in the order the fault first reaches
-            them: by the first measurement record (in circuit order) at which
-            the propagated fault is non-zero and that the target reads, then by
-            target index.
+            Each dict lists its targets in increasing order.
         source (str): Name of the gate as written in DEM files.
     """
     ir_index: int
@@ -1677,23 +1672,14 @@ class _Compiled:
     Unit-fault responses of every noise gate, as flat arrays.
 
     Noise gate i has unit-fault probes probe_start[i]:probe_start[i + 1], and
-    probe k has response entries ptr[k]:ptr[k + 1] in tgt (targets) and val
-    (coefficients mod d).
-
-    The entries of a response come out of the forward kernel in the order the
-    fault first reaches each target (see `NoiseLocation`), and that is the
-    dict order of every response and generator this module hands out. The
-    backward sweep gives them sorted by target instead. ordered[k] is True
-    once probe k's entries are in first-touch order (always, for at most one
-    entry), and `_order_probes` puts the entries of the probes that need it in
-    that order (see `_touch_order`). Only the generators of rank-2 and higher
-    mechanisms, unmerged models and `compile_unit_responses` need it: merged
-    lines are sorted by target anyway.
+    probe k has response entries ptr[k]:ptr[k + 1] in tgt (targets, in
+    increasing order) and val (non-zero coefficients mod d). Both kernels give
+    the entries sorted by target, and that is the dict order of every response
+    and generator built from them.
     """
 
     def __init__(self, dimension, num_detectors, num_observables, detector_labels, observable_labels,
-                 ir_index, gate_id, codes, channels, q0, q1, prob, pi, probe_start, ptr, tgt, val,
-                 ordered=None, sweep=None):
+                 ir_index, gate_id, codes, channels, q0, q1, prob, pi, probe_start, ptr, tgt, val):
         self.dimension = dimension
         self.num_detectors = num_detectors
         self.num_observables = num_observables
@@ -1711,38 +1697,14 @@ class _Compiled:
         self.ptr = ptr
         self.tgt = tgt
         self.val = val
-        self.ordered = np.ones(len(ptr) - 1, dtype=bool) if ordered is None else ordered
-        # (backward kernel arguments, probe_op, probe_qudit, probe_kind) of the noise probes, for _order_probes.
-        self._sweep = sweep
 
     def source(self, i: int) -> str:
         if self.codes[i] == 3:
             return f"N2@{self.ir_index[i]}:q{self.q0[i]},q{self.q1[i]}"
         return f"N1[{self.channels[i]}]@{self.ir_index[i]}:q{self.q0[i]}"
 
-    def _probes_of(self, gates) -> np.ndarray:
-        """The probe indices of the given noise gates, gate by gate."""
-        gates = np.asarray(gates, dtype=np.int64)
-        start = self.probe_start
-        return _segments(start[gates], start[gates + 1] - start[gates])
-
-    def _order_probes(self, probes) -> None:
-        """Puts the response entries of the given probes in first-touch order (see the class docstring)."""
-        probes = np.asarray(probes, dtype=np.int64)
-        need = probes[~self.ordered[probes]]
-        if not len(need):
-            return
-        sizes = self.ptr[need + 1] - self.ptr[need]
-        slots = _segments(self.ptr[need], sizes)
-        perm = _touch_order(self._sweep, self.dimension, self.num_detectors + self.num_observables, need, sizes,
-                            self.tgt[slots])
-        self.tgt[slots] = self.tgt[slots][perm]
-        self.val[slots] = self.val[slots][perm]
-        self.ordered[need] = True
-
     def locations(self) -> list:
         """The `NoiseLocation` list that `compile_unit_responses` returns."""
-        self._order_probes(np.arange(len(self.ptr) - 1, dtype=np.int64))
         tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
         responses = [dict(zip(tgt[a:b], val[a:b])) for a, b in zip(ptr[:-1], ptr[1:])]
         start = self.probe_start.tolist()
@@ -1775,13 +1737,6 @@ class _Compiled:
         rank = np.add.reduceat(nonempty.astype(np.int64), start[:-1])
         prob = np.array(self.prob, dtype=np.float64)
         keep = (rank > 0) & ~(prob <= 0.0)
-        if merge:
-            ones = np.flatnonzero(keep & (rank == 1))
-            higher = np.flatnonzero(keep & (rank > 1))
-            self._order_probes(self._probes_of(higher))
-            higher = higher.tolist()
-        else:
-            self._order_probes(self._probes_of(np.flatnonzero(keep)))
         tgt, val, ptr = self.tgt.tolist(), self.val.tolist(), self.ptr.tolist()
         nonempty_list = nonempty.tolist()
         start_list = start.tolist()
@@ -1794,22 +1749,19 @@ class _Compiled:
         if not merge:
             return [ErrorMechanism(pi[i], generators(i), self.source(i)) for i in np.flatnonzero(keep).tolist()]
 
+        ones = np.flatnonzero(keep & (rank == 1))
+        higher = np.flatnonzero(keep & (rank > 1)).tolist()
         # The one non-empty probe of each rank-1 gate (only read for those gates).
         probe_loc = np.repeat(np.arange(n_loc, dtype=np.int64), np.diff(start))
         nonempty_probe = np.full(n_loc, -1, dtype=np.int64)
         hits = np.flatnonzero(nonempty)
         nonempty_probe[probe_loc[hits]] = hits
         probes = nonempty_probe[ones]
-        # Their entries, sorted by target within each mechanism (the backward sweep gives them sorted).
+        # Their entries, already sorted by target within each mechanism.
         sizes = self.ptr[probes + 1] - self.ptr[probes]
         entries = _segments(self.ptr[probes], sizes)
-        owner = np.repeat(np.arange(len(probes), dtype=np.int64), sizes)
         ctgt = self.tgt[entries]
         cval = self.val[entries]
-        if not np.all((owner[1:] != owner[:-1]) | (ctgt[1:] > ctgt[:-1])):
-            by_target = np.lexsort((ctgt, owner))
-            ctgt = ctgt[by_target]
-            cval = cval[by_target]
         cptr = np.zeros(len(probes) + 1, dtype=np.int64)
         np.cumsum(sizes, out=cptr[1:])
         cval, solo = _scale_lines(cptr, cval, d)
@@ -1830,7 +1782,8 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     circuit gives every response (`_backward_kernel`); otherwise every unit
     fault is pushed forward to the end of the circuit (`_probe_kernel`), which
     costs time quadratic in the number of rounds of a memory circuit. Both give
-    the same responses, and the same model.
+    the same responses, with their entries sorted by target, and the same
+    model.
 
     The noise gates are left out of the circuit handed to `Program._build_ir`
     when that does not change what it returns or raises, since it would
@@ -1988,9 +1941,8 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
     n_targets = n_det + len(obs)
     if backward:
         visit = np.argsort(-probe_op, kind="stable")
-        none = np.zeros(0, dtype=np.int64)
         ptr, tgt, val = _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, visit, probe_op,
-                                         probe_qudit, probe_kind, d, n_qudits, none, none, none)
+                                         probe_qudit, probe_kind, d, n_qudits)
     else:
         qptr, qops, posa, posb = _qudit_op_lists(gid, qa, qb, frame_ops, two_ops, n_qudits)
         ptr, tgt, val = _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, rptr, rtgt,
@@ -2003,149 +1955,8 @@ def _compile(circuit: Circuit, backward: bool | None = None) -> _Compiled:
                          + (" ..." if len(names) > 20 else ""))
     end = int(ptr[n_noise_probes])
     ptr = ptr[:n_noise_probes + 1]
-    ordered = sweep = None
-    if backward:
-        ordered = np.diff(ptr) <= 1
-        sweep = (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits,
-                probe_op[:n_noise_probes], probe_qudit[:n_noise_probes], probe_kind[:n_noise_probes])
     return _Compiled(d, n_det, len(obs), det_labels, obs_labels, ir_indices, gate_ids, codes, channels,
-                     q0s, q1s, probs, pis, probe_start, ptr, tgt[:end], val[:end], ordered, sweep)
-
-
-def _touch_order(sweep, d: int, n_targets: int, probes, sizes, tgt) -> np.ndarray:
-    """
-    The first-touch order of the response entries of some unit-fault probes.
-
-    Probe probes[i] has sizes[i] >= 2 entries, which come next in `tgt`
-    (sorted by target, from the backward sweep). The forward kernel would list
-    them by their key r_t * n_targets + t, where r_t is the first record of
-    target t at which the propagated fault is non-zero. Records are numbered
-    in circuit order. Returns the permutation of `tgt` that puts each probe's
-    entries in that order.
-
-    Target t has a non-zero coefficient, so r_t is one of t's records after
-    the fault (its candidates). Each entry keeps the interval of keys still
-    possible for it: from its next candidate, the first one at which the
-    fault is not known to be zero, to its last candidate. The key is known
-    once the fault is found non-zero at the next candidate, or the next
-    candidate is the last one (t reads the fault at one of them). Once the
-    intervals of a probe's entries are disjoint, sorting by their lower ends
-    gives the order. Most probes start that way, since their targets read
-    records in different rounds.
-
-    While intervals overlap, every entry whose interval overlaps another and
-    whose key is not known asks about its next `step` candidates (all but
-    the last), with `step` doubling from 1 at each pass, and
-    `_ask_records` answers with a backward sweep. An entry thus asks about
-    fewer than twice the candidates it has to rule out (plus one), so a
-    fault that reaches its targets early settles them with a question or
-    two each, however many rounds the targets read. Only a fault that
-    reaches overlapping targets late needs many questions, about one per
-    candidate it passes, like pushing it forward does. A sweep gets about
-    `_TOUCH_QUESTIONS_PER_SWEEP` questions at most (each of them takes a few
-    tens of bytes), and a pass with more uses several sweeps.
-    """
-    (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits, probe_op, probe_qudit,
-     probe_kind) = sweep
-    probes = np.asarray(probes, dtype=np.int64)
-    n_recs = len(rptr) - 1
-    stride = n_recs + 1
-    # Each target's records, sorted, as keys target * stride + record.
-    entry_rec = np.repeat(np.arange(n_recs, dtype=np.int64), np.diff(rptr))
-    tkey = np.sort(rtgt * stride + entry_rec)
-    trec = tkey % stride
-    tend = np.searchsorted(tkey, (np.arange(n_targets, dtype=np.int64) + 1) * stride)
-    recs_before = np.zeros(len(gid) + 1, dtype=np.int64)
-    np.cumsum(rec_of_op >= 0, out=recs_before[1:])
-
-    owner = np.repeat(np.arange(len(probes), dtype=np.int64), sizes)
-    t = np.asarray(tgt, dtype=np.int64)
-    nxt = np.searchsorted(tkey, t * stride + recs_before[probe_op[probes] + 1][owner])
-    last = tend[t] - 1
-    if np.any(nxt > last):
-        raise RuntimeError("a unit fault reaches a target with no measurement record after the fault")
-    lower = trec[nxt] * n_targets + t
-    upper = trec[last] * n_targets + t           # equal to lower once the key is known
-    work = np.arange(len(t), dtype=np.int64)     # the entries of the probes whose order is not settled
-    step = 1
-    while len(work):
-        # Sorted by lower end within each probe, an entry overlaps another one of its probe iff it
-        # overlaps the next one or the largest upper end before it.
-        work = work[np.lexsort((lower[work], owner[work]))]
-        o, lo, hi = owner[work], lower[work], upper[work]
-        n = len(work)
-        same = o[1:] == o[:-1]
-        overlap = np.zeros(n, dtype=bool)
-        overlap[:-1] = same & (lo[1:] <= hi[:-1])
-        # The running maximum of hi is taken over ranks, offset per probe so it restarts at each probe.
-        hi_values, hi_rank = np.unique(hi, return_inverse=True)
-        offset = np.zeros(n, dtype=np.int64)
-        np.cumsum(~same, out=offset[1:])
-        offset *= n + 1
-        run = np.maximum.accumulate(hi_rank.reshape(-1) + offset) - offset
-        overlap[1:] |= same & (hi_values[run[:-1]] >= lo[1:])
-        active = work[overlap & (lo < hi)]
-        if not len(active):
-            break
-        unsettled = np.zeros(len(probes), dtype=bool)
-        unsettled[owner[active]] = True
-        work = work[unsettled[o]]
-        # Ask about the next `step` candidates of each active entry (not the last one: it needs no
-        # question), in pieces of at most about _TOUCH_QUESTIONS_PER_SWEEP questions.
-        counts = np.minimum(last[active] - nxt[active], step)
-        cuts = np.flatnonzero(np.diff((np.cumsum(counts) - counts) // _TOUCH_QUESTIONS_PER_SWEEP)) + 1
-        for piece, cnt in zip(np.split(active, cuts), np.split(counts, cuts)):
-            q_pos = _segments(nxt[piece], cnt)
-            q_start = np.zeros(len(piece), dtype=np.int64)
-            np.cumsum(cnt[:-1], out=q_start[1:])
-            q_probe = np.repeat(probes[owner[piece]], cnt)
-            hits = np.flatnonzero(_ask_records(sweep, d, q_probe, trec[q_pos]))
-            # The first candidate found non-zero becomes the entry's key; otherwise move past the questions.
-            if len(hits):
-                j = np.minimum(np.searchsorted(hits, q_start), len(hits) - 1)
-                found = (hits[j] >= q_start) & (hits[j] < q_start + cnt)
-                nxt[piece] = np.where(found, q_pos[hits[j]], nxt[piece] + cnt)
-            else:
-                found = np.zeros(len(piece), dtype=bool)
-                nxt[piece] += cnt
-            lower[piece] = trec[nxt[piece]] * n_targets + t[piece]
-            upper[piece] = np.where(found, lower[piece], upper[piece])
-        step = min(2 * step, _TOUCH_QUESTIONS_PER_SWEEP)
-    return np.lexsort((lower, owner))
-
-
-def _ask_records(sweep, d: int, q_probe, q_rec) -> np.ndarray:
-    """
-    Whether the fault of probe q_probe[i] is non-zero at measurement record q_rec[i], for each i.
-
-    One backward sweep answers them all: its targets are the records asked
-    about, each one alone with coefficient 1, and each run of consecutive
-    questions of one probe is one read of that probe's map, which looks up
-    each record by binary search. A record is dropped from the maps once the
-    sweep passes the earliest probe that asks about it. Nothing here sorts
-    the questions.
-    """
-    (gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, n_qudits, probe_op, probe_qudit,
-     probe_kind) = sweep
-    q_probe = np.asarray(q_probe, dtype=np.int64)
-    q_rec = np.asarray(q_rec, dtype=np.int64)
-    n_recs = len(rptr) - 1
-    # Target r is record r; only the records asked about have a row.
-    row_ptr = np.zeros(n_recs + 1, dtype=np.int64)
-    row_ptr[q_rec + 1] = 1
-    asked = np.flatnonzero(row_ptr[1:])
-    np.cumsum(row_ptr, out=row_ptr)
-    expire = np.full(n_recs, len(gid), dtype=np.int64)
-    np.minimum.at(expire, q_rec, probe_op[q_probe])
-    ask_start = np.flatnonzero(np.r_[True, q_probe[1:] != q_probe[:-1]]) if len(q_probe) else q_probe
-    askers = q_probe[ask_start]
-    ask_ptr = np.append(ask_start, len(q_probe)).astype(np.int64)
-    ops = probe_op[askers]
-    # The answers come back in the order asked.
-    _, _, val = _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, row_ptr, asked,
-                                 np.ones(len(asked), dtype=np.int64), np.argsort(-ops, kind="stable"), ops,
-                                 probe_qudit[askers], probe_kind[askers], d, n_qudits, expire, ask_ptr, q_rec)
-    return val != 0
+                     q0s, q1s, probs, pis, probe_start, ptr, tgt[:end], val[:end])
 
 
 def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
@@ -2157,8 +1968,7 @@ def compile_unit_responses(circuit: Circuit) -> CompiledResponses:
     detector and logical observable when it follows the update rules of
     `sdim.program.simulate_frame` through the rest of the circuit. The
     responses come from one backward sweep over the circuit (see the module
-    docstring), and each one lists its targets in the order the fault first
-    reaches them (see `NoiseLocation`).
+    docstring), and each one lists its targets in increasing order.
 
     Args:
         circuit (Circuit): The noisy circuit.
@@ -2197,8 +2007,8 @@ def _run_probes(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb, 
 
     Returns:
         tuple: (ptr, tgt, val), the response of probe k being the entries
-            ptr[k]:ptr[k + 1] of tgt (targets) and val (coefficients mod d),
-            in the order the kernel first touched each target.
+            ptr[k]:ptr[k + 1] of tgt (targets, in increasing order) and val
+            (non-zero coefficients mod d).
     """
     n = len(probe_op)
     n_threads = _thread_count() if n >= _PROBE_PARALLEL_MIN else 1
@@ -2257,7 +2067,8 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
         tuple: (status, out_ptr, out_tgt, out_val). status is 0 on success and
             2 if a fault reached more than `max_slots` qudits (impossible when
             `max_slots` is the number of qudits). Probe p's response is the
-            entries out_ptr[p]:out_ptr[p + 1] of out_tgt / out_val.
+            entries out_ptr[p]:out_ptr[p + 1] of out_tgt / out_val, sorted by
+            target.
     """
     smax = max_slots
     n_probes = probe_op.shape[0]
@@ -2418,7 +2229,8 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
                     scur[s] = scur[nslot]
                 else:
                     s += 1
-        # Write out this probe's non-zero totals and clear the accumulator. They are at most nt.
+        # Write out this probe's non-zero totals, sorted by target, and clear the accumulator. They are at most nt.
+        touched[:nt].sort()
         out_ptr[p] = w
         if w + nt > out_tgt.shape[0]:
             size = 2 * out_tgt.shape[0]
@@ -2445,7 +2257,7 @@ def _probe_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, qptr, qops, posa, posb
 
 @njit(nogil=True, cache=True)
 def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, visit, probe_op, probe_qudit,
-                     probe_kind, d, n_qudits, expire, ask_ptr, ask_tgt):
+                     probe_kind, d, n_qudits):
     """
     The response of every unit-fault probe, from one backward sweep over the circuit.
 
@@ -2477,29 +2289,19 @@ def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, 
     in one pool: a map is rewritten at the end of the pool, and the pool is
     compacted when it fills up. `visit` lists the probes by decreasing op.
 
-    The targets are whatever the record rows rptr / rtgt / rcoef say: the
-    detectors and observables, or (for `_ask_records`) single records. If
-    `expire` is not empty, target t is no longer needed once the sweep is
-    before op expire[t]: rewriting a map while going back over op i drops the
-    entries of the targets with expire[t] >= i, which keeps short-lived
-    targets from piling up in maps that live long. If `ask_ptr` is not
-    empty, probe k reads only the targets ask_tgt[ask_ptr[k]:ask_ptr[k + 1]],
-    each by binary search in its map, and its response lists all of them in
-    that order, with value 0 for those not in the map.
-
-    The sweep starts at the last op whose record some target reads (every
-    map is zero after it) and stops once every probe has read its map.
+    The targets (the detectors and observables) are whatever the record rows
+    rptr / rtgt / rcoef say. The sweep starts at the last op whose record some
+    target reads (every map is zero after it) and stops once every probe has
+    read its map.
 
     Returns:
         tuple: (ptr, tgt, val), probe k's response being the entries
-            ptr[k]:ptr[k + 1] of tgt (sorted targets, or the targets asked
-            about) and val.
+            ptr[k]:ptr[k + 1] of tgt (targets, in increasing order) and val
+            (non-zero coefficients mod d).
     """
     n_ops = gid.shape[0]
     n_probes = visit.shape[0]
     n_maps = 2 * n_qudits
-    filtering = expire.shape[0] > 0
-    asking = ask_ptr.shape[0] > 0
     mstart = np.zeros(n_maps, dtype=np.int64)
     mlen = np.zeros(n_maps, dtype=np.int64)
     pool_t = np.empty(max(1024, 2 * n_maps), dtype=np.int64)
@@ -2520,7 +2322,7 @@ def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, 
         while v < n_probes and probe_op[visit[v]] >= op:
             pr = visit[v]
             m = 2 * probe_qudit[pr] + probe_kind[pr]
-            n = ask_ptr[pr + 1] - ask_ptr[pr] if asking else mlen[m]
+            n = mlen[m]
             if w + n > out_t.shape[0]:
                 size = 2 * out_t.shape[0]
                 while size < w + n:
@@ -2533,24 +2335,9 @@ def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, 
                 out_t = grown_t
                 out_v = grown_v
             s = mstart[m]
-            if asking:
-                end = s + mlen[m]
-                for i in range(n):
-                    x = ask_tgt[ask_ptr[pr] + i]
-                    lo = s
-                    hi = end
-                    while lo < hi:
-                        mid = (lo + hi) // 2
-                        if pool_t[mid] < x:
-                            lo = mid + 1
-                        else:
-                            hi = mid
-                    out_t[w + i] = x
-                    out_v[w + i] = pool_v[lo] if lo < end and pool_t[lo] == x else 0
-            else:
-                for i in range(n):
-                    out_t[w + i] = pool_t[s + i]
-                    out_v[w + i] = pool_v[s + i]
+            for i in range(n):
+                out_t[w + i] = pool_t[s + i]
+                out_v[w + i] = pool_v[s + i]
             res_start[pr] = w
             res_len[pr] = n
             w += n
@@ -2679,7 +2466,7 @@ def _backward_kernel(gid, qa, qb, mul_a, mul_inv, rec_of_op, rptr, rtgt, rcoef, 
                     y = (pool_v[i] + c * src_v[j]) % d
                     i += 1
                     j += 1
-                if y != 0 and (not filtering or expire[tt] < op):
+                if y != 0:
                     pool_t[k] = tt
                     pool_v[k] = y
                     k += 1

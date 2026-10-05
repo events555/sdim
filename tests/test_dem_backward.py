@@ -1,13 +1,12 @@
 """The backward sweep of sdim.dem against the forward reference kernel.
 
 `DetectorErrorModel.from_circuit` and `compile_unit_responses` read every
-unit-fault response from one backward sweep over the circuit (and, to list
-each response's targets in the order the fault first reaches them, a few
-short backward sweeps asking about single measurement records). Pushing every unit
-fault forward to the end of the circuit (`_BACKWARD = False`) gives the
+unit-fault response from one backward sweep over the circuit. Pushing every
+unit fault forward to the end of the circuit (`_BACKWARD = False`) gives the
 reference. Both must give exactly the same model: the same mechanisms in the
 same order, with the same probabilities, sources and generators, dict order
-included.
+included. That order is canonical: every response and generator lists its
+targets in increasing order.
 """
 
 import functools
@@ -54,6 +53,20 @@ def _outcomes(circuit, **kw):
     return out
 
 
+def assert_sorted_by_target(outcomes):
+    """Every generator and response in `_outcomes` lists its targets in increasing order."""
+    merged, unmerged, responses = outcomes
+    lists = []
+    for model in (merged, unmerged):
+        if model[0] == "ok":
+            lists += [items for _, generators, _ in model[1][-1] for items in generators]
+    if responses[0] == "ok":
+        lists += [items for *_, location in responses[1] for items in location]
+    for items in lists:
+        targets = [t for t, _ in items]
+        assert targets == sorted(set(targets)), items
+
+
 def assert_backward_matches_forward(monkeypatch, circuit, **kw):
     monkeypatch.setattr(dem_module, "_BACKWARD", True)
     backward = _outcomes(circuit, **kw)
@@ -61,6 +74,7 @@ def assert_backward_matches_forward(monkeypatch, circuit, **kw):
     forward = _outcomes(circuit, **kw)
     monkeypatch.setattr(dem_module, "_BACKWARD", True)
     assert backward == forward
+    assert_sorted_by_target(backward)
     return backward
 
 
@@ -197,6 +211,38 @@ def wide_circuit(d, width=60, rounds=3, p=0.01):
     return c
 
 
+def _balanced_sum(terms):
+    """terms joined by +, nested as a balanced tree so a long expression stays shallow."""
+    while len(terms) > 1:
+        terms = [f"({terms[i]} + {terms[i + 1]})" if i + 1 < len(terms) else terms[i]
+                 for i in range(0, len(terms), 2)]
+    return terms[0]
+
+
+def idle_memory(rounds, n_idle=50, d=3, n_obs=2, p=0.01):
+    """Idle data qudits with noise in every round, measured only at the end, and two ancillas measured, checked
+    and reset in every round. Observable k reads ancilla 0 in every round (weight k + 1) and every data qudit."""
+    n_anc = 2
+    c = Circuit(n_anc + n_idle, d)
+    anc = list(range(n_anc))
+    data = list(range(n_anc, n_anc + n_idle))
+    c.add_gate("RESET", anc + data)
+    for _ in range(rounds):
+        c.add_gate("N1", data, noise_channel="f", prob=p)
+        c.add_gate("N1", anc, noise_channel="f", prob=p)
+        c.add_gate("M", anc)
+        for i in range(n_anc):
+            c.add_gate("DETECTOR", expr=f"rec[{i - n_anc}]")
+        c.add_gate("RESET", anc)
+    c.add_gate("M", data)
+    total = rounds * n_anc + n_idle
+    for k in range(n_obs):
+        terms = [f"{k + 1}*rec[{r * n_anc - total}]" for r in range(rounds)]
+        terms += [f"rec[{-1 - j}]" for j in range(n_idle)]
+        c.add_gate("LOGICAL_OBSERVABLE", expr=_balanced_sum(terms))
+    return c
+
+
 @pytest.mark.parametrize("d", [2, 3, 5, 7, 1000003])
 @pytest.mark.parametrize("seed", range(8))
 def test_random_circuits(monkeypatch, d, seed):
@@ -223,6 +269,36 @@ def test_repetition_codes_with_observables(monkeypatch, d, observables):
 @pytest.mark.parametrize("d", [2, 5, 1000003])
 def test_wide_fan_out(monkeypatch, d):
     assert assert_backward_matches_forward(monkeypatch, wide_circuit(d))[0][0] == "ok"
+
+
+@pytest.mark.parametrize("d", [2, 3, 1000003])
+def test_idle_memory(monkeypatch, d):
+    assert assert_backward_matches_forward(monkeypatch, idle_memory(15, n_idle=6, d=d))[0][0] == "ok"
+
+
+def test_targets_are_sorted_when_reached_out_of_order(monkeypatch):
+    """A fault that reaches D2 and L0 first, then D1, then D0, lists them by target with either kernel, in
+    responses, unmerged and merged models alike."""
+    c = Circuit(3, 5)
+    c.add_gate("RESET", [0, 1, 2])
+    c.add_gate("N2", 0, 1, prob=0.01)
+    c.add_gate("N1", 0, noise_channel="f", prob=0.02)
+    c.add_gate("CNOT", 0, [1, 2])
+    c.add_gate("M", 2)
+    c.add_gate("M", [1, 0])
+    c.add_gate("DETECTOR", expr="rec[-1]")
+    c.add_gate("DETECTOR", expr="rec[-2]")
+    c.add_gate("DETECTOR", expr="2*rec[-3]")
+    c.add_gate("LOGICAL_OBSERVABLE", expr="rec[-3]")
+    x0 = [(0, 1), (1, 1), (2, 2), (3, 1)]
+    for backward in (True, False):
+        monkeypatch.setattr(dem_module, "_BACKWARD", backward)
+        n2, n1 = compile_unit_responses(c).locations
+        assert [list(r.items()) for r in n2.responses] == [x0, [], [(1, 1)], []]
+        assert [list(r.items()) for r in n1.responses] == [x0]
+        for merge in (True, False):
+            mechanisms = DetectorErrorModel.from_circuit(c, merge=merge).mechanisms
+            assert sorted([list(g.items()) for g in m.generators] for m in mechanisms) == [[x0], [x0, [(1, 1)]]]
 
 
 @pytest.mark.parametrize("d", [4, 6, 9])
@@ -275,57 +351,6 @@ def test_errors_match(monkeypatch):
     assert assert_backward_matches_forward(monkeypatch, cases[3])[0][0] == "ok"
 
 
-def _count_questions(monkeypatch):
-    """Records every call of `_ask_records` (the number of questions it got) in the returned list."""
-    calls = []
-    real = dem_module._ask_records
-
-    def counting(sweep, d, q_probe, q_rec):
-        calls.append(len(q_probe))
-        return real(sweep, d, q_probe, q_rec)
-
-    monkeypatch.setattr(dem_module, "_ask_records", counting)
-    return calls
-
-
-def test_record_questions_are_exercised(monkeypatch):
-    """Overlapping candidate ranges (observables read at the end, detectors comparing rounds) need questions
-    about single records; the answers must give the forward order."""
-    calls = _count_questions(monkeypatch)
-    assert_backward_matches_forward(monkeypatch, rep_code(10, observables="overlap"))
-    assert assert_backward_matches_forward(monkeypatch, random_circuit(7, 5))[0][0] == "ok"
-    assert calls and sum(calls) > 10
-
-
-def test_record_questions_for_spanning_observables_are_linear_in_rounds(monkeypatch):
-    """Two observables reading an ancilla in every round overlap over all later rounds for every fault that
-    reaches them. All their candidates up to the end used to be asked about at once: questions (and memory)
-    quadratic in the rounds, and a MemoryError at a few thousand rounds."""
-    calls = _count_questions(monkeypatch)
-
-    def questions(rounds):
-        calls.clear()
-        c = rep_code(rounds, n_data=5, observables="span2", extra=10)
-        DetectorErrorModel.from_circuit(c, merge=False)
-        DetectorErrorModel.from_circuit(c)
-        return sum(calls)
-
-    small, large = questions(100), questions(400)
-    assert 0 < large < 6 * small, (small, large)     # about 4 when linear; it was about 16
-
-
-def test_record_questions_go_in_bounded_sweeps(monkeypatch):
-    """However many questions a pass has, each sweep gets at most about _TOUCH_QUESTIONS_PER_SWEEP of them,
-    and the order does not change."""
-    c = rep_code(40, n_data=5, observables="span2", extra=2)
-    expected = _outcomes(c)
-    calls = _count_questions(monkeypatch)
-    monkeypatch.setattr(dem_module, "_TOUCH_QUESTIONS_PER_SWEEP", 4)
-    assert _outcomes(c) == expected
-    # A piece can go past the limit by less than one entry's questions (at most the limit itself).
-    assert len(calls) > 10 and max(calls) <= 8
-
-
 def test_two_qudit_gate_on_one_qudit_is_rejected():
     """The forward kernel used to fail with "status 2" on such a gate; it has no frame rule, so say so."""
     c = Circuit(2, 3)
@@ -370,8 +395,8 @@ def test_compile_time_is_linear_in_rounds():
 
 
 def test_compile_time_is_linear_in_rounds_with_spanning_observables():
-    """Observables that read an ancilla in every round: the first-touch order of the faults that reach them
-    used to cost time and memory quadratic in the rounds (and so did reading their long expressions)."""
+    """Observables that read an ancilla in every round: reading their long expressions, and the responses
+    of the many faults that reach them, takes time linear in the rounds."""
     def best(rounds):
         c = rep_code(rounds, n_data=5, observables="span2", extra=10)
         times = []
@@ -385,6 +410,26 @@ def test_compile_time_is_linear_in_rounds_with_spanning_observables():
     small, large = best(150), best(1200)
     # Linear work gives a ratio near 8; it was over 100 here.
     assert large / small < 20, (small, large)
+
+
+def test_compile_time_is_linear_in_rounds_with_idle_qudits():
+    """Many idle qudits with noise in every round, measured only at the end, and observables that read an
+    ancilla in every round. Listing each response's targets in the order the fault first reached them used
+    to take time quadratic in the rounds here, for unmerged models and compile_unit_responses."""
+    def best(fn, rounds):
+        c = idle_memory(rounds, n_idle=20)
+        times = []
+        for _ in range(3):
+            t = time.perf_counter()
+            fn(c)
+            times.append(time.perf_counter() - t)
+        return min(times)
+
+    for fn in (lambda c: DetectorErrorModel.from_circuit(c, merge=False), compile_unit_responses):
+        best(fn, 20)
+        small, large = best(fn, 200), best(fn, 1600)
+        # Linear work gives a ratio near 8; it was about 30 here.
+        assert large / small < 18, (small, large)
 
 
 _COMPILED_KERNELS_SCRIPT = r"""
