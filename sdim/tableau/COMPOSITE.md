@@ -10,7 +10,11 @@ One can then turn towards algorithms to compute the Smith-Normal form or Hermite
 
 This solver suffers from a common issue with simple to implement solvers—intermediate values may grow exponentially. This leads to integer overflow issues when working with fixed-point representations like NumPy. Therefore the solver relies strongly on [SymPy](https://www.sympy.org/en/index.html) for infinite-precision arithmetic, which is *very, very* slow.
 
-In it's present form, there is a hand written elimination algorithm that fails under certain edge cases. It emulates Gaussian elimination and solves Bezout's identity when a coprime element does not exist to pivot to. One can exactly solve for which eigenvalue of the measurement operator is represented by the tableau using [Diophantine](https://pypi.org/project/Diophantine/) by providing the `program.simulate(exact=true)` for *composite* dimensions.
+### Present implementation
+
+`WeylTableau.measure_z` (`tableau_composite.py`) no longer uses the Diophantine solver. It eliminates one row at a time over $\mathbb{Z}_d$ with operations that keep the generated group: a generator is multiplied by a power of another, and when no single entry of the row has the gcd of the whole row and $d$ as its gcd with $d$, a pair of generators $(a, b)$ with row entries $(a_r, b_r)$ is replaced by $(a^x b^y, a^{-b_r/g} b^{a_r/g})$, where $x a_r + y b_r = g$ (Bezout's identity). That replacement has determinant 1, so the pair generates the same group. Once the pivot $P$ of a row is taken out, $P^{d/\gcd(P_r, d)}$ is added back, so the remaining generators span exactly the elements that vanish in that row. Every value is reduced mod $d$ (phases) or mod the order $2d$ or $d$ (vectors) after each step, so nothing grows. The arithmetic is int64 when it provably cannot overflow, and Python integers otherwise (large $d$).
+
+The measurement is exact, and `tests/test_composite_tableau.py` checks it against a statevector simulation. `program.simulate(exact=True)` is still accepted for compatibility, but it has no effect.
 
 
 ### References

@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 from functools import cached_property
 import numpy as np
 from math import gcd
+from sympy import isprime
 
 @dataclass
 class Tableau:
@@ -50,6 +51,9 @@ class Tableau:
         """
         Returns a set of integers coprime to the order.
 
+        This builds a set of about `order` integers, so it is only usable for small dimensions.
+        The simulators test coprimality with `math.gcd` instead.
+
         Returns:
             set: Integers coprime to the order.
         """
@@ -59,6 +63,9 @@ class Tableau:
     def coprime_dimension(self) -> set:
         """
         Returns a set of integers coprime to the dimension.
+
+        This builds a set of about `dimension` integers, so it is only usable for small dimensions.
+        The simulators test coprimality with `math.gcd` instead.
 
         Returns:
             set: Integers coprime to the dimension.
@@ -73,7 +80,7 @@ class Tableau:
         Returns:
             bool: True if the dimension is prime, False otherwise.
         """
-        return not any(self.dimension % i == 0 for i in range(2, self.dimension))
+        return bool(isprime(int(self.dimension)))
     
     @property
     def even(self) -> bool:

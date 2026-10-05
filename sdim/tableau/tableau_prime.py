@@ -268,7 +268,7 @@ class ExtendedTableau(Tableau):
         self.destab_phase_vector %= self.order
 
     def hadamard(self, qudit_index: int):
-        """
+        r"""
         Applies the Hadamard gate to the qudit at the specified index.
 
         The Hadamard gate performs the following transformations:
@@ -336,7 +336,7 @@ class ExtendedTableau(Tableau):
         self._reduce_rows(qudit_index)
 
     def phase(self, qudit_index: int):
-        """
+        r"""
         Applies the Phase gate to the qudit at the specified index.
 
         The Phase gate transformations depend on whether the qudit dimension is odd or even:
@@ -359,7 +359,7 @@ class ExtendedTableau(Tableau):
 
         The phase accumulation for even dimensions is given by:
 
-        $$\\text{phase} += x^2 $$
+        $$\text{phase} += x^2 $$
 
         where $x$ is the X-power in the Pauli string.
 
@@ -385,7 +385,7 @@ class ExtendedTableau(Tableau):
         self._reduce_rows(qudit_index)
 
     def phase_inv(self, qudit_index: int):
-        """
+        r"""
         Applies the inverse Phase gate to the qudit at the specified index.
 
         The inverse Phase gate transformations depend on whether the qudit dimension is odd or even:
@@ -426,7 +426,7 @@ class ExtendedTableau(Tableau):
         self._reduce_rows(qudit_index)
         
     def cnot(self, control: int, target: int):
-        """
+        r"""
         Applies the CNOT gate with the specified control and target qudits.
 
         The CNOT gate performs the following transformations:
@@ -459,7 +459,7 @@ class ExtendedTableau(Tableau):
         self._reduce_rows(control, target)
     
     def cnot_inv(self, control: int, target: int):
-        """
+        r"""
         Applies the inverse CNOT gate with the specified control and target qudits.
 
         The inverse CNOT gate transformations depend on whether the qudit dimension is odd or even:
@@ -680,7 +680,7 @@ class ExtendedTableau(Tableau):
         return MeasurementResult(qudit_index, True, measurement_outcome)
 
     def exponentiate(self, col: int, exponent: int):
-        """
+        r"""
         Exponentiates a Pauli string by the given exponent.
 
         This operation performs the following transformation:

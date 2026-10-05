@@ -1,22 +1,115 @@
-import numpy as np
-import diophantine as dp
+r"""
+Stabilizer tableau for qudits of any dimension, in the linearized formalism of de Beaudrap (2013).
+
+Conventions (checked against an exact statevector simulator):
+
+- A generator stored as (p, z, x) is the operator $\omega^{-p} W(z, x)$ with
+  $W(z, x) = \tau^{x \cdot z} X^x Z^z$, $\omega = e^{2\pi i/d}$ and $\tau = e^{i\pi(d^2+1)/d}$,
+  so $\tau^2 = \omega$.  The state is the +1 eigenstate of every generator, so $W(z, x)$ has
+  eigenvalue $\omega^p$ on it, and a generator $(m, e_q, 0)$ says that qudit q measures as m.
+- $\tau$ has order D = 2d for even d and D = d for odd d (the `order`), and $W(z, x)$ depends on
+  z and x mod D only.  For even d, $W(z, x + d e_k) = (-1)^{z_k} W(z, x)$, so the z and x blocks
+  are kept mod D and never reduced mod d on their own.  The phase is a power of $\omega$ and is
+  kept mod d.
+- $W(v) W(w) = \tau^{[v, w]} W(v + w)$ with $[v, w] = z_v \cdot x_w - x_v \cdot z_w$, and
+  $W(v)^k = W(k v)$.  Elements of a stabilizer group commute, so $[v, w] = 0 \bmod d$; for even
+  d, $[v, w]/2$ is then an integer and
+  $(\omega^{-p} W(v))^a (\omega^{-q} W(w))^b = \omega^{-(a p + b q - a b [v, w]/2)} W(a v + b w)$.
+  For odd d the correction vanishes, since $\tau^{[v, w]} = 1$.
+- $W(v)$ with $v = 0 \bmod d$ is the identity (for even d, $\tau^{d^2} = 1$).  So whether an
+  element of the group is a power of $Z_q$, or the identity, only depends on its vector mod d.
+
+A stabilizer group of n qudits can need up to 2n generators when d is composite, so the number
+of columns of the blocks varies between n and 2n.
+"""
+import random
 from dataclasses import dataclass
-from functools import cached_property
-from typing import Optional, Tuple
 from math import gcd
-from sympy import Matrix
+from typing import List, Optional, Tuple
+
+import numpy as np
+
 from sdim.tableau.dataclasses import MeasurementResult, Tableau
-from sdim.diophantine import solve
+
+# A generator while measuring: (phase as a Python int mod d, vector [z..., x...] mod the order).
+_Generator = Tuple[int, np.ndarray]
+
+
+def _mulmod(values: np.ndarray, k: int, modulus: int) -> np.ndarray:
+    """
+    Returns (values * k) % modulus without int64 overflow, for a modulus below 2**32.
+
+    The blocks of a composite tableau are kept mod 2d, which is close to 2**32 for d near 2**31,
+    so a plain product of two entries can reach 2**64.  Splitting k into 16-bit halves keeps every
+    intermediate value below 2**49.  Arrays of Python integers (dtype=object) are exact already.
+    """
+    k = int(k) % modulus
+    if values.dtype != np.int64:
+        return (values * k) % modulus
+    values = values % modulus
+    if modulus <= 3037000499:        # (modulus - 1)**2 < 2**63
+        return (values * k) % modulus
+    high, low = divmod(k, 1 << 16)
+    return ((((values * high) % modulus) << 16) + values * low) % modulus
+
+
+def _nonzero(values: np.ndarray, modulus: int) -> np.ndarray:
+    """
+    Boolean mask of the entries of `values` that are nonzero mod `modulus`, for any dtype.
+
+    The comparison makes the mask boolean before any reduction: on numpy 1.x, `np.any` of an
+    array of Python integers (dtype=object) returns the integers themselves, not booleans, so
+    `~np.any(values % modulus, axis=0)` would be a bitwise NOT of integers and not a mask.
+    """
+    return (values % modulus) != 0
+
+
+def _extended_gcd(a: int, b: int) -> Tuple[int, int, int]:
+    """Returns (g, x, y) with a x + b y = g = gcd(a, b) for integers a, b >= 0, not both zero."""
+    old_r, r = a, b
+    old_x, x = 1, 0
+    old_y, y = 0, 1
+    while r:
+        q = old_r // r
+        old_r, r = r, old_r - q * r
+        old_x, x = x, old_x - q * x
+        old_y, y = y, old_y - q * y
+    return old_r, old_x, old_y
+
 
 @dataclass
 class WeylTableau(Tableau):
+    """
+    Stabilizer tableau for any qudit dimension (used for composite d).
+
+    See the module docstring for the conventions.  The generators are the columns of `z_block`
+    and `x_block` (mod the order), with their phases in `phase_vector` (mod d).
+
+    Attributes:
+        exact (bool): Kept for compatibility with `Program.simulate(exact=True)`.  Measurements
+            are always exact now, so it has no effect.
+    """
     exact: bool = False
+
+    def modulo(self):
+        """
+        Reduces the blocks mod the order and the phases mod the dimension.
+
+        Reducing the blocks mod d, as `Tableau.modulo` does for prime dimensions, would flip the
+        sign of generators for even d (W(z, x + d e_k) = (-1)^(z_k) W(z, x)).
+        """
+        self.z_block %= self.order
+        self.x_block %= self.order
+        self.phase_vector %= self.dimension
 
     @staticmethod
     def _generate_measurement_outcome(kappa: int, eta: int, dimension: int) -> int:
         """
         Given distribution parameters generate a random measurement result.
-        
+
+        The outcome is uniform over kappa + eta * k mod dimension, where eta divides the
+        dimension.  eta = 0 or eta = dimension gives kappa.
+
         Args:
             kappa (int): The kappa distribution parameter.
             eta (int): The eta distribution parameter.
@@ -26,14 +119,13 @@ class WeylTableau(Tableau):
             int: A random measurement result.
 
         Examples:
-            >>> _generate_measurement_outcome(2, 3, 5)
-            {2, 0, 3, 1, 4}
-            >>> _generate_measurement_outcome(0, 2, 4)
-            {0, 2, 0, 2}
-            >>> _generate_measurement_outcome(1, 2, 4)
-            {1, 3, 1, 3}
+            >>> _generate_measurement_outcome(2, 3, 6)   # one of
+            {2, 5}
+            >>> _generate_measurement_outcome(0, 2, 4)   # one of
+            {0, 2}
+            >>> _generate_measurement_outcome(1, 2, 4)   # one of
+            {1, 3}
         """
-        import random
         if eta == 0 or eta == dimension:
             return kappa % dimension
         else:
@@ -57,7 +149,7 @@ class WeylTableau(Tableau):
 
     def symplectic_product(self, index1: int, index2: int) -> int:
         """
-        Compute the symplectic product of two generators.
+        Compute the symplectic product of two generators, as an exact integer.
 
         Args:
             index1 (int): Index of the first generator.
@@ -66,7 +158,9 @@ class WeylTableau(Tableau):
         Returns:
             int: The symplectic product.
         """
-        return np.dot(self.z_block[:, index1], self.x_block[:, index2]) - np.dot(self.z_block[:, index2], self.x_block[:, index1])
+        z = self.z_block.astype(object)
+        x = self.x_block.astype(object)
+        return int(np.dot(z[:, index1], x[:, index2]) - np.dot(z[:, index2], x[:, index1]))
 
     def append(self, pauli_vector: np.ndarray) -> None:
         """
@@ -109,22 +203,22 @@ class WeylTableau(Tableau):
 
     def add_generators(self, index1: int, index2: int, scalar: int = 1):
         """
-        Add the generators at column index2 to the generators at column index1.
+        Replace the generator at column index1 by its product with the generator at index2 to
+        the power scalar.
 
         Args:
-            index1 (int): Index of the first generator.
-            index2 (int): Index of the second generator.
-            scalar (int, optional): Scalar multiplier. Defaults to 1.
+            index1 (int): Index of the generator that is replaced.
+            index2 (int): Index of the other generator.
+            scalar (int, optional): Power of the generator at index2. Defaults to 1.
         """
-        self.z_block[:, index1] += self.z_block[:, index2] * scalar
-        self.x_block[:, index1] += self.x_block[:, index2] * scalar
-        self.phase_vector[index1] += (scalar*(self.phase_vector[index2] + (self.symplectic_product(index1, index2)//2 if self.even else 0))) % self.order
-        self.z_block[:, index1] %= self.order
-        self.x_block[:, index1] %= self.order
+        # g**order is the identity, so the power can be reduced, which keeps the products small.
+        columns = self._generator_columns()
+        p, v = self._combine(columns[index1], 1, columns[index2], int(scalar) % self.order)
+        self._store_column(index1, p, v)
 
     def multiply_generator(self, index: int, scalar: int, allow_non_coprime: bool = False):
         """
-        Multiply the generators at column index by a scalar.
+        Raise the generator at column index to the power scalar.
 
         Args:
             index (int): Index of the generator to multiply.
@@ -134,11 +228,11 @@ class WeylTableau(Tableau):
         Raises:
             ValueError: If the scalar is not coprime with the order and allow_non_coprime is False.
         """
-        if scalar not in self.coprime_order and not allow_non_coprime:
+        if gcd(int(scalar), self.order) != 1 and not allow_non_coprime:
             raise ValueError(f"Scalar {scalar} is not coprime with the order {self.order}.")
-        self.z_block[:, index] = (self.z_block[:, index] * scalar) % self.order
-        self.x_block[:, index] = (self.x_block[:, index] * scalar) % self.order
-        self.phase_vector[index] = (self.phase_vector[index] * scalar) % self.order
+        self.z_block[:, index] = _mulmod(self.z_block[:, index], scalar, self.order)
+        self.x_block[:, index] = _mulmod(self.x_block[:, index], scalar, self.order)
+        self.phase_vector[index] = (int(self.phase_vector[index]) * int(scalar)) % self.dimension
 
     def swap_generators(self, index1: int, index2: int):
         """
@@ -156,460 +250,264 @@ class WeylTableau(Tableau):
         self.z_block[:, [index1, index2]] = self.z_block[:, [index2, index1]]
         self.x_block[:, [index1, index2]] = self.x_block[:, [index2, index1]]
         self.phase_vector[[index1, index2]] = self.phase_vector[[index2, index1]]
-           
-    def _get_single_eta(self, qudit_index: int):
+
+    # Exact group arithmetic used by the measurement.
+
+    def _work_dtype(self):
         """
-        Get the eta value assuming a Z measurement at specified index.
+        int64 when no intermediate value of the measurement arithmetic can overflow, else object.
 
-        Args:
-            qudit_index (int): Index of the qudit.
-
-        Returns:
-            int: The eta value.
+        Coefficients stay below 2d in absolute value and entries below 2d, so a combination of two
+        vectors stays below 8 d**2 and a symplectic product below 8 n d**2.
         """
-        row = self.x_block[qudit_index, :]
-        
-        if np.all(row == 0):
-            return self.dimension
-        
-        if self.x_block.shape[1] > 1:
-            row = self._eliminate_columns(qudit_index, row)
-        return self._get_eta_as_divisor(qudit_index, row)
+        d = self.dimension
+        if self.z_block.dtype == np.int64 and self.x_block.dtype == np.int64 \
+                and 8 * max(self.num_qudits, 1) * d * d < 2**62:
+            return np.int64
+        return object
 
-    def _eliminate_columns(self, qudit_index: int, row: np.ndarray) -> np.ndarray:
+    def _generator_columns(self) -> List[_Generator]:
+        """The generators as (phase mod d, vector [z..., x...] mod the order)."""
+        dtype = self._work_dtype()
+        vectors = np.vstack((self.z_block, self.x_block)).astype(dtype) % self.order
+        return [(int(self.phase_vector[j]) % self.dimension, vectors[:, j].copy())
+                for j in range(vectors.shape[1])]
+
+    def _store_column(self, index: int, phase: int, vector: np.ndarray):
+        n = self.num_qudits
+        self.phase_vector[index] = phase
+        self.z_block[:, index] = vector[:n]
+        self.x_block[:, index] = vector[n:]
+
+    def _set_generators(self, columns: List[_Generator]):
+        """Replaces all generators, keeping the dtype of the tableau arrays."""
+        n = self.num_qudits
+        vectors = np.stack([v for _, v in columns], axis=1)
+        self.z_block = vectors[:n].astype(self.z_block.dtype)
+        self.x_block = vectors[n:].astype(self.x_block.dtype)
+        self.phase_vector = np.array([p for p, _ in columns], dtype=self.phase_vector.dtype)
+
+    def _combine(self, a: _Generator, alpha: int, b: _Generator, beta: int) -> _Generator:
         """
-        Eliminate columns in the row.
-
-        Args:
-            qudit_index (int): Index of the qudit.
-            row (np.ndarray): Row to process.
-
-        Returns:
-            np.ndarray: Processed row.
+        Returns the group element a**alpha * b**beta.
 
         Raises:
-            ValueError: If a suitable column to swap cannot be found.
+            RuntimeError: If a and b do not commute, which no two elements of a stabilizer group do.
         """
-        row_gcd = np.gcd.reduce(row)
-        cols = row.shape[0]
-        gcd_col = False
-        coprime_col = False
-        pivot_col = None
-        for col in range(cols):
-            if row[col] in self.coprime_order:
-                coprime_col = True
-                pivot_col = col
-                break
-            if row[col] == row_gcd:
-                gcd_col = True
-                pivot_col = col
-                break
-        if not coprime_col and not gcd_col:
-            # Find a pair of columns with gcd equal to row_gcd
-            for i in range(cols):
-                for j in range(i + 1, cols):
-                    if np.gcd(row[i], row[j]) == row_gcd:
-                        x, y, _ = self._extended_euclidean(row[i], row[j])
-                        x, y = x % self.order, y % self.order
-                        if x in self.coprime_order:
-                            self.multiply_generator(i, x)
-                            self.add_generators(i, j, y)
-                            pivot_col = i
-                            gcd_col = True
-                        elif y in self.coprime_order:
-                            self.multiply_generator(j, y)
-                            self.add_generators(j, i, x)
-                            pivot_col = j
-                            gcd_col = True
-                        else:
-                            raise ValueError("Could not find suitable column to swap.")
-                        break
-                if gcd_col:
-                    break
-        if coprime_col:
-            # Calculate the multiplicative inverse of the pivot element modulo self.order
-            pivot = int(row[pivot_col])
-            inv_pivot = pow(pivot, -1, self.order)
-            # Eliminate other columns using the pivot column
-            for i in range(cols):
-                if i != pivot_col and row[i] != 0:
-                    factor = (-int(row[i]) * inv_pivot) % self.order
-                    self.add_generators(i, pivot_col, factor)
-        if gcd_col:
-            # eliminate other columns using the gcd_col
-            pivot = int(row[pivot_col])
-            for i in range(cols):
-                target = int(row[i])
-                if i != pivot_col and target != 0:
-                    g = gcd(pivot, self.order)
-                    if row[i] % g == 0:
-                        factor = ((-target // g) * pow(pivot // g, -1, self.order // g)) % (self.order // g)
-                        self.add_generators(i, pivot_col, factor)
-        last_col = cols - 1
-        self.swap_generators(pivot_col, last_col)
-        return row
-        
-    def _get_eta_as_divisor(self, qudit_index: int, row: np.ndarray):
-        """
-        Find suitable alpha such that eta as a divisor of the dimension.
-        Will attempt to find add a multiple of the dimension (multiply by identity) if no suitable alpha is found.
-
-        Args:
-            qudit_index (int): Index of the qudit.
-            row (np.ndarray): Row to process.
-
-        Returns:
-            int or None: The eta value or None if not found.
-        """
-        last_col = row.shape[0] - 1
-        if row[-1] != 0:
-            if self.dimension % row[-1]== 0:
-                return row[-1]
-            else:
-                for alpha in self.coprime_order:
-                    value = (row[-1] * alpha) % self.order
-                    if self.dimension % value == 0:
-                        self.multiply_generator(last_col, alpha)
-                        return value
-            # reduce the row modulo the dimension
-            if row[-1] > self.dimension:
-                self.x_block[qudit_index, -1] -= self.dimension
-                self.phase_vector[-1] -= self.dimension//2
-            else:
-                self.x_block[qudit_index, -1] += self.dimension
-                self.phase_vector[-1] += self.dimension//2
-            for alpha in self.coprime_order:
-                    value = (row[-1] * alpha) % self.order
-                    if self.dimension % value == 0:
-                        self.multiply_generator(last_col, alpha)
-                        return value
-        return None
-      
-    def _prepare_excluding_commuting_matrix(self, new_stabilizer: np.ndarray) -> np.ndarray:
-        """
-        Prepare the excluding commuting matrix.
-
-        Args:
-            new_stabilizer (np.ndarray): New stabilizer to add.
-
-        Returns:
-            np.ndarray: The prepared matrix.
-        """
-        excluding_commuting = self.stab_tableau[:, :-1]
-        excluding_commuting = np.hstack((excluding_commuting, np.c_[new_stabilizer]))
-        return np.hstack((excluding_commuting, self.dimension * np.ones((self.pauli_size, 1), dtype=np.int64)))
-
-    def _is_last_column_identity(self, last_column: np.ndarray) -> bool:
-        """
-        Check if the last column is reducible modulo d, representing a Pauli string equal to the identity matrices.
-
-        Args:
-            last_column (np.ndarray): The last column to check.
-
-        Returns:
-            bool: True if the last column is an identity, False otherwise.
-        """
-        return np.array_equal(last_column[1:] % self.dimension, np.zeros(2*self.num_qudits, dtype=np.int64))
-    
-    def _handle_non_deterministic_case(self, new_stabilizer: np.ndarray, s: int, qudit_index: int, measurement_value: int) -> MeasurementResult:
-        """
-        Handle the non-deterministic case of measurement.
-
-        Args:
-            new_stabilizer (np.ndarray): New stabilizer to add.
-            s (int): The s value.
-            qudit_index (int): Index of the qudit.
-            measurement_value (int): The measurement value.
-
-        Returns:
-            MeasurementResult: The result of the measurement.
-        """
-        last_column = self.stab_tableau[:, -1] * s
-        last_column_index = self.stab_tableau.shape[1] - 1
-
-        if self._is_last_column_identity(last_column):
-            self.update(new_stabilizer, last_column_index)
-        else:
-            excluding_commuting = self._prepare_excluding_commuting_matrix(new_stabilizer)
-            try:
-                result = solve(excluding_commuting, last_column)
-            except Exception as e:
-                try:
-                    result = dp.solve(Matrix(excluding_commuting), Matrix(last_column))
-                except Exception as e:
-                    result = True 
-            if not result:
-                self.multiply_generator(last_column_index, s, allow_non_coprime=True)
-                self.append(new_stabilizer)
-            else:
-                self.update(new_stabilizer, last_column_index)
-
-        return MeasurementResult(qudit_index=qudit_index, deterministic=False, measurement_value=measurement_value)
-
-    def _add_column_matrix(self, matrix: np.ndarray, src_col: int, dest_col: int, factor: int):
-        """
-        Add a column to another column in the matrix.
-
-        Args:
-            matrix (np.ndarray): The matrix to modify.
-            src_col (int): Source column index.
-            dest_col (int): Destination column index.
-            factor (int): Factor to multiply the source column by.
-        """
+        d, n = self.dimension, self.num_qudits
+        pa, va = a
+        pb, vb = b
+        sp = int(np.dot(va[:n], vb[n:])) - int(np.dot(va[n:], vb[:n]))
+        if sp % d:
+            raise RuntimeError("Stabilizer generators do not commute; the tableau is inconsistent.")
+        p = alpha * pa + beta * pb
         if self.even:
-            phase_correction = self._symplectic_product(factor * matrix[1:, src_col], matrix[1:, dest_col], self.num_qudits) // 2
-        else:
-            phase_correction = 0
-        matrix[:, dest_col] += factor * matrix[:, src_col]
-        matrix[0, dest_col] += phase_correction
-        matrix[:, dest_col] %= self.order
+            p -= alpha * beta * (sp // 2)
+        return p % d, (alpha * va + beta * vb) % self.order
 
-    def _extended_euclidean(self, a: int, b: int) -> Tuple[int, int, int]:
+    def _drop_identities(self, vectors: np.ndarray, phases: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute the extended Euclidean algorithm for a and b.
+        Removes the columns that are the identity: W(v) = I when v = 0 mod d.  Such a column with a
+        nonzero phase would put a nontrivial multiple of I in the stabilizer group.
+        """
+        keep = np.any(_nonzero(vectors, self.dimension), axis=0)
+        if keep.all():
+            return vectors, phases
+        if np.any(_nonzero(phases[~keep], self.dimension)):
+            raise RuntimeError("The stabilizer group contains a nontrivial multiple of the identity.")
+        return vectors[:, keep], phases[keep]
 
-        Args:
-            a (int): First number.
-            b (int): Second number.
+    def _eliminate_row(self, vectors: np.ndarray, phases: np.ndarray, row: int):
+        """
+        Takes out a pivot for `row`: afterwards every remaining column is 0 mod d in `row`.
+
+        The columns are generators of a group (vectors mod the order, phases mod d).  The pivot is
+        a column whose entry has the smallest gcd with d of the row; if there is none, pairs of
+        columns are first replaced by (a**x b**y, a**(-b_row/g) b**(a_row/g)) with
+        x a_row + y b_row = g, which has determinant 1, so the pair generates the same group.
+        Every other column c then becomes c * pivot**f, with f chosen to clear its entry.
+
+        The group generated by the remaining columns and pivot**s, where s = d / gcd(pivot entry, d),
+        is the subgroup of elements that are 0 mod d in `row`; pivot**s is appended for that.
 
         Returns:
-            Tuple[int, int, int]: x, y, and gcd(a, b) such that a*x + b*y = gcd(a, b).
+            (vectors, phases, pivot) with pivot = (phase, vector), or None if the row is already 0.
+        """
+        d, n, order = self.dimension, self.num_qudits, self.order
+        entries = vectors[row] % d
+        nonzero = np.flatnonzero(entries)
+        if nonzero.size == 0:
+            return vectors, phases, None
+        values = [int(v) for v in entries[nonzero]]
+        row_gcd = gcd(d, *values)
+        candidates = [j for j, v in zip(nonzero, values) if gcd(v, d) == row_gcd]
+        merged = not candidates
+        if candidates:
+            p_index = int(candidates[0])
+        else:
+            p_index = int(nonzero[0])
+            for j in nonzero[1:]:
+                a = int(vectors[row, p_index]) % d
+                b = int(vectors[row, j]) % d
+                g, x, y = _extended_gcd(a, b)
+                first = (int(phases[p_index]), vectors[:, p_index])
+                second = (int(phases[j]), vectors[:, j])
+                new_first = self._combine(first, x, second, y)
+                new_second = self._combine(first, -(b // g), second, a // g)
+                phases[p_index], vectors[:, p_index] = new_first
+                phases[j], vectors[:, j] = new_second
+                if gcd(g, d) == row_gcd:
+                    break
+            entries = vectors[row] % d
+            nonzero = np.flatnonzero(entries)
+
+        pivot_vector = vectors[:, p_index].copy()
+        pivot_phase = int(phases[p_index])
+        g = gcd(int(entries[p_index]), d)
+        others = nonzero[nonzero != p_index]
+        drop = [p_index]
+        if others.size:
+            inverse = pow(int(entries[p_index]) // g, -1, d // g)
+            factors = ((-(entries[others] // g)) * inverse) % (d // g)
+            block = vectors[:, others]
+            products = block[:n].T.dot(pivot_vector[n:]) - block[n:].T.dot(pivot_vector[:n])
+            if np.any(_nonzero(products, d)):
+                raise RuntimeError("Stabilizer generators do not commute; the tableau is inconsistent.")
+            block = (block + np.outer(pivot_vector, factors)) % order
+            vectors[:, others] = block
+            correction = factors * pivot_phase
+            if self.even:
+                correction = correction - factors * ((products // 2) % d)
+            phases[others] = (phases[others] + correction) % d
+            # Only the columns changed here can have become the identity.
+            identities = others[~np.any(_nonzero(block, d), axis=0)]
+            if identities.size:
+                if np.any(_nonzero(phases[identities], d)):
+                    raise RuntimeError("The stabilizer group contains a nontrivial multiple of the identity.")
+                drop.extend(int(j) for j in identities)
+
+        vectors = np.delete(vectors, drop, axis=1)
+        phases = np.delete(phases, drop)
+        if merged:
+            vectors, phases = self._drop_identities(vectors, phases)
+        s = d // g
+        annihilator = (s * pivot_vector) % order
+        if np.any(_nonzero(annihilator, d)):
+            vectors = np.concatenate((vectors, annihilator[:, None]), axis=1)
+            phases = np.append(phases, np.array([(s * pivot_phase) % d], dtype=phases.dtype))
+        elif (s * pivot_phase) % d:
+            raise RuntimeError("The stabilizer group contains a nontrivial multiple of the identity.")
+        return vectors, phases, (pivot_phase, pivot_vector)
+
+    def _reduce_row(self, target: _Generator, pivot: _Generator, row: int) -> _Generator:
+        """
+        Multiplies target by the power of pivot that makes its entry in `row` 0 mod d.
 
         Raises:
-            ValueError: If suitable x and y cannot be found.
+            RuntimeError: If no power does, which means target is not in the group.
         """
-        x, y, u, v = 1, 0, 0, 1
-        while b != 0:
-            q, r = a // b, a % b
-            m, n = x - u * q, y - v * q
-            a, b, x, y, u, v = b, r, u, v, m, n
-
-        # Ensure x and y are positive
-        if a < 0:
-            x, y = -x, -y
-
-        # Check if one of x or y is coprime to self.order
-        if x % self.order in self.coprime_order or y % self.order in self.coprime_order:
-            return x, y, a
-        raise ValueError("Could not find suitable x and y.")
-
-    def _swap_columns_matrix(self, matrix: np.ndarray, col1: int, col2: int):
-        """
-        Swap two columns in a matrix.
-
-        Args:
-            matrix (np.ndarray): The matrix to modify.
-            col1 (int): Index of the first column.
-            col2 (int): Index of the second column.
-        """
-        matrix[:, [col1, col2]] = matrix[:, [col2, col1]]
-
-    def column_reduction(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, s: int) -> Optional[int]:
-        """
-        Perform column reduction on the tableau matrix.
-
-        Args:
-            tableau_matrix (np.ndarray): The tableau matrix.
-            weyl_vector (np.ndarray): The Weyl vector.
-            s (int): The s value.
-
-        Returns:
-            Optional[int]: The result of the column reduction, or None if not found.
-        """
-        pauli_vector = np.hstack((0, weyl_vector)).reshape(-1, 1) 
-        full_tableau = np.hstack((tableau_matrix, -s*pauli_vector)) % self.order
-        rows = full_tableau.shape[0] 
-        cols = full_tableau.shape[1]
-        pivot_row = 1
-        for col in range(cols):
-            if pivot_row >= rows:
-                break
-            coprime = False
-            gcd_col = False
-            pivot_col = col
-            for row in range(pivot_row, rows):
-                if np.all(full_tableau[row, col:] == 0): # if everything to the right including pivot is zero, check next row
-                    continue
-                elif np.all(full_tableau[row, col+1:] == 0): # if everything to the right of the pivot is zero, go to next column if everything below is zero
-                    if row < rows - 1 and np.all(full_tableau[row+1:, col] == 0):
-                        break
-                    continue
-                if full_tableau[row, -1] != 0: # if the last column is non-zero, check if the element above is non zero and that everything between pivot and last column is non zero 
-                    if self.num_qudits > 1 and row > 1:
-                        if np.any(full_tableau[row, col+1:-1]) and full_tableau[row-1, col] != 0:
-                            break
-                row_gcd = np.gcd.reduce(full_tableau[row, col:])
-                for i in range(col, cols-1):
-                    if full_tableau[row, i] in self.coprime_order:
-                        pivot_row = row
-                        coprime = True
-                        if pivot_col != i:
-                            self._swap_columns_matrix(full_tableau, col, i)
-                        break
-                    if full_tableau[row, i] == row_gcd:
-                        pivot_row = row
-                        gcd_col = True
-                        if pivot_col != i:
-                            self._swap_columns_matrix(full_tableau, col, i)
-                        break
-                if not coprime and not gcd_col:
-                    for i in range(col, cols-1):
-                        for j in range(i + 1, cols-1):
-                            if np.gcd(full_tableau[row, i], full_tableau[row, j]) == row_gcd:
-                                # Solve Bezout's identity to get the column with row_gcd
-                                x, y, _ = self._extended_euclidean(full_tableau[row, i], full_tableau[row, j])
-                                x, y = x % self.order, y % self.order
-                                if x in self.coprime_order:
-                                    full_tableau[:, i] *= x
-                                    full_tableau[:, i] %= self.order
-                                    self._add_column_matrix(full_tableau, j, i, y)
-                                    
-                                elif y in self.coprime_order:
-                                    full_tableau[:, j] *= y
-                                    full_tableau[:, j] %= self.order
-                                    self._add_column_matrix(full_tableau, i, j, x)
-                                    self._swap_columns_matrix(full_tableau, i, j)
-                                else:
-                                    raise ValueError("Could not find suitable column to swap.")
-                                if pivot_col != i:
-                                    self._swap_columns_matrix(full_tableau, col, i)
-                                pivot_row = row
-                                gcd_col = True
-                                break
-                        if coprime or gcd_col:
-                            break
-                if coprime or gcd_col:
-                    break
-            if coprime:
-                # Calculate the multiplicative inverse of the pivot element modulo self.order
-                pivot = int(full_tableau[pivot_row, pivot_col])
-                inv_pivot = pow(pivot, -1, self.order)
-                # Eliminate other columns using the pivot column
-                for i in range(pivot_col, cols):
-                    if i != pivot_col and full_tableau[pivot_row, i] != 0:
-                        factor = (-int(full_tableau[pivot_row, i]) * inv_pivot) % self.order
-                        self._add_column_matrix(full_tableau, pivot_col, i, factor)
-            if gcd_col:
-                # eliminate other columns using the gcd_col
-                pivot = int(full_tableau[pivot_row, pivot_col])
-                for i in range(pivot_col, cols):
-                    target = int(full_tableau[pivot_row, i])
-                    if i != pivot_col and target != 0:
-                        g = gcd(pivot, self.order)
-                        if full_tableau[pivot_row, i] % g == 0:
-                            factor = ((-target // g) * pow(pivot // g, -1, self.order // g)) % (self.order // g)
-                            self._add_column_matrix(full_tableau, pivot_col, i, factor)
-            pivot_row += 1
-        return full_tableau[0, -1]
-            
-    def _create_measurement_result(self, t: int, eta: int, s: int, qudit_index: int, weyl_vector: np.ndarray) -> MeasurementResult:
-        """
-        Create a measurement result based on the coset of possible distributions provided by factors kappa and eta.
-
-        Args:
-            t (int): The t value.
-            eta (int): The eta value.
-            s (int): The s value.
-            qudit_index (int): Index of the qudit.
-            weyl_vector (np.ndarray): The Weyl vector.
-
-        Returns:
-            MeasurementResult: The created measurement result.
-        """
-        kappa = (t * eta) // self.dimension
-        measurement_value = self._generate_measurement_outcome(kappa, eta, self.dimension)
-        
-        if s == 1:
-            return MeasurementResult(qudit_index=qudit_index, deterministic=True, measurement_value=measurement_value)
-        
-        new_stabilizer = np.hstack((measurement_value, weyl_vector))
-        return self._handle_non_deterministic_case(new_stabilizer, s, qudit_index, measurement_value)
-
-    def t_diophantine(self, tableau_matrix: np.ndarray, weyl_vector: np.ndarray, qudit_index: int, s: int) -> Optional[int]:
-        """
-        Solve whether a tableau contains the weyl vector with a given phase value t is in the column span by solving Ax=b.
-        The modulo constraints can be represented as a linear system of Diophantine equations.
-
-        Args:
-            tableau_matrix (np.ndarray): The tableau matrix.
-            weyl_vector (np.ndarray): The Weyl vector.
-            qudit_index (int): Index of the qudit.
-            s (int): The s value.
-
-        Returns:
-            Optional[int]: The solution t, or None if not found.
-        """
-        modulo_constraint = np.ones((self.pauli_size, 1), dtype=np.int64) * self.order
-        tableau_matrix = np.hstack((tableau_matrix, modulo_constraint))
-        if self.even:
-            tableau_matrix[0, qudit_index+self.num_qudits] = (-self.dimension * s // 2) % self.order
-            identity = np.zeros((self.pauli_size, 1), dtype=np.int64)
-            identity[0] = self.dimension
-            tableau_matrix = np.hstack((identity, tableau_matrix))
-        for t in range(self.dimension):
-            solution = np.hstack((s*t, s*weyl_vector)) % self.order
-            try:
-                if solve(tableau_matrix, solution):
-                    return t
-            except Exception:
-                sympy_tableau = Matrix(tableau_matrix)
-                sympy_solution = Matrix(solution)
-                try:
-                    if dp.solve(sympy_tableau, sympy_solution):
-                        return t
-                except NotImplementedError:
-                    return t
+        d = self.dimension
+        t = int(target[1][row]) % d
+        if t == 0:
+            return target
+        a = int(pivot[1][row]) % d
+        g = gcd(a, d)
+        if t % g:
+            raise RuntimeError("Measured operator is not in the stabilizer group; the tableau is inconsistent.")
+        k = (-(t // g) * pow(a // g, -1, d // g)) % (d // g)
+        return self._combine(target, 1, pivot, k)
 
     def measure_z(self, qudit_index: int) -> Optional[MeasurementResult]:
-        """
+        r"""
         Perform a Z measurement on a qudit.
+
+        With S the stabilizer group, let s be the smallest power with $Z_q^s \in S$ up to a phase.
+        Eliminating the X row of the qudit first leaves one pivot P that is nonzero there, with
+        s = d / gcd(P_x, d), and the subgroup of S that commutes with Z_q is generated by P**s and
+        the other columns.  An echelon form of that subgroup mod d reduces $Z_q^{-s}$ row by row to
+        an element $\omega^{-c} I$, so $Z_q^s$ has eigenvalue $\omega^c$, and the outcome m is
+        uniform over the solutions of s m = c mod d.  Rows are taken where $Z_q^{-s}$ is still
+        nonzero, so a deterministic measurement stops as soon as it is reduced.  If s > 1, the
+        generators become the pivots of the commuting subgroup plus $\omega^{-m} Z_q$ (at most 2n).
+
+        All arithmetic is exact (int64 where it provably fits, Python integers otherwise), and the
+        result does not depend on which representatives mod 2d the tableau holds.
 
         Args:
             qudit_index (int): Index of the qudit to measure.
 
         Returns:
-            Optional[MeasurementResult]: The result of the measurement, or None if not applicable.
+            MeasurementResult: The result of the measurement.
         """
-        weyl_vector = np.zeros(2*self.num_qudits, dtype=np.int64)
-        weyl_vector[qudit_index] = 1
-        eta = self._get_single_eta(qudit_index)
-        s = self.dimension // eta
-        if s == self.dimension:
-            return self._create_measurement_result(0, eta, s, qudit_index, weyl_vector)
+        d, n, order = self.dimension, self.num_qudits, self.order
+        dtype = self._work_dtype()
+        vectors = np.vstack((self.z_block, self.x_block)).astype(dtype) % order
+        phases = self.phase_vector.astype(dtype) % d
+        rows_left = list(range(2 * n))
 
-        if self.even:
-            aux_matrix = np.zeros((self.pauli_size, self.pauli_size-1), dtype=np.int64)
-            for i in range(self.pauli_size-1):
-                aux_matrix[i+1, i] = self.dimension
-            tableau_matrix = np.hstack((aux_matrix, self.stab_tableau))
-        else:
-            tableau_matrix = self.stab_tableau
+        x_row = n + qudit_index
+        vectors, phases, pivot = self._eliminate_row(vectors, phases, x_row)
+        rows_left.remove(x_row)
+        s = 1 if pivot is None else d // gcd(int(pivot[1][x_row]) % d, d)
 
-        if not self.exact:
-            t = self.column_reduction(tableau_matrix, weyl_vector, s)
-            # print("eta, t, s", eta, t, s)
-            return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
-        else:
-            t = self.t_diophantine(tableau_matrix, weyl_vector, qudit_index, s)
-            # print("eta, t, s", eta, t, s)
-            return self._create_measurement_result(t, eta, s, qudit_index, weyl_vector)
-        
+        # Reduce Z_q^-s with the commuting subgroup, one row where it is nonzero at a time.
+        target_vector = np.zeros(2 * n, dtype=dtype)
+        target_vector[qudit_index] = (-s) % order
+        target = (0, target_vector)
+        pivots = []
+        while True:
+            row = next((r for r in rows_left if target[1][r] % d), None)
+            if row is None:
+                break
+            vectors, phases, pivot = self._eliminate_row(vectors, phases, row)
+            rows_left.remove(row)
+            if pivot is None:
+                raise RuntimeError("Measured operator is not in the stabilizer group; the tableau is inconsistent.")
+            pivots.append(pivot)
+            target = self._reduce_row(target, pivot, row)
+        c = target[0]
+        if c % s:
+            raise RuntimeError("Inconsistent measurement phase; the tableau is inconsistent.")
+        kappa, eta = c // s, d // s
+
+        if s == 1:
+            return MeasurementResult(qudit_index=qudit_index, deterministic=True, measurement_value=int(kappa % d))
+
+        # Finish the echelon form, so the commuting subgroup has at most one pivot per row.
+        for row in rows_left:
+            vectors, phases, pivot = self._eliminate_row(vectors, phases, row)
+            if pivot is not None:
+                pivots.append(pivot)
+        if self._drop_identities(vectors, phases)[0].shape[1]:
+            raise RuntimeError("Echelon form left a non-identity column; the tableau is inconsistent.")
+
+        measurement_value = int(self._generate_measurement_outcome(kappa, eta, d))
+        z_q = np.zeros(2 * n, dtype=dtype)
+        z_q[qudit_index] = 1
+        self._set_generators(pivots + [(measurement_value, z_q)])
+        return MeasurementResult(qudit_index=qudit_index, deterministic=False, measurement_value=measurement_value)
+
     def multiply(self, qudit_index: int, scalar: int):
         """
         Apply multiplication gate to qudit at index.
+
+        M_a |j> = |a j mod d> only depends on a mod d, so the scalar is reduced mod d first.  The
+        conjugation M_a W(z, x) M_a^-1 = W(a^-1 z, a x) needs a * a^-1 = 1 mod the order (2d for
+        even d), not just mod d: the factor tau^(x.z) of W changes sign otherwise.  A scalar
+        coprime to an even d is odd, so it is invertible mod 2d as well.
 
         Args:
             qudit_index (int): Index of the qudit.
             scalar (int): Scalar value to multiply by.
 
         Raises:
-            ValueError: If the scalar is not coprime with the order.
+            ValueError: If the scalar is not coprime with the dimension.
         """
-        scalar = int(scalar) % self.order
-        if gcd(scalar, self.order) != 1:
-            raise ValueError(f"Scalar {scalar} is not coprime with the order {self.order}.")
-        self.z_block[qudit_index, :] = (self.z_block[qudit_index, :] * pow(scalar, -1, self.order)) % self.order
-        self.x_block[qudit_index, :] = (self.x_block[qudit_index, :] * scalar) % self.order
+        a = int(scalar) % self.dimension
+        if gcd(a, self.dimension) != 1:
+            raise ValueError(f"Scalar {scalar} is not coprime with the dimension {self.dimension}.")
+        self.z_block[qudit_index, :] = _mulmod(self.z_block[qudit_index, :], pow(a, -1, self.order), self.order)
+        self.x_block[qudit_index, :] = _mulmod(self.x_block[qudit_index, :], a, self.order)
 
     def hadamard(self, qudit_index: int):
         """

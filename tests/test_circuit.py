@@ -167,7 +167,7 @@ def test_qubit_deutsch():
     assert program.simulate() == [MeasurementResult(0, True, expected_result)]
 
 def test_z_stabilizer_extraction():
-    """
+    r"""
     Five qutrit circuit that measures two operators initialized to state $|111\rangle$
 
     $Z_2 \otimes Z_3 \otimes Z_4^\dag$ onto qutrit 0
@@ -194,7 +194,7 @@ def test_z_stabilizer_extraction():
     assert program.simulate() == [MeasurementResult(0, True, 1), MeasurementResult(1, True, 2)]
 
 def test_x_stabilizer_extraction():
-    """
+    r"""
     Five qutrit circuit that measures two operators 
     
     $X_2 \otimes X_3 \otimes X_4^\dag$ onto qutrit 0
