@@ -147,6 +147,7 @@ import gc
 import itertools
 import json
 import math
+import opcode
 import operator
 import re
 import threading
@@ -1542,7 +1543,7 @@ class _Records:
 _ARITHMETIC_OPNAMES = frozenset({
     "RESUME", "NOP", "CACHE", "EXTENDED_ARG", "RETURN_VALUE",
     "LOAD_FAST", "LOAD_FAST_CHECK", "LOAD_FAST_LOAD_FAST", "LOAD_FAST_BORROW",
-    "LOAD_FAST_BORROW_LOAD_FAST_BORROW", "LOAD_CONST", "LOAD_SMALL_INT",
+    "LOAD_FAST_BORROW_LOAD_FAST_BORROW", "LOAD_CONST", "LOAD_SMALL_INT", "LOAD_COMMON_CONSTANT",
     "BINARY_SUBSCR", "UNARY_NEGATIVE", "BINARY_OP",
     "BINARY_ADD", "BINARY_SUBTRACT", "BINARY_MULTIPLY", "BINARY_MODULO",
 })
@@ -1566,7 +1567,13 @@ _CALL_OR_ARITHMETIC_OPCODES = _opcodes(_ARITHMETIC_OPNAMES | _CALL_OPNAMES)
 _BINARY_OP = dis.opmap.get("BINARY_OP")
 _LOAD_CONST = dis.opmap["LOAD_CONST"]
 _EXTENDED_ARG = dis.opmap["EXTENDED_ARG"]
-_ARGUMENT_OPCODES = frozenset({_BINARY_OP, _LOAD_CONST, _EXTENDED_ARG})
+# Python 3.15 loads some constants, -1 among them, with LOAD_COMMON_CONSTANT, whose argument
+# indexes the table that dis reads its values from. Without that table the opcode is refused
+# and such expressions take the numeric path.
+_LOAD_COMMON_CONSTANT = dis.opmap.get("LOAD_COMMON_CONSTANT")
+_INT_COMMON_CONSTANTS = frozenset(
+    i for i, value in enumerate(getattr(opcode, "_common_constants", ())) if type(value) is int)
+_ARGUMENT_OPCODES = frozenset({_BINARY_OP, _LOAD_CONST, _EXTENDED_ARG, _LOAD_COMMON_CONSTANT})
 _ARITHMETIC_BINARY_OP_ARGS = frozenset(
     ins.arg for ins in dis.get_instructions(compile("a + a, a - a, a * a, a ** a, a % a, a[a]", "<ops>", "eval"))
     if ins.opname == "BINARY_OP" and ins.argrepr in _ARITHMETIC_BINARY_OPS)
@@ -1595,7 +1602,8 @@ def _is_straight_line_arithmetic(fn) -> bool:
     if ops.translate(None, _CALL_OR_ARITHMETIC_OPCODES if wraps_mod else _ARITHMETIC_OPCODES):
         return False
     # The arguments that matter: the operator of each BINARY_OP and the constant each LOAD_CONST
-    # loads. EXTENDED_ARG holds the high bits of the next instruction's argument.
+    # or LOAD_COMMON_CONSTANT loads. EXTENDED_ARG holds the high bits of the next instruction's
+    # argument.
     consts = code.co_consts
     arg = 0
     for op, low in zip(ops, args):
@@ -1605,7 +1613,8 @@ def _is_straight_line_arithmetic(fn) -> bool:
                 arg <<= 8
                 continue
             if (op == _BINARY_OP and arg not in _ARITHMETIC_BINARY_OP_ARGS
-                    or op == _LOAD_CONST and type(consts[arg]) is not int):
+                    or op == _LOAD_CONST and type(consts[arg]) is not int
+                    or op == _LOAD_COMMON_CONSTANT and arg not in _INT_COMMON_CONSTANTS):
                 return False
         arg = 0
     return True

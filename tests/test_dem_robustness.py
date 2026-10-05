@@ -249,6 +249,12 @@ def test_symbolic_verdicts_match_every_input(d):
     assert decided > 250
 
 
+@pytest.mark.parametrize("src", ["(4) - (5) + rec[0]", "(-1) ** 5 * rec[0]", "-((1) * (0)) * rec[1] + rec[0]"])
+def test_folded_constants_stay_symbolic(src):
+    """Python 3.15 loads a folded -1 with LOAD_COMMON_CONSTANT, which the bytecode scan refused."""
+    assert dem_module._is_straight_line_arithmetic(_compile_detector(src, 3))
+
+
 def test_composite_dimensions_keep_the_numeric_path_for_higher_degrees():
     """2 x**2 = 2 x as functions on Z_4, though not as polynomials: the probes decide, as before."""
     c = _detector_circuit(4, 2, "2*rec[0]*rec[0] + rec[1]")
@@ -306,7 +312,7 @@ def test_huge_exponents_reduce_by_fermat():
 
 _ALLOWED = {"RESUME", "NOP", "CACHE", "EXTENDED_ARG", "RETURN_VALUE", "LOAD_FAST", "LOAD_FAST_CHECK",
             "LOAD_FAST_LOAD_FAST", "LOAD_FAST_BORROW", "LOAD_FAST_BORROW_LOAD_FAST_BORROW", "LOAD_CONST",
-            "LOAD_SMALL_INT", "BINARY_SUBSCR", "UNARY_NEGATIVE", "BINARY_OP"}
+            "LOAD_SMALL_INT", "LOAD_COMMON_CONSTANT", "BINARY_SUBSCR", "UNARY_NEGATIVE", "BINARY_OP"}
 _CALLS = {"LOAD_GLOBAL", "PUSH_NULL", "PRECALL", "CALL"}
 
 
@@ -329,7 +335,7 @@ def _dis_scan(fn):
             return False
         if name == "BINARY_OP" and ins.argrepr not in {"+", "-", "*", "**", "%", "[]"}:
             return False
-        if name in ("LOAD_CONST", "LOAD_SMALL_INT") and type(ins.argval) is not int:
+        if name in ("LOAD_CONST", "LOAD_SMALL_INT", "LOAD_COMMON_CONSTANT") and type(ins.argval) is not int:
             return False
     return True
 
