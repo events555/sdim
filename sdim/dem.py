@@ -142,6 +142,7 @@ expressions.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 import contextlib
@@ -886,7 +887,7 @@ class DetectorErrorModel:
                 f"and {self.num_observables} observables (targets 0 to "
                 f"{int(self.num_detectors) + int(self.num_observables) - 1})")
 
-    def sample(self, shots: int, seed: int | None = None):
+    def sample(self, shots: int, seed: int | Sequence[int] | np.random.SeedSequence | None = None):
         """
         Samples detector and observable values.
 
@@ -901,9 +902,10 @@ class DetectorErrorModel:
 
         Shots are split into fixed blocks of 256, and large jobs spread the
         blocks over several threads (numba's thread count, see
-        `_thread_count`). Each block has its own random stream
-        (xoshiro256**) seeded from `seed` through NumPy's SeedSequence, so a
-        given seed gives the same samples whatever the number of threads.
+        `_thread_count`). Each block draws from its own xoshiro256**
+        generator, started from a state that depends on `seed` and the
+        block's index alone (see `_BlockStream`), so a given seed gives the
+        same samples whatever the number of threads.
 
         Targets and coefficients must be integers (Python or NumPy). Every
         target must be a detector or observable of the model, and
@@ -914,7 +916,8 @@ class DetectorErrorModel:
 
         Args:
             shots (int): Number of samples.
-            seed (int, optional): Seed for the sampler. Fresh entropy is used if None.
+            seed (int, sequence of ints or np.random.SeedSequence, optional):
+                Seed for the sampler. Fresh entropy is used if None.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: Detector values with shape
@@ -935,7 +938,7 @@ class DetectorErrorModel:
         _draw_blocks(_sampler_arrays(self), _BlockStream(seed), 0, det, obs)
         return det, obs
 
-    def compile_sampler(self, seed: int | None = None) -> "CompiledDemSampler":
+    def compile_sampler(self, seed: int | Sequence[int] | np.random.SeedSequence | None = None) -> "CompiledDemSampler":
         """
         Checks and packs the model once, for a sampler that draws many batches from it.
 
@@ -946,7 +949,9 @@ class DetectorErrorModel:
         of the model, so later changes to the model do not reach it.
 
         Args:
-            seed (int, optional): Seed of the sampler's stream. Fresh entropy is used if None.
+            seed (int, sequence of ints or np.random.SeedSequence, optional):
+                Seed of the sampler's stream, as for `sample`. Fresh entropy
+                is used if None.
 
         Returns:
             CompiledDemSampler: The sampler.
@@ -1142,29 +1147,37 @@ class CompiledDemSampler:
     draws. The arrays are a copy: later changes to the model do not reach
     the sampler.
 
-    The shots come in blocks of 256, block c drawn from the c-th state that
-    the seed gives (see `DetectorErrorModel.sample`), so consecutive calls
-    continue one stream: their rows, put together, are the rows of
-    `DetectorErrorModel.sample(total, seed)`, however the shots are split
-    between the calls and whatever the number of threads. Every 2**18 shots
-    the stream moves on to a new SeedSequence (see `_BlockStream`), so it
-    does not cycle, however many shots it gives. A call that raises leaves
-    the stream where it was, or, if an interrupt (Ctrl-C) comes just as it
-    returns, skips the call's rows: no row is ever returned twice.
+    The shots come in blocks of 256, block c drawn from a xoshiro256**
+    state that depends on the seed and c alone (see `_BlockStream`), so
+    consecutive calls continue one stream: their rows, put together, are
+    the rows of `DetectorErrorModel.sample(total, seed)`, however the shots
+    are split between the calls and whatever the number of threads. No two
+    of the first 2**62 blocks (2**70 shots) start from the same state, so
+    the stream does not repeat. Samplers with different seeds share no
+    block state unless the gammas that `_stream_key` takes from their
+    seeds' SeedSequence pools agree: about one pair of seeds in 2**63,
+    besides seeds that SeedSequence does not tell apart, such as 5 and
+    [5, 0], or child i of `np.random.SeedSequence(5).spawn` and
+    [5, 0, 0, 0, i]. A call that raises leaves the stream where it was,
+    or, if an interrupt (Ctrl-C) comes just as it returns, skips the
+    call's rows: no row is ever returned twice.
 
     A call that ends inside a block draws the whole block and keeps the
     rows it does not return for the next call, so between calls a sampler
     holds up to one block: 256 rows of the model's detectors and
     observables. Calls from several threads take turns. A sampler cannot
-    be pickled or deep-copied; to sample in several processes, compile one
-    in each, with its own seed.
+    be copied or pickled (copy.copy, copy.deepcopy and pickle raise
+    TypeError), since a copy would return the same rows as the original.
+    To sample in several threads or processes at once, compile one sampler
+    for each, with its own seed; `np.random.SeedSequence(seed).spawn(n)`
+    gives n seeds.
 
     Attributes:
         num_detectors (int): Number of detectors of the model (read-only).
         num_observables (int): Number of logical observables of the model (read-only).
     """
 
-    def __init__(self, dem: DetectorErrorModel, seed: int | None = None):
+    def __init__(self, dem: DetectorErrorModel, seed: int | Sequence[int] | np.random.SeedSequence | None = None):
         # The packed targets are fixed, so the widths of the arrays the kernel writes into must be too.
         self._num_detectors = dem.num_detectors
         self._num_observables = dem.num_observables
@@ -1174,6 +1187,11 @@ class CompiledDemSampler:
         # The last block drawn, while the calls have returned only its first rows: (det, obs, rows returned).
         self._rest = None
         self._lock = threading.Lock()
+
+    def __reduce_ex__(self, protocol):
+        # copy.copy, copy.deepcopy and pickle all end up here, since the class has no __copy__ or __deepcopy__.
+        raise TypeError("a CompiledDemSampler cannot be copied or pickled, since the copy would return the same "
+                        "rows as the original; compile one sampler per consumer, each with its own seed")
 
     @property
     def num_detectors(self) -> int:
@@ -3251,62 +3269,80 @@ def _open_unit(r):
     return (np.float64(r >> np.uint64(11)) + 0.5) * (1.0 / 9007199254740992.0)
 
 
-# NumPy's SeedSequence.generate_state: its 32-bit word i is x ^ (x >> 16), where
-# x = (pool[i % len(pool)] ^ h_i) * h_(i + 1) mod 2**32 and h_i = _SEED_INIT * _SEED_MULT**i mod 2**32.
-_SEED_INIT = 0x8B51F9DD
-_SEED_MULT = 0x58F38DED
+# The multipliers and shifts of splitmix64's output function (Stafford's Mix13), a bijection of 64-bit words in
+# which flipping any input bit flips each output bit with probability close to 1/2.
+_MIX_MULT_1 = np.uint64(0xBF58476D1CE4E5B9)
+_MIX_MULT_2 = np.uint64(0x94D049BB133111EB)
+_MIX_SHIFTS = (np.uint64(30), np.uint64(27), np.uint64(31))
 
 
-def _block_states(pool, first: int, count: int) -> np.ndarray:
+def _stream_key(seed) -> tuple:
+    """
+    The SplitMix64 seed and gamma of a sampler stream, as Python ints below 2**64.
+
+    They come from the first 128 bits of the pool, the hashed entropy, of
+    the SeedSequence `seed` (made from `seed` unless it is one already): its
+    32-bit words 0 and 1 give the seed, low word first, and words 2 and 3
+    the gamma, made odd. As in Java's SplittableRandom, a gamma with fewer
+    than 24 changes between neighbouring bits, which mixes poorly, gets
+    every other bit flipped.
+    """
+    seq = seed if isinstance(seed, np.random.SeedSequence) else np.random.SeedSequence(seed)
+    # A SeedSequence with a larger pool_size mixes all its entropy into every pool word.
+    p0, p1, p2, p3 = seq.pool.tolist()[:4]
+    start, gamma = p0 | p1 << 32, p2 | p3 << 32 | 1
+    if (gamma ^ (gamma >> 1)).bit_count() < 24:
+        gamma ^= 0xAAAAAAAAAAAAAAAA
+    return start, gamma
+
+
+def _block_states(key, first: int, count: int) -> np.ndarray:
     """
     The xoshiro256** states of sampler blocks first .. first + count - 1, as a (count, 4) uint64 array.
 
-    Block c starts from the uint64 words 4c .. 4c + 3 of `generate_state` of
-    the SeedSequence whose pool is `pool`, or, if all four are zero (where
-    xoshiro256** must not start), from 1, 0, 0, 0. generate_state always
-    starts at word 0, so a sampler that continues its stream at block
-    `first` computes the words itself, in time linear in `count`.
+    Word j of block c is output 4c + j of SplitMix64 with the seed and gamma
+    `key` (see `_stream_key`): splitmix64's output function of
+    seed + (4c + j + 1) * gamma mod 2**64.
     """
-    n = 8 * count
-    hash_const = np.full(n + 1, _SEED_MULT, dtype=np.uint32)
-    hash_const[0] = _SEED_INIT * pow(_SEED_MULT, 8 * first, 1 << 32) % (1 << 32)
-    hash_const = np.multiply.accumulate(hash_const, dtype=np.uint32)
-    # The pool has 4 words, so word 8 * first reads pool[0] and each row of 4 words reads the whole pool.
-    words = hash_const[:-1].reshape(-1, len(pool)) ^ pool
-    words *= hash_const[1:].reshape(words.shape)
-    words ^= words >> 16
-    # generate_state pairs the 32-bit words as little-endian uint64s on every machine.
-    states = words.astype("<u4", copy=False).view("<u8").astype(np.uint64, copy=False).reshape(count, 4)
-    # An all-zero row needs a zero word, which almost never comes, and checking for one first costs much
-    # less than finding the rows.
-    if not states.all():
-        states[~states.any(axis=1), 0] = 1
-    return states
-
-
-# Hash constants 2**j words apart in one SeedSequence agree in their low j + 2 bits (_SEED_MULT**(2**j) = 1
-# mod 2**(j + 2)), so blocks (8 words) 2**k apart get related states: their first draws are correlated for up
-# to about 1 seed in 1000 at k = 6 to 9, a share that grows to every seed by k = 19, and the words start over
-# at k = 27. So each run of 2**10 blocks takes the words of its own SeedSequence, for under 20 us per run of
-# 2**18 shots; a smaller run would cost measurably on small models.
-_STREAM_EPOCH = 1 << 10
+    start, gamma = key
+    shift_1, shift_2, shift_3 = _MIX_SHIFTS
+    words = np.arange(4 * count, dtype=np.uint64)
+    words *= np.uint64(gamma)
+    words += np.uint64((start + (4 * first + 1) * gamma) % (1 << 64))
+    words ^= words >> shift_1
+    words *= _MIX_MULT_1
+    words ^= words >> shift_2
+    words *= _MIX_MULT_2
+    words ^= words >> shift_3
+    return words.reshape(count, 4)
 
 
 class _BlockStream:
     """
     The xoshiro256** states of the blocks of one sampler stream, from its seed.
 
-    Block c of epoch e = c // _STREAM_EPOCH starts from the words, at block
-    c % _STREAM_EPOCH, of `SeedSequence(seed)` for e = 0 and of the
-    SeedSequence with the same entropy and spawn key (e,) for e >= 1 (see
-    `_block_states`). Blocks far apart in the words of one SeedSequence
-    have related states (see `_STREAM_EPOCH`), so blocks that share a
-    SeedSequence are less than 2**10 blocks (2**18 shots) apart. Different
-    epochs have unrelated pools, but a block's first draw depends mostly on
-    the last pool word, so two epochs whose last pool words agree in their
-    low 22 bits or more (one pair of epochs in 2**22, a couple of pairs in
-    2**30 shots) can have correlated first draws in the blocks at the same
-    place in the epoch. Their later draws are not related.
+    Block c starts from outputs 4c .. 4c + 3 of SplitMix64 (Steele, Lea and
+    Flood, "Fast splittable pseudorandom number generators", 2014), the
+    generator that xoshiro256**'s authors suggest for seeding it, with a
+    seed and gamma that come from the stream's seed (see `_stream_key` and
+    `_block_states`). A block's state thus depends on the seed and c alone,
+    and is computed directly for any c. What holds exactly:
+
+    - The gamma is odd, so seed + n * gamma mod 2**64 differs for every
+      n < 2**64, and the output function is a bijection. So the 2**64 words
+      of blocks 0 .. 2**62 - 1 (2**70 shots) all differ: no two of these
+      blocks start from the same state, and none starts from the all-zero
+      state, where xoshiro256** must not start. Block 2**62 is block 0 again.
+    - Two streams whose gammas differ share no block state, wherever the
+      blocks are: equal states need seed + n * gamma = seed' + n' * gamma'
+      for two consecutive n and n', so gamma = gamma'. The gammas of two
+      seeds that SeedSequence tells apart agree with probability about
+      2**-63, and only then can one stream be a shifted copy of the other.
+
+    Beyond that, blocks are as independent as the corresponding outputs
+    of SplitMix64, which passes BigCrush. For instance the first draws of
+    blocks 2**k apart, which depend on word 1 alone, show no correlation
+    for any k up to 40 (tested on many seeds).
 
     With `ahead`, `states` computes at least that many states at once and
     keeps them for the next calls, since computing them one at a time costs
@@ -3314,36 +3350,19 @@ class _BlockStream:
     """
 
     def __init__(self, seed, ahead: int = 0):
-        self._seq = np.random.SeedSequence(seed)
-        self._epoch, self._pool = 0, self._seq.pool
+        self._key = _stream_key(seed)
         self._ahead = ahead
-        # The states computed last, those of blocks _kept_first onwards.
-        self._kept_first, self._kept = 0, np.zeros((0, 4), dtype=np.uint64)
+        # The states computed last and the block of the first one, in one field so they always match.
+        self._kept = (0, np.zeros((0, 4), dtype=np.uint64))
 
     def states(self, first: int, count: int) -> np.ndarray:
         """The states of blocks first .. first + count - 1, as a (count, 4) uint64 array."""
-        k = first - self._kept_first
-        if 0 <= k and k + count <= len(self._kept):
-            return self._kept[k:k + count]
-        block, left = first, max(count, self._ahead)
-        parts = []
-        while True:
-            epoch, start = divmod(block, _STREAM_EPOCH)
-            n = min(left, _STREAM_EPOCH - start)
-            if epoch != self._epoch:
-                seq = self._seq
-                if epoch:
-                    seq = np.random.SeedSequence(seq.entropy, spawn_key=seq.spawn_key + (epoch,))
-                # Making a SeedSequence costs about as much as a small call, so keep the pool for the epoch.
-                self._epoch, self._pool = epoch, seq.pool
-            parts.append(_block_states(self._pool, start, n))
-            block, left = block + n, left - n
-            if not left:
-                break
-        kept = parts[0] if len(parts) == 1 else np.concatenate(parts)
-        # Both fields change together and only now, so a call that raised above (an interrupt, say) left
-        # the kept states with their own blocks.
-        self._kept_first, self._kept = first, kept
+        kept_first, kept = self._kept
+        k = first - kept_first
+        if 0 <= k and k + count <= len(kept):
+            return kept[k:k + count]
+        kept = _block_states(self._key, first, max(count, self._ahead))
+        self._kept = (first, kept)
         return kept[:count]
 
 

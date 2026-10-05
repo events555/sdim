@@ -146,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dimensions must be below 2**31
 
 ### Added
-- Add `sdim.dem`: compact, exact detector error models for prime dimensions (`DetectorErrorModel.from_circuit`, `sample`, `compile_sampler`, `to_lines`, `merge_lines`, `write_to_file`, `read_from_file`), one mechanism per noise gate independent of the dimension
+- Add `sdim.dem`: compact, exact detector error models for prime dimensions (`DetectorErrorModel.from_circuit`, `sample`, `compile_sampler`, `to_lines`, `merge_lines`, `write_to_file`, `read_from_file`), one mechanism per noise gate independent of the dimension. `sample` and `compile_sampler` take an int, a sequence of ints or a `np.random.SeedSequence` as seed; each block of 256 shots starts from SplitMix64 outputs of the seed and the block index, so a seeded stream gives the same rows for any thread count and batch sizes and does not repeat within 2**70 shots. A `CompiledDemSampler` cannot be copied or pickled; compile one per consumer, each with its own seed
 - Add `sdim.dem_legacy`, the enumerating detector error model for small dimensions
 - Add the multiplication gate `MUL` (aliases `MULT`, `MULTIPLY`), which takes the scalar as `a`
 - Add `raw_detector_output=True` to `Program.simulate`, which returns the detector and observable data as two arrays indexed (index, shot)

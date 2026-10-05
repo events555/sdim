@@ -1,4 +1,5 @@
-"""Tests for `DetectorErrorModel.compile_sampler`, and that `DetectorErrorModel.sample` still returns what it did.
+"""Tests for `DetectorErrorModel.compile_sampler`, for the random states of the sampler blocks, and for the
+values `DetectorErrorModel.sample` returns for fixed seeds.
 
 A compiled sampler checks and packs the model once. Its calls continue one random stream: their rows, put
 together, are the rows `sample(total, seed)` returns for the same seed.
@@ -7,6 +8,7 @@ together, are the rows `sample(total, seed)` returns for the same seed.
 import copy
 import hashlib
 import itertools
+import pickle
 import threading
 
 import numpy as np
@@ -52,18 +54,18 @@ def _reference_models():
     }
 
 
-# sha256 (first 16 hex digits) of `sample(shots, seed)` over _SHOTS x _SEEDS, from the sampler before
-# compile_sampler existed, under numpy 2.4.6 and 1.26.4 alike.
+# sha256 (first 16 hex digits) of `sample(shots, seed)` over _SHOTS x _SEEDS, from the sampler with SplitMix64
+# block states, under numpy 2.4.6 and 1.26.4 alike.
 _SHOTS = (1, 255, 256, 257, 1000, 3000)
 _SEEDS = (0, 1, 2 ** 64 + 3)
 _DIGESTS = {
-    "readme": "d4f69d5e3f14d5d0",
-    "d2": "808d7d70b2c7b427",
-    "d3": "5a6759bdfeabfc18",
-    "d4": "240c4454e429b1ad",
-    "d5_many_bins": "e18e076d4f197a06",
-    "d7": "878a1269ca89b5f1",
-    "d2147483647": "f7594aca4785bd3e",
+    "readme": "2293cd70438dc3f3",
+    "d2": "ae4dc0c94adc29d6",
+    "d3": "63e6e870678b14dd",
+    "d4": "a0409b3aada78aec",
+    "d5_many_bins": "8439932daffaec7c",
+    "d7": "a9a727ac98fe7d67",
+    "d2147483647": "595f407b0e79b1cc",
 }
 
 
@@ -87,7 +89,7 @@ _SPLIT = (1, 255, 256, 3, 700, 0, 1000, 2785)
 
 
 # --------------------------------------------------------------------------
-# DetectorErrorModel.sample is unchanged
+# DetectorErrorModel.sample's values for fixed seeds
 
 
 @pytest.mark.parametrize("name", sorted(_DIGESTS))
@@ -206,23 +208,17 @@ def test_a_call_that_raises_leaves_the_stream_where_it_was(monkeypatch):
     np.testing.assert_array_equal(np.concatenate([first[1], rest[1]]), obs)
 
 
-@pytest.mark.parametrize("error, failing_call", [(KeyboardInterrupt, 1), (MemoryError, 2)])
-def test_a_call_that_raises_in_the_states_leaves_the_stream_where_it_was(monkeypatch, error, failing_call):
+@pytest.mark.parametrize("error", [KeyboardInterrupt, MemoryError])
+def test_a_call_that_raises_in_the_states_leaves_the_stream_where_it_was(monkeypatch, error):
     """A sampler keeps 64 states ahead; an error while it computes the next ones must not leave the old ones."""
     dem = _reference_models()["d7"]
-    # Blocks 64 .. 127 take words from two SeedSequences, so failing call 2 comes after call 1 succeeded.
-    monkeypatch.setattr(dem_module, "_STREAM_EPOCH", 100)
     det, obs = dem.sample(256 * 140, seed=5)
     sampler = dem.compile_sampler(5)
     first = sampler.sample(256 * 64)
     block_states = dem_module._block_states
-    calls = []
 
     def interrupted(*args):
-        calls.append(args)
-        if len(calls) == failing_call:
-            raise error
-        return block_states(*args)
+        raise error
 
     monkeypatch.setattr(dem_module, "_block_states", interrupted)
     with pytest.raises(error):
@@ -367,38 +363,11 @@ def test_compiled_sampler_widths_are_read_only():
     np.testing.assert_array_equal(obs, dem.sample(4, seed=1)[1])
 
 
-@pytest.mark.parametrize("seed", [0, 1, 123456789, 2 ** 64 + 3, 10 ** 40, [3, 1, 4], None])
-def test_block_states_continue_seed_sequence(seed):
-    """The sampler computes SeedSequence.generate_state's words itself, so a stream can continue at any block."""
-    seq = np.random.SeedSequence(seed)
-    words = seq.generate_state(4 * 300, dtype=np.uint64).reshape(300, 4)
-    for first, count in ((0, 1), (0, 300), (1, 2), (7, 1), (255, 45), (299, 1)):
-        np.testing.assert_array_equal(dem_module._block_states(seq.pool, first, count),
-                                      words[first:first + count])
+# --------------------------------------------------------------------------
+# The blocks' random states
 
 
-@pytest.mark.parametrize("seed", [0, 2 ** 64 + 3, [3, 1, 4], None])
-def test_stream_takes_new_words_every_epoch(seed):
-    """Each run of _STREAM_EPOCH blocks takes the words of its own SeedSequence, with spawn key (run,)."""
-    seq = np.random.SeedSequence(seed)
-    stream = dem_module._BlockStream(seq.entropy)
-    epoch = dem_module._STREAM_EPOCH
-    first = stream.states(0, 3)
-    np.testing.assert_array_equal(first, dem_module._block_states(seq.pool, 0, 3))
-    # The words alone start over at block 2**27.
-    np.testing.assert_array_equal(dem_module._block_states(seq.pool, 2 ** 27, 3), first)
-    spawned = [np.random.SeedSequence(seq.entropy, spawn_key=(e,)).pool for e in (1, 2)]
-    across = stream.states(epoch - 1, 3)
-    np.testing.assert_array_equal(across[0], dem_module._block_states(seq.pool, epoch - 1, 1)[0])
-    np.testing.assert_array_equal(across[1:], dem_module._block_states(spawned[0], 0, 2))
-    np.testing.assert_array_equal(stream.states(2 * epoch + 5, 2), dem_module._block_states(spawned[1], 5, 2))
-    np.testing.assert_array_equal(stream.states(0, 3), first)
-    starts = [stream.states(e * epoch, 1)[0].tobytes() for e in range(4)]
-    assert len(set(starts)) == 4
-
-
-def test_stream_states_ahead_are_the_same_states(monkeypatch):
-    monkeypatch.setattr(dem_module, "_STREAM_EPOCH", 50)
+def test_stream_states_ahead_are_the_same_states():
     requests = [(0, 1), (1, 3), (4, 60), (64, 1), (3, 2), (65, 200), (265, 1), (0, 300), (299, 1), (1000, 0)]
     ahead = dem_module._BlockStream(8, ahead=64)
     for first, count in requests:
@@ -414,9 +383,9 @@ def test_compiled_sampler_computes_block_states_ahead(monkeypatch):
     block_states = dem_module._block_states
     counts = []
 
-    def counted(pool, first, count):
+    def counted(key, first, count):
         counts.append(count)
-        return block_states(pool, first, count)
+        return block_states(key, first, count)
 
     monkeypatch.setattr(dem_module, "_block_states", counted)
     got = _calls(dem.compile_sampler(2), [256] * 130)
@@ -425,24 +394,133 @@ def test_compiled_sampler_computes_block_states_ahead(monkeypatch):
     assert counts == [64, 64, 64]
 
 
-# Seeds whose SeedSequence words repeat: some blocks 2**24 blocks on for seed 30, the whole stream 2**25 blocks
-# on for 563, 658, 923 and 1190 and 2**26 blocks on for 9 and 30, and every seed's 2**27 blocks on.
-_REPEATING_SEEDS = [0, 9, 30, 563, 658, 923, 1190]
+_M64 = (1 << 64) - 1
 
 
-@pytest.mark.parametrize("seed", _REPEATING_SEEDS)
-def test_stream_does_not_repeat_at_power_of_two_offsets(seed):
-    """No 64-bit word of the first 4096 block states comes back in its place 2**k blocks on, for k up to 30."""
+def _splitmix64(start, gamma, n):
+    """Output n of SplitMix64 with the given seed and gamma, on Python ints."""
+    z = (start + (n + 1) * gamma) & _M64
+    z = (z ^ z >> 30) * 0xBF58476D1CE4E5B9 & _M64
+    z = (z ^ z >> 27) * 0x94D049BB133111EB & _M64
+    return z ^ z >> 31
+
+
+def _first_draws(states):
+    """The first xoshiro256** output of each block state, as the sampler maps it to (0, 1). It only reads word 1."""
+    s1 = states[:, 1] * np.uint64(5)
+    r = ((s1 << np.uint64(7)) | (s1 >> np.uint64(57))) * np.uint64(9)
+    return ((r >> np.uint64(11)).astype(np.float64) + 0.5) / 2.0 ** 53
+
+
+def _transitions(gamma):
+    return bin(gamma ^ gamma >> 1).count("1")
+
+
+@pytest.mark.parametrize("seed", [0, 1, 123456789, 2 ** 64 + 3, 10 ** 40, [3, 1, 4], np.int8(7), None])
+def test_block_states_are_splitmix64_outputs(seed):
+    """Block c starts from outputs 4c .. 4c + 3 of SplitMix64, whose seed and gamma come from the seed's pool."""
     stream = dem_module._BlockStream(seed)
-    start = stream.states(0, 4096)
-    for k in range(31):
-        assert not (stream.states(2 ** k, 4096) == start).any(), k
+    start, gamma = stream._key
+    if seed is not None:
+        assert stream._key == dem_module._stream_key(np.random.SeedSequence(seed))
+        pool = np.random.SeedSequence(seed).pool.tolist()
+        assert start == pool[0] | pool[1] << 32 and gamma in {pool[2] | pool[3] << 32 | 1,
+                                                              (pool[2] | pool[3] << 32 | 1) ^ 0xAAAAAAAAAAAAAAAA}
+    assert gamma % 2 == 1 and _transitions(gamma) >= 24
+    for first, count in ((0, 3), (7, 1), (255, 2), (2 ** 40 - 1, 2), (2 ** 62 - 1, 1)):
+        expected = [[_splitmix64(start, gamma, 4 * c + j) for j in range(4)] for c in range(first, first + count)]
+        np.testing.assert_array_equal(stream.states(first, count), np.array(expected, dtype=np.uint64))
+    # Block indices wrap around at 2**62.
+    np.testing.assert_array_equal(stream.states(2 ** 62 + 5, 1), stream.states(5, 1))
 
 
-@pytest.mark.parametrize("seed", _REPEATING_SEEDS[:5])
+def test_poorly_mixing_gammas_get_every_other_bit_flipped():
+    """As in Java's SplittableRandom, a gamma with fewer than 24 changes between neighbouring bits is replaced."""
+    flipped = 0
+    for seed in range(300):
+        pool = np.random.SeedSequence(seed).pool.tolist()
+        raw = pool[2] | pool[3] << 32 | 1
+        gamma = dem_module._stream_key(seed)[1]
+        assert gamma == (raw ^ 0xAAAAAAAAAAAAAAAA if _transitions(raw) < 24 else raw)
+        flipped += gamma != raw
+    assert flipped > 0
+
+
+def test_seed_sequences_are_seeds():
+    """A SeedSequence (a TypeError before) gives the stream of its entropy and spawn key, so the children that
+    `spawn` makes give their own streams."""
+    dem = _reference_models()["d3"]
+    det, obs = dem.sample(700, seed=11)
+    sequence = np.random.SeedSequence(11)
+    for got in (dem.sample(700, seed=sequence), _calls(dem.compile_sampler(sequence), (300, 400))):
+        np.testing.assert_array_equal(got[0], det)
+        np.testing.assert_array_equal(got[1], obs)
+    children = sequence.spawn(2)
+    assert children[1].spawn_key == (1,)
+    np.testing.assert_array_equal(dem.compile_sampler(children[1]).sample(700)[0],
+                                  dem.sample(700, seed=np.random.SeedSequence(11, spawn_key=(1,)))[0])
+    # SeedSequence pads the entropy with zeros before the spawn key, so child 1 is the seed [11, 0, 0, 0, 1], as
+    # the CompiledDemSampler docstring warns.
+    np.testing.assert_array_equal(dem.sample(700, seed=children[1])[0], dem.sample(700, seed=[11, 0, 0, 0, 1])[0])
+    larger_pool = np.random.SeedSequence(11, pool_size=8)
+    streams = [dem_module._BlockStream(s).states(0, 64) for s in [11, larger_pool] + children]
+    assert len(np.unique(np.concatenate(streams))) == 4 * 64 * 4
+
+
+def test_a_zero_word_never_makes_an_all_zero_state():
+    """xoshiro256** must not start from the all-zero state. The output function maps 0 to 0, so one SplitMix64
+    word in 2**64 is zero, but the other three words of its block are different from it, so not zero."""
+    gamma = 0x9E3779B97F4A7C15
+    for j in range(4):
+        # Word j of block 5 is output 4 * 5 + j, the output function of start + (21 + j) * gamma.
+        start = -(21 + j) * gamma % 2 ** 64
+        state = dem_module._block_states((start, gamma), 5, 1)[0]
+        assert state[j] == 0 and np.count_nonzero(state) == 3
+
+
+# Seeds whose words in the old stream (SeedSequence.generate_state) repeated: some blocks 2**24 blocks on for 30,
+# the whole stream 2**25 blocks on for 563, 658, 923 and 1190 and 2**26 blocks on for 9 and 30.
+_SEEDS_OF_OLD_REPEATS = [9, 30, 563, 658, 923, 1190]
+
+
+def test_blocks_at_power_of_two_offsets_are_unrelated():
+    """Blocks 2**k apart used to get states that differed only in the high bits of some words, and for some seeds
+    the same states. Now no word comes back, and words of blocks 2**k apart differ in about half their bits,
+    by a different amount (difference or XOR) for every block, for k up to 40."""
+    n = 256
+    for seed in list(range(40)) + _SEEDS_OF_OLD_REPEATS + [2 ** 64 + 3, [3, 1, 4]]:
+        stream = dem_module._BlockStream(seed)
+        start = stream.states(0, n)
+        # Blocks 0 .. 255 and 2**k .. 2**k + 255 for k = 8 .. 40 do not overlap.
+        words = np.concatenate([start] + [stream.states(2 ** k, n) for k in range(8, 41)])
+        assert len(np.unique(words)) == words.size, seed
+        for k in range(41):
+            later = stream.states(2 ** k, n)
+            assert not (later[:, :, None] == start[:, None, :]).any(), (seed, k)
+            flipped = np.unpackbits((later ^ start).view(np.uint8)).mean() * 64
+            assert abs(flipped - 32) < 0.75, (seed, k, flipped)  # six standard deviations
+            assert len(np.unique(later - start)) == later.size, (seed, k)
+            assert len(np.unique(later ^ start)) == later.size, (seed, k)
+
+
+def test_first_draws_of_blocks_at_power_of_two_offsets_are_not_correlated():
+    """A block's first draw depends on its word 1 only. Its correlation with the first draw 2**k blocks on, over
+    4096 blocks, stays below five standard deviations for k up to 40. In the old stream it was six standard
+    deviations for seed 51 (k = 9) and 5.5 for seed 144 (k = 19), and -0.4 within the first 1024 blocks of
+    seed 11523 (k = 9)."""
+    n = 4096
+    for seed in list(range(20)) + [51, 144, 11523] + _SEEDS_OF_OLD_REPEATS:
+        stream = dem_module._BlockStream(seed)
+        first = _first_draws(stream.states(0, n))
+        for k in range(41):
+            z = np.corrcoef(first, _first_draws(stream.states(2 ** k, n)))[0, 1] * np.sqrt(n)
+            assert abs(z) < 5, (seed, k, z)
+
+
+@pytest.mark.parametrize("seed", _SEEDS_OF_OLD_REPEATS[:3])
 def test_compiled_sampler_blocks_far_apart_are_not_correlated(seed):
-    """Blocks 2**k apart in one SeedSequence's words have related states: from about k = 15 on, their first
-    draws, and so the shots before each block's first firing, are correlated for half the seeds or more."""
+    """The shots before each block's first firing come from the block's first draws, so they used to be correlated
+    between blocks 2**k apart for half the seeds or more from about k = 15 on."""
     dem = DetectorErrorModel(1000003, 1, 0, [ErrorMechanism(0.01, [{0: 1}])])
     n_blocks = 1024
 
@@ -453,25 +531,45 @@ def test_compiled_sampler_blocks_far_apart_are_not_correlated(seed):
         return np.where(fired.any(axis=1), fired.argmax(axis=1), 256)
 
     start = first_firings(0)
-    for k in range(31):
+    for k in range(41):
         # 0.2 is over six standard deviations of the correlation of independent blocks.
         assert abs(np.corrcoef(start, first_firings(2 ** k))[0, 1]) < 0.2, k
 
 
-def test_streams_continue_across_new_words(monkeypatch):
-    """With new words every 4 blocks, sample() and compiled calls still give one stream, which does not repeat."""
-    dem = _reference_models()["d7"]
-    det = dem.sample(sum(_SPLIT), seed=3)[0]
-    monkeypatch.setattr(dem_module, "_STREAM_EPOCH", 4)
-    short = dem.sample(sum(_SPLIT), seed=3)
-    np.testing.assert_array_equal(short[0][:1024], det[:1024])
-    for k in range(1024, sum(_SPLIT) - 1024, 1024):
-        assert not np.array_equal(short[0][k:k + 1024], short[0][:1024])
-    got = _calls(dem.compile_sampler(3), _SPLIT)
-    np.testing.assert_array_equal(got[0], short[0])
-    np.testing.assert_array_equal(got[1], short[1])
-    monkeypatch.setattr(dem_module, "_SAMPLE_PARALLEL_WORK", -1.0)
-    monkeypatch.setattr(dem_module, "_thread_count", lambda: 3)
-    threaded = dem.sample(sum(_SPLIT), seed=3)
-    np.testing.assert_array_equal(threaded[0], short[0])
-    np.testing.assert_array_equal(threaded[1], short[1])
+@pytest.mark.parametrize("seed", [0, 1, 7, 12345])
+def test_seeds_that_share_their_first_entropy_words_give_unrelated_streams(seed):
+    """SeedSequence pads the entropy with zeros before it appends a spawn key, so the old stream's blocks
+    2**10 onwards, from spawn key (1,), were the first blocks of the seed [seed, 0, 0, 0, 1], or seed + 2**128.
+    Now those seeds, and seed + 2**64, share no word with the stream of `seed`, and their first draws are not
+    correlated."""
+    n = 4096
+    stream = dem_module._BlockStream(seed)
+    own = [stream.states(0, n), stream.states(2 ** 10, n)]
+    for other in (seed + 2 ** 128, [seed, 0, 0, 0, 1], seed + 2 ** 64):
+        theirs = dem_module._BlockStream(other).states(0, n)
+        for mine in own:
+            assert not np.isin(theirs, mine).any(), other
+            z = np.corrcoef(_first_draws(mine), _first_draws(theirs))[0, 1] * np.sqrt(n)
+            assert abs(z) < 5, (other, z)
+
+
+# --------------------------------------------------------------------------
+# Copies
+
+
+def test_compiled_sampler_cannot_be_copied_or_pickled():
+    """A copy would continue the same stream, so it would return the rows the original returns. copy.copy used to
+    succeed; pickle and copy.deepcopy failed only on the lock."""
+    dem = _reference_models()["d3"]
+    sampler = dem.compile_sampler(1)
+    first = sampler.sample(100)
+    for copier in (copy.copy, copy.deepcopy, pickle.dumps, lambda x: pickle.dumps(x, protocol=0)):
+        with pytest.raises(TypeError, match="compile one sampler per consumer, each with its own seed"):
+            copier(sampler)
+    with pytest.raises(TypeError, match="compile one sampler"):
+        copy.deepcopy({"sampler": sampler})
+    # The stream goes on where it was.
+    det, obs = dem.sample(400, seed=1)
+    rest = sampler.sample(300)
+    np.testing.assert_array_equal(np.concatenate([first[0], rest[0]]), det)
+    np.testing.assert_array_equal(np.concatenate([first[1], rest[1]]), obs)
