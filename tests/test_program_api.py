@@ -370,6 +370,48 @@ def test_show_measurement_keeps_every_tableau_shot():
     assert shown == quiet
 
 
+def _printed(results, shots):
+    """What show_measurement prints for (qudit -> round -> shot) results."""
+    return "".join(f"Measurement results for shot {shot + 1}:\n"
+                   + "\n".join(str(shots_list[shot]) for rounds in results for shots_list in rounds) + "\n"
+                   for shot in range(shots))
+
+
+@pytest.mark.parametrize("basis_state", [True, False])
+def test_show_measurement_prints_every_sampled_shot(capsys, basis_state):
+    """With the frame sampler, and with a custom tableau whose later shots run on the tableau, only the
+    reference shot was printed; the shots after it were returned but never printed."""
+    d = 5
+    c = Circuit(2, d)
+    c.add_gate("H", 0)
+    c.add_gate("N1", 1, noise_channel="f", prob=0.5)
+    c.add_gate("M", [0, 1])
+    c.add_gate("M_X", 1)
+    c.add_gate("DETECTOR", expr="rec[-2]")
+
+    def start():
+        tableau = ExtendedTableau(2, d)
+        if not basis_state:
+            tableau.hadamard(1)
+        return tableau
+
+    random.seed(7)
+    np.random.seed(7)
+    quiet, quiet_detectors = Program(c, tableau=start()).simulate(shots=6)
+    capsys.readouterr()
+    random.seed(7)
+    np.random.seed(7)
+    shown, detectors = Program(c, tableau=start()).simulate(shots=6, show_measurement=True, show_gate=True)
+    assert shown == quiet
+    np.testing.assert_array_equal(detectors["detectors"][0]["data"], quiet_detectors["detectors"][0]["data"])
+    assert len(set(r.measurement_value for r in shown[1][0])) > 1
+    out = capsys.readouterr().out
+    # show_gate prints the gates of the reference shot only, before the shots are printed.
+    gates = "".join(f"{'Final' if t == 5 else 'Time'} step {t} \t {g.name} {g.qudit_index} "
+                    f"{g.target_index if g.target_index is not None else ''}\n" for t, g in enumerate(c.operations))
+    assert out == gates + _printed(shown, 6)
+
+
 # --------------------------------------------------------------------------
 # Circuit sizes
 

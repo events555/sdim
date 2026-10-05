@@ -180,7 +180,9 @@ def _prob_dist_cdf(distribution, dimension: int) -> np.ndarray:
 # Random numbers for the frame kernel
 #
 # The sampled-noise kernel draws from its own xoshiro256** generator.  _run_frame seeds it with
-# one draw from NumPy's global generator, so np.random.seed still makes a simulation reproducible.
+# one draw from NumPy's global generator, so np.random.seed makes the frame shifts and the detectors
+# reproducible.  The reference shot's outcomes, like N1 noise on the tableau, come from Python's
+# random module, so reproducing the measurement values needs random.seed as well.
 
 _SPLITMIX_GAMMA = np.uint64(0x9E3779B97F4A7C15)
 _SPLITMIX_M1 = np.uint64(0xBF58476D1CE4E5B9)
@@ -1019,7 +1021,7 @@ _LINEAR_TERMS = re.compile(r"(?:([0-9]++)\s*+\*\s*+)?+(?:rec\[[0-9]++\]|([0-9]++
 # faster one for the usual spelling: rec[j] as _resolve_record_references writes it and decimal
 # literals.
 _RING_TOKENS_FAST = re.compile(r"[-+*%()\s0-9]*+(?:rec\[[0-9]++\][-+*%()\s0-9]*+)*+")
-_RING_TOKENS = re.compile(r"(?:[-+*%()\s]|\\\r?\n|rec\s*+\[\s*+[-+]?+\s*+[0-9]++\s*+\]"
+_RING_TOKENS = re.compile(r"(?:[-+*%()\s]|\\[\r\n]|rec\s*+\[\s*+[-+]?+\s*+[0-9]++\s*+\]"
                           r"|(?:0[xX][0-9a-fA-F_]++|0[oO][0-7_]++|0[bB][01_]++|[0-9][0-9_]*+)(?![\w.]))*+")
 
 
@@ -1108,7 +1110,10 @@ class _RingEvaluation:
             raise _NotRing
         self.other = True
         a, b = self.term(a), self.term(b)
-        return _RingRow(a[0] % b[0], max(b[1] - 1, 0), self)  # NumPy gives 0 for % 0
+        # The compiled function gives these values again, with its own warnings (see _detector_values).
+        with np.errstate(all='ignore'):
+            row = a[0] % b[0]
+        return _RingRow(row, max(b[1] - 1, 0), self)  # NumPy gives 0 for % 0
 
 
 def _power_bound(bound: int, k: int):
@@ -1164,6 +1169,10 @@ class _RingRow:
         return self
 
     def __pow__(self, k):
+        # Only compiled functions call this, and their ring exponents are literals of at most 2**12
+        # (see _large_powers): a larger k was computed, so the source is not a ring expression.
+        if type(k) is int and k > 2 ** 12:
+            raise _NotRing
         return self.evaluation.power(self, k)
 
     def __mod__(self, other):
@@ -1197,7 +1206,7 @@ def _ring_tree(source: str, d: int):
     instead.
     """
     try:
-        tree = ast.parse(source.lstrip(), mode='eval')  # alone, leading white space is an unexpected indent
+        tree = ast.parse('(' + source + ')', mode='eval')  # in parentheses, as compiled (see _compile_detector)
     except (SyntaxError, RecursionError):
         return None
     for node in ast.walk(tree):
@@ -1210,8 +1219,9 @@ def _ring_tree(source: str, d: int):
     return tree
 
 
-# The exponent of a ** when it is an integer literal.
-_EXPONENT = re.compile(r"\*\*\s*+[(+\s]*+(0[xXoObB][0-9a-fA-F_]++|[0-9][0-9_]*+)")
+# The exponent of a ** when it is an integer literal, past white space, line continuations, ( and +.
+# In a source that compiles, a backslash there can only start a line continuation.
+_EXPONENT = re.compile(r"\*\*[(+\s\\]*+(0[xXoObB][0-9a-fA-F_]++|[0-9][0-9_]*+)")
 
 
 def _large_powers(source: str) -> bool:
@@ -1267,8 +1277,10 @@ def _could_leave_int64(source: str, d: int) -> bool:
 # evaluated: True for a ring expression that needs _RingRows, the syntax tree of one with large
 # literal exponents (see _large_powers), and False for every other expression, whose function
 # gives its values itself.
-# Emptied when it gets large.
+# Its keys are the functions' own compiled_from tuples.  It forgets its oldest half when it holds
+# _RING_SOURCES_LIMIT sources, many more than a circuit usually has, which bounds its memory.
 _RING_SOURCES = {}
+_RING_SOURCES_LIMIT = 2 ** 17
 
 
 def _ring_values(function, rows, d: int):
@@ -1314,6 +1326,8 @@ def _ring_tree_values(tree, rows, d: int):
                 if type(left) is int and abs(left) > 1 and left.bit_length() * right > 2 ** 16:
                     evaluation.mark_reduced()
                     values.append(pow(left, right, d))
+                elif type(left) is _RingRow:
+                    values.append(evaluation.power(left, right))  # by any literal, unlike left ** right
                 else:
                     values.append(left ** right)
             else:
@@ -1358,13 +1372,16 @@ def _detector_values(function, compiled_from, rows):
                 # later call decides, and let the function raise its own error.
                 return function(rows)
             else:
-                # Values with no operand reduced are the function's own.
+                # Values with no operand reduced are the function's own, but a % that is not a ring
+                # operation ran without its warnings, so the function gives those values itself.
                 mode = evaluation.reduced
-                if mode and ('%' in source or '**' in source) and _ring_tree(source, d) is None:
+                if evaluation.other or (mode and ('%' in source or '**' in source) and _ring_tree(source, d) is None):
                     mode = False
                     values = None
-    if len(_RING_SOURCES) >= 2 ** 14:
-        _RING_SOURCES.clear()
+    if len(_RING_SOURCES) >= _RING_SOURCES_LIMIT:
+        # Dicts keep insertion order, so this forgets the oldest decisions.
+        for key in list(_RING_SOURCES)[:_RING_SOURCES_LIMIT // 2]:
+            _RING_SOURCES.pop(key, None)  # another thread may have forgotten it already
     _RING_SOURCES[compiled_from] = mode
     return function(rows) if values is None else values
 
@@ -1384,15 +1401,31 @@ def _paired_parentheses(tokens: str, depth: int) -> str:
 _PLAIN_SOURCE = re.compile(r"(?=[ \t]*+[^ \t])" + _paired_parentheses(r"(?:[-+*% \t0-9]++|rec\[[0-9]++\])*+", 16))
 
 
+def _closes_only_its_own_parentheses(source: str) -> bool:
+    """
+    Whether a source that compiles in parentheses closes no parenthesis, bracket or brace that it
+    did not open, so that the parentheses of `(source)` pair with each other.  The first one that it
+    closed would close both the ( of `(source)` and the [ of `[source]`, and it cannot match both,
+    so `[source]` compiles only if it closes none.  A few sources that close none do not compile in
+    a list either, such as `yield rec[0]`, and give False.
+    """
+    try:
+        compile('[' + source + ']', '<detector>', 'eval')
+    except SyntaxError:
+        return False
+    return True
+
+
 def _compile_detector(source: str, dimension: int):
     """
     Compiles a detector expression into `lambda rec : (source) % dimension`.
 
-    When `source` is a complete expression on its own (past any leading white space),
+    When `source` is a complete expression on its own (past any leading white space), or in
+    parentheses when it spans lines and closes no parenthesis that it did not open,
     `(source) % dimension` is that expression modulo dimension, and the function computes the
-    modulo with _detector_mod, which gives the same value faster on int64 arrays.  Anything else
-    is compiled exactly as written.  A plain source (see _PLAIN_SOURCE) is complete when the first
-    lambda compiles, so it is compiled once.
+    modulo with _detector_mod, which gives the same value faster on int64 arrays.  Anything else,
+    such as "rec[0]) + (rec[1]", is compiled exactly as written.  A plain source (see _PLAIN_SOURCE)
+    is complete when the first lambda compiles, so it is compiled once.
 
     Only a function of the first kind keeps (source, dimension), as `compiled_from`, for the frame
     sampler: ring expressions are evaluated exactly mod d (see _RingRow); other expressions are
@@ -1401,8 +1434,14 @@ def _compile_detector(source: str, dimension: int):
     """
     try:
         if not _PLAIN_SOURCE.fullmatch(source):
-            # Alone, leading white space is an unexpected indent; in the parentheses it is not.
-            compile(source.lstrip(), '<detector>', 'eval')
+            try:
+                # Alone, leading white space is an unexpected indent; in the parentheses it is not.
+                compile(source.lstrip(), '<detector>', 'eval')
+            except SyntaxError:
+                # Nor is a line break, if the parentheses hold all of the source; then the first
+                # lambda compiles exactly when the source is complete in them.
+                if ('\n' not in source and '\r' not in source) or not _closes_only_its_own_parentheses(source):
+                    raise
         function = eval('lambda rec : _detector_mod((' + source + '), ' + str(dimension) + ')')
     except SyntaxError:
         return eval('lambda rec : (' + source + ") % " + str(dimension))
@@ -1522,8 +1561,12 @@ class Program:
 
     Attributes:
         stabilizer_tableau: The current state of the quantum system.
-        circuit: A Circuit object representing the quantum circuit.
-        measurement_results: A list of MeasurementResult objects.
+        circuits: The list of Circuit objects the program runs, in order: the constructor's circuit,
+            then each one added with append_circuit.
+        initial_tableau: The state every shot starts from: the constructor's tableau, or by default the
+            all zero computational basis state, with any qudits that appended circuits add in |0>.
+        measurement_results: The MeasurementResult objects of the last simulation, indexed as
+            measurement_results[qudit][measurement round][shot].
 
     Args:
         circuit (Circuit): A Circuit object representing the quantum circuit.
@@ -1561,7 +1604,9 @@ class Program:
         
         Note that using multiple shots without `record_tableau=True` or `force_tableau=True` will use the Pauli frame sampler.
         
-        This means that things like `show_gate` and `verbose` will **not work for any shot after the first**.
+        `show_gate` and `verbose` then print **only the first shot**, the noiseless reference shot, while it runs (also
+        when the shots after it run on the tableau, see below).  `show_measurement` prints every shot, as returned,
+        once the simulation is done.
 
         The Pauli frame sampler needs a program that starts in a computational basis state, such as the default |0...0>.
         If the initial `tableau` is not one, the shots after the reference shot run on the tableau instead, which is as
@@ -1570,9 +1615,12 @@ class Program:
 
         Args:
             shots (int): The number of times to run the simulation.
-            show_measurement (bool): Whether to print the measurement results.
-            verbose (bool): Whether to print the stabilizer tableau at each time step.
-            show_gate (bool): Whether to print the gate name at each time step.
+            show_measurement (bool): Whether to print the measurement results of each shot, numbered from 1,
+                with the values that are returned.
+            verbose (bool): Whether to print the stabilizer tableau at each time step (of the first shot only
+                with the Pauli frame sampler).
+            show_gate (bool): Whether to print the gate name at each time step (of the first shot only
+                with the Pauli frame sampler).
             record_tableau (bool): Whether to record the tableau after each measurement.
             force_tableau (bool): Whether to force the use of the tableau method.
             exact (bool): Kept for compatibility. Composite-dimension measurements are always
@@ -1614,6 +1662,7 @@ class Program:
                 return self._sample_with_tableau(options, building_error_mechanism)
             tableau_options = copy.copy(options)
             tableau_options.shots = 1
+            tableau_options.show_measurement = False  # every shot is printed at the end
             self._tableau_noise_enabled = False
             try:
                 self._simulate_tableau(tableau_options)
@@ -1647,6 +1696,9 @@ class Program:
             
             # Combine results
             measurements = self._combine_frame_run(frame_run, ref_array, self.stabilizer_tableau.dimension)
+            if options.show_measurement:
+                for shot in range(num_shots + 1):
+                    self._print_shot(shot)
             return measurements, self._combine_detector_results(detector_info, frame_run.detector_results, options.raw_detector_output)
         else:
             return self._simulate_tableau(options)
@@ -1734,10 +1786,7 @@ class Program:
                         print("\n")
             self.stabilizer_tableau.modulo()
             if options.show_measurement:
-                print(f"Measurement results for shot {shot + 1}:")
-                # Only this shot: the stored results also hold the earlier ones.
-                shot_results = [shots_list[shot] for rounds in self.measurement_results for shots_list in rounds]
-                print("\n".join(map(str, shot_results)) if shot_results else "No measurements recorded.")
+                self._print_shot(shot)
 
         # Return results in the desired format.
         if options.shots == 1:
@@ -1749,6 +1798,13 @@ class Program:
             return flattened_results
         else:
             return self.measurement_results
+
+    def _print_shot(self, shot: int):
+        """Prints the stored results of one shot, numbered from 1, for show_measurement."""
+        print(f"Measurement results for shot {shot + 1}:")
+        # Only this shot: the stored results also hold the others.
+        shot_results = [shots_list[shot] for rounds in self.measurement_results for shots_list in rounds]
+        print("\n".join(map(str, shot_results)) if shot_results else "No measurements recorded.")
     
     def _starts_in_basis_state(self) -> bool:
         """
@@ -1773,6 +1829,7 @@ class Program:
             raise ValueError("Error mechanisms can only be built for a program that starts in a computational basis state.")
         reference_options = copy.copy(options)
         reference_options.shots = 1
+        reference_options.show_measurement = False  # every shot is printed at the end
         self._tableau_noise_enabled = False
         try:
             self._simulate_tableau(reference_options)
@@ -1803,6 +1860,9 @@ class Program:
         shifts = (values[:, 1:] - values[:, :1]) % self.stabilizer_tableau.dimension
         detector_results = _evaluate_detectors(ir_array['gate_id'], shifts, np.arange(len(records)),
                                                detector_info, options.shots - 1)
+        if options.show_measurement:
+            for shot in range(options.shots):
+                self._print_shot(shot)
         return self.measurement_results, self._combine_detector_results(detector_info, detector_results, options.raw_detector_output)
 
     def apply_gate(self, instruc: CircuitInstruction) -> MeasurementResult:
