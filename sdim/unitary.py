@@ -1,5 +1,6 @@
 import numpy as np
 import cirq
+import operator
 from itertools import product
 from sympy import isprime
 
@@ -133,6 +134,9 @@ class GeneralizedHadamardGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d,)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return generate_h_matrix(self.d)
     
@@ -155,6 +159,9 @@ class GeneralizedHadamardGateInverse(cirq.Gate):
 
     def _qid_shape_(self):
         return (self.d,)
+
+    def _has_unitary_(self):
+        return True
 
     def _unitary_(self):
         return np.conj(generate_h_matrix(self.d)).T
@@ -180,6 +187,9 @@ class GeneralizedPhaseShiftGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d,)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return generate_p_matrix(self.d)
 
@@ -202,6 +212,9 @@ class GeneralizedPhaseShiftGateInverse(cirq.Gate):
 
     def _qid_shape_(self):
         return (self.d,)
+
+    def _has_unitary_(self):
+        return True
 
     def _unitary_(self):
         return np.conj(generate_p_matrix(self.d)).T
@@ -227,6 +240,10 @@ class GeneralizedMultiplicationGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d,)
 
+    def _has_unitary_(self):
+        # Only an a coprime to d gives a permutation (generate_m_matrix raises otherwise).
+        return bool(np.gcd(self.a, self.d) == 1)
+
     def _unitary_(self):
         return generate_m_matrix(self.d, self.a)
 
@@ -236,7 +253,8 @@ class GeneralizedMultiplicationGate(cirq.Gate):
         if exponent == 1:
             return self
         if exponent == -1:
-            return GeneralizedMultiplicationGate(self.d, pow(self.a, -1, self.d))
+            # pow() with a modulus rejects NumPy integers (operator.index still rejects floats).
+            return GeneralizedMultiplicationGate(self.d, pow(operator.index(self.a), -1, operator.index(self.d)))
         return NotImplemented
 
     def _circuit_diagram_info_(self, args):
@@ -249,6 +267,9 @@ class GeneralizedXPauliGate(cirq.Gate):
 
     def _qid_shape_(self):
         return (self.d,)
+
+    def _has_unitary_(self):
+        return True
 
     def _unitary_(self):
         return generate_x_matrix(self.d)
@@ -273,6 +294,9 @@ class GeneralizedXPauliGateInverse(cirq.Gate):
     def _qid_shape_(self):
         return (self.d,)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return np.conj(generate_x_matrix(self.d)).T
     
@@ -296,6 +320,9 @@ class GeneralizedZPauliGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d,)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return generate_z_matrix(self.d)
     
@@ -305,9 +332,7 @@ class GeneralizedZPauliGate(cirq.Gate):
         if exponent == 1:
             return self
         if exponent == -1:
-            inv_gate = GeneralizedZPauliGate(self.d)
-            inv_gate._unitary = lambda: np.conj(self._unitary()).T
-            return inv_gate
+            return GeneralizedZPauliGateInverse(self.d)
         return NotImplemented
 
     def _circuit_diagram_info_(self, args):
@@ -320,6 +345,9 @@ class GeneralizedZPauliGateInverse(cirq.Gate):
 
     def _qid_shape_(self):
         return (self.d,)
+
+    def _has_unitary_(self):
+        return True
 
     def _unitary_(self):
         return np.conj(generate_z_matrix(self.d)).T
@@ -344,6 +372,9 @@ class GeneralizedCNOTGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d, self.d)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return generate_cnot_matrix(self.d)
     
@@ -352,6 +383,7 @@ class GeneralizedCNOTGate(cirq.Gate):
             return self
         if exponent == -1:
             return GeneralizedCNOTGateInverse(self.d)
+        return NotImplemented
 
     def _circuit_diagram_info_(self, args):
         return (f"CNOT_{self.d}_control", f"CNOT_{self.d}_target")
@@ -364,6 +396,9 @@ class GeneralizedCNOTGateInverse(cirq.Gate):
     def _qid_shape_(self):
         return (self.d, self.d)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return np.conj(generate_cnot_matrix(self.d)).T
     
@@ -372,6 +407,7 @@ class GeneralizedCNOTGateInverse(cirq.Gate):
             return self
         if exponent == -1:
             return GeneralizedCNOTGate(self.d)
+        return NotImplemented
 
     def _circuit_diagram_info_(self, args):
         return (f"CNOT_{self.d}_control†", f"CNOT_{self.d}_target†")
@@ -384,6 +420,9 @@ class GeneralizedCZGate(cirq.Gate):
     def _qid_shape_(self):
         return (self.d, self.d)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return (np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))
     
@@ -392,6 +431,7 @@ class GeneralizedCZGate(cirq.Gate):
             return self
         if exponent == -1:
             return GeneralizedCZGateInverse(self.d)
+        return NotImplemented
         
     def _circuit_diagram_info_(self, args):
         return (f"CZ_{self.d}_control", f"CZ_{self.d}_target")
@@ -405,6 +445,9 @@ class GeneralizedCZGateInverse(cirq.Gate):
     def _qid_shape_(self):
         return (self.d, self.d)
 
+    def _has_unitary_(self):
+        return True
+
     def _unitary_(self):
         return np.conj((np.kron(generate_identity_matrix(self.d), generate_h_matrix(self.d))) @ generate_cnot_matrix(self.d) @ (np.kron(generate_identity_matrix(self.d), np.conj(generate_h_matrix(self.d)).T))).T
     
@@ -413,6 +456,7 @@ class GeneralizedCZGateInverse(cirq.Gate):
             return self
         if exponent == -1:
             return GeneralizedCZGate(self.d)
+        return NotImplemented
         
     def _circuit_diagram_info_(self, args):
         return (f"CZ_{self.d}_control†", f"CZ_{self.d}_target†")
@@ -424,6 +468,9 @@ class IdentityGate(cirq.Gate):
 
     def _qid_shape_(self):
         return (self.d,)
+
+    def _has_unitary_(self):
+        return True
 
     def _unitary_(self):
         return generate_identity_matrix(self.d)

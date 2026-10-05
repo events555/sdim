@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from functools import cached_property
+import operator
 import numpy as np
 from math import gcd
 from sympy import isprime
@@ -31,7 +32,17 @@ class Tableau:
     def __post_init__(self):
         """
         Initializes the tableau with default values if not provided.
+
+        num_qudits and dimension become Python ints, since pow() with a modulus, which measurement
+        and MUL use, rejects NumPy integers. Floats and bools raise TypeError.
         """
+        if type(self.num_qudits) is not int or type(self.dimension) is not int:
+            for name in ("num_qudits", "dimension"):
+                value = getattr(self, name)
+                # Floats have no __index__; bools have one, but are not sizes either.
+                if isinstance(value, (bool, np.bool_)) or not hasattr(value, "__index__"):
+                    raise TypeError(f"{name} must be an integer, not {value!r}")
+                setattr(self, name, operator.index(value))
         if self.phase_vector is None:
             self.phase_vector = np.zeros(self.num_qudits, dtype=np.int64)
         if self.z_block is None:
