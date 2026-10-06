@@ -128,7 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [1.3.4]: https://pypi.org/project/sdim/1.3.4/
 
-## [1.4.0] - 2026-10-05
+## [1.4.0] - 2026-10-06
 
 ### Changed
 - **Breaking:** `M_X` leaves the measured qudit in the matching X eigenstate (H_INV, M, H), so repeating `M_X` repeats its outcome. A single `M_X` gives the same outcomes as before
