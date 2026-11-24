@@ -47,6 +47,36 @@ jobs:
       - if: github.event_name == 'workflow_dispatch'
         run: python -m pytest -q tests/test_tomography.py
 
+  # shepherd (shepherd/, task automation built on sdim) is its own project with its own tests
+  # and pytest settings, run from inside shepherd/ against this checkout's sdim.
+  shepherd:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.11"
+            extras: "test,mwpm"
+          - python-version: "3.13"
+            extras: "test,mwpm"
+          # pymatching may have no wheels for the newest Python yet; its tests skip without it.
+          - python-version: "3.14"
+            extras: "test"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . && pip install -e "./shepherd[${{ matrix.extras }}]"
+      # shepherd pins the sdim versions it has been checked against. If that pin excludes this
+      # checkout's version, pip quietly installs a released sdim instead and the tests would pass
+      # against the wrong sdim: fail here, so the pin is widened on purpose.
+      - run: >-
+          python -c "import os, sdim;
+          assert sdim.__file__.startswith(os.getcwd()), 'shepherd is not using this checkout of sdim: ' + sdim.__file__"
+      - run: python -m pytest -q
+        working-directory: shepherd
+
   # The wheel publish.yml would upload, installed without -e and tested from site-packages.
   wheel:
     runs-on: ubuntu-latest

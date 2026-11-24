@@ -10,6 +10,8 @@
 !/circuits/**
 !/docs/**
 !/examples/**
+# shepherd: task automation on top of sdim, a separate project (its own .gitignore inside)
+!/shepherd/**
 
 !/README.md
 !/CHANGELOG.md

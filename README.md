@@ -71,6 +71,83 @@ The dimension has to be prime, every detector and observable must be determinist
 
 `Program(circuit).simulate(shots=n, raw_detector_output=True)` samples detectors with the Pauli frame simulator instead. Its arrays are indexed the other way round, (detector, shot), and cover the n - 1 shots after the noiseless reference shot.
 
+## shepherd: large-scale studies
+shepherd is sdim's large-scale study tool. It builds qudit error-correction experiments for codes over a prime dimension q, turns them into detector error models with `sdim.dem`, samples and decodes them in parallel, keeps the statistics in resumable results files, and turns those into threshold plots and crossing estimates. It lives in [`shepherd/`](https://github.com/events555/sdim/tree/main/shepherd), next to the `sdim` package, as its own project: sdim is the core simulator, shepherd the task automation on top of it.
+
+shepherd is not on PyPI yet. Install it from a checkout of this repository, after sdim:
+```bash
+pip install -e .                    # sdim
+pip install -e "./shepherd[plot]"   # shepherd, with plotting; add mwpm for the pymatching decoders:
+                                    #   pip install -e "./shepherd[plot,mwpm]"
+cd shepherd && python -m pytest     # shepherd's tests (sdim's run from the repository root)
+```
+
+It can then be invoked with the `shepherd` command (the same as `python -m shepherd`), or from Python, where the main names import from the package directly: `from shepherd import Study, run_study, NoiseModel, surface_code`.
+
+### Running a threshold study
+```bash
+shepherd list                                   # built-in studies
+shepherd run surface_cc --dry-run               # the tasks, and what is already done
+shepherd run surface_cc --workers 8 --max-errors 50   # quick coarse pass
+shepherd plot surface_cc                        # look; adjust the grid if needed
+shepherd run surface_cc --workers 8             # full budget (tops up the coarse pass)
+shepherd status surface_cc                      # per-task shots, errors, LER
+```
+
+- Results go to `results/<study>.jsonl`; plots, point tables and crossing tables go to `plots/<study>/`, one PNG per (family, noise, q, decoder).
+- `run` can be stopped at any time and restarted; it resumes from the results file.
+- `--where q=3 --where n=12,16` restricts a run to matching tasks (any metadata key, or `decoder`). `--ps 0.02,0.03` replaces the study's noise strengths. `--max-shots` and `--max-errors` override the study's budget.
+- Run one process per results file at a time.
+
+### What the logical error rate means
+The `"ler"` experiment is a **Z-basis memory**. The data starts in the product state `|0...0>` with no encoding circuit, Z checks are measured for the given number of rounds, and the data is read out in the Z basis. A shot fails if the predicted shift of *any* of the k Z logicals is wrong. So:
+
+- Only logical shift (X-type) errors are counted. Logical phase errors need an X-basis memory, which is not implemented yet. Label results "Z-basis memory".
+- Starting from `|0...0>` instead of an encoded `|0-bar>` is exact here, because only Z-type quantities are measured. This is the standard memory-experiment convention; the argument and references are in the docstring of [`benchmarking/ler.py`](https://github.com/events555/sdim/blob/main/shepherd/src/shepherd/benchmarking/ler.py).
+- For k > 1 the rate is per shot ("any logical wrong") and tends to 1 - 1/q^k at high p.
+
+### The pieces
+Modules are in [`shepherd/src/shepherd/`](https://github.com/events555/sdim/tree/main/shepherd/src/shepherd).
+
+| Module | What it is |
+|---|---|
+| `qecc.py`, `codes/` | `QECC` registry and `PauliString`. A code supplies its stabilizers; logical operators are derived from them by default. `codes/css.py`: `CSSCode` (any H_X, H_Z mod q), the hypergraph product, and the repetition, surface and LaCross families. Also `five_qudit`, `rotated_memory_z` (work in progress: no stabilizers yet) and the placeholder `qrm_self_dual` |
+| `experiment.py`, `benchmarking/` | `Experiment` registry; `"ler"` builds the noiseless Z-memory circuit of a CSS code for 0 (code capacity) or more rounds; `"lrb"` and `"msd"` are placeholders |
+| `noise_model.py` | `NoiseModel`: a JSON-serializable noise spec, `apply(circuit)` to make a circuit noisy, and `code_capacity`, `phenomenological`, `circuit_level` |
+| `study.py`, `studies.py` | `Study` (codes x noise strengths x decoders, with per-task budgets), `run_study`, and the built-in studies |
+| `task.py`, `collect.py`, `stats.py` | one task (circuit + decoder), the parallel resumable collector, and its statistics |
+| `decoder.py`, `decoders/` | `Decoder` registry: `union_find` (qudit union-find, hyperedges included), `pymatching`, `pymatching_keppens`, `none`; `trellis` and `perfect` are registered placeholders that raise `NotImplementedError` |
+| `analysis.py` | results to tables, threshold crossings, and plots |
+
+### Your own study
+```python
+# mystudy.py
+from shepherd.study import Study
+from shepherd.noise_model import NoiseModel
+from shepherd.codes.css import CSSCode
+
+S = Study(
+    name="my_code_phenom", description="my code, phenomenological",
+    experiment="ler", experiment_params={"rounds": "d"},
+    codes=lambda: [CSSCode(3, H_X, H_Z, distance=6, label="mine_n100", family="mine")],
+    noise=NoiseModel.phenomenological,            # (q, p) -> NoiseModel
+    ps=[0.005, 0.01, 0.02],
+    decoders=["union_find"], max_shots=50_000, max_errors=300)
+```
+
+```bash
+shepherd run mystudy.py:S --workers 8
+```
+
+`noise` can be any function returning a `NoiseModel`, including one loaded from JSON (`NoiseModel.load("model.json")`). Each task's metadata records the noise model's name and fingerprint, so results from different models never mix.
+
+### Results that must not be mixed
+A task's id (its `strong_id`) hashes its detector error model, its decoder and the decoder's `version`, its postselection and its metadata. Results are added together only when all of these match, so:
+
+- bump a decoder's `version` whenever a change alters its output;
+- a new sdim release that changes DEM text starts new ids, and so new results;
+- adding a metadata key orphans the results collected without it.
+
 ## Primary References
 <a id="1">[1]
 </a> Aaronson, Scott, and Daniel Gottesman. “Improved Simulation of Stabilizer Circuits.” Physical Review A, vol. 70, no. 5, Nov. 2004, p. 052328. arXiv.org, https://doi.org/10.1103/PhysRevA.70.052328.

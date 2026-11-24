@@ -1,0 +1,8 @@
+# Build artifacts from `pip install -e ./shepherd` (the repository's .gitignore covers caches)
+*.egg-info/
+build/
+dist/
+
+# Default output folders of `shepherd run` and `shepherd plot`
+results/
+plots/

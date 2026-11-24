@@ -45,6 +45,9 @@ requires = ["flit_core>=3.11,<5"]
 build-backend = "flit_core.buildapi"
 
 [tool.pytest.ini_options]
+# Only sdim's tests. shepherd/ is a separate project with its own tests and pytest settings;
+# run them from inside shepherd/.
+testpaths = ["tests"]
 # Warnings that sdim's own modules trigger, such as a dependency deprecating a call sdim makes,
 # fail the tests. numba reports a deprecation in a jitted function from its own files, so its
 # deprecation categories fail the tests too; sdim is the only numba user in the test process.

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shepherd"
+version = "0.1.0"
+description = "Simulating and benchmarking high-dimensional (d > 2) quantum stabilizer circuits."
+readme = "README.md"
+requires-python = ">=3.11"
+# sdim is pinned to 1.4.x: a release that changes DEM text changes every task id, so results
+# files would silently start over. Widen deliberately.
+dependencies = ["sdim>=1.4,<1.5", "numpy"]
+
+[project.optional-dependencies]
+mwpm = ["pymatching"]
+plot = ["matplotlib"]
+test = ["pytest", "matplotlib"]
+
+[project.scripts]
+shepherd = "shepherd.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# shepherd's own settings: without this section pytest would walk up to the repository's
+# pyproject.toml and apply sdim's.
+testpaths = ["tests"]
