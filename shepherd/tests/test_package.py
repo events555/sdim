@@ -18,16 +18,60 @@ PLACEHOLDER_EXPERIMENTS = {"lrb", "msd"}
 PLACEHOLDER_CODES = {"qrm_self_dual"}
 
 
+# Packages behind pyproject.toml's extras (mwpm, plot). A module may fail to import without them;
+# anything else failing to import is a bug.
+OPTIONAL_DEPENDENCIES = {"pymatching", "matplotlib"}
+
+
+def _missing_optional(exc: BaseException) -> str | None:
+    """The optional dependency whose absence caused `exc` (anywhere in its chain), or None."""
+    while exc is not None:
+        if isinstance(exc, ModuleNotFoundError) and exc.name:
+            root = exc.name.split(".")[0]
+            return root if root in OPTIONAL_DEPENDENCIES else None
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _import_or_note_optional(load, missing: set[str]):
+    """Runs load(); an ImportError caused by a missing optional dependency is noted, not raised."""
+    try:
+        return load()
+    except ImportError as e:
+        dep = _missing_optional(e)
+        if dep is None:
+            raise
+        missing.add(dep)
+        return None
+
+
 def test_every_module_imports():
+    missing: set[str] = set()
     for m in pkgutil.walk_packages(shepherd.__path__, "shepherd."):
         if m.name != "shepherd.__main__":
-            importlib.import_module(m.name)
+            _import_or_note_optional(lambda: importlib.import_module(m.name), missing)
+    assert missing <= OPTIONAL_DEPENDENCIES
 
 
 @pytest.mark.parametrize("registry", [QECC, Decoder, Experiment])
 def test_every_registry_entry_resolves(registry):
+    missing: set[str] = set()
     for name in registry.available():
-        assert registry.lookup(name) is registry.registry[name]
+        cls = _import_or_note_optional(lambda: registry.lookup(name), missing)
+        if cls is not None:
+            assert cls is registry.registry[name]
+
+
+def test_a_missing_required_dependency_still_fails(monkeypatch):
+    # The tolerance above covers only OPTIONAL_DEPENDENCIES: any other missing module raises.
+    def boom():
+        raise ImportError("wrapper") from ModuleNotFoundError("no numpy", name="numpy")
+    with pytest.raises(ImportError):
+        _import_or_note_optional(boom, set())
+    def optional():
+        raise ImportError("wrapper") from ModuleNotFoundError("no pymatching", name="pymatching")
+    noted: set[str] = set()
+    assert _import_or_note_optional(optional, noted) is None and noted == {"pymatching"}
 
 
 def test_top_level_api():
