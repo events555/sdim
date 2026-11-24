@@ -27,6 +27,28 @@ def _by_q(grids: dict[int, list[float]]):
     return lambda code: grids[code.dimension]
 
 
+# Thresholds from the coarse pass (2026-11-24; union-find, ~50 errors per point). Each study's
+# grid gets four extra points at 0.90, 0.95, 1.05 and 1.10 times these, so the full run has enough
+# points within +-15% of the threshold for the joint fit's narrow, unbiased window (analysis.py).
+COARSE_THRESHOLDS: dict[str, dict[int, float]] = {
+    "rep_phenom": {2: 0.103, 3: 0.127, 5: 0.138, 7: 0.145},
+    "surface_cc": {2: 0.0966, 3: 0.123, 5: 0.136},
+    "surface_phenom": {2: 0.0270, 3: 0.0319, 5: 0.0354},
+    "lacross_cc": {2: 0.0338, 3: 0.0350, 5: 0.0384},
+}
+
+
+def _near(study: str, base):
+    """`base` (a grid, or a function of the code) plus points close to the study's threshold."""
+    def grid(code):
+        pts = set(base(code) if callable(base) else base)
+        center = COARSE_THRESHOLDS[study].get(code.dimension)
+        if center is not None:
+            pts |= {float(f"{center * f:.4g}") for f in (0.90, 0.95, 1.05, 1.10)}
+        return sorted(pts)
+    return grid
+
+
 def _circuit(two_qudit: str):
     return lambda q, p: NoiseModel.circuit_level(q, p, two_qudit=two_qudit)
 
@@ -38,7 +60,7 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": "d"},
         codes=lambda: [repetition_code(L, q) for q in (2, 3, 5, 7) for L in (5, 9, 13, 17)],
         noise=NoiseModel.phenomenological,
-        ps=_grid(0.04, 0.16, 7),
+        ps=_near("rep_phenom", _grid(0.04, 0.16, 7)),
         max_shots=100_000, max_errors=300),
     Study(
         name="surface_cc",
@@ -46,7 +68,8 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": 0},
         codes=lambda: [surface_code(L, q) for q in (2, 3, 5) for L in (5, 7, 9, 11, 13)],
         noise=NoiseModel.code_capacity,
-        ps=_by_q({2: _grid(0.07, 0.13, 7), 3: _grid(0.08, 0.20, 7), 5: _grid(0.08, 0.24, 9)}),
+        ps=_near("surface_cc", _by_q({2: _grid(0.07, 0.13, 7), 3: _grid(0.08, 0.20, 7),
+                                       5: _grid(0.08, 0.24, 9)})),
         max_shots=100_000, max_errors=300),
     Study(
         name="surface_phenom",
@@ -54,7 +77,7 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": "d"},
         codes=lambda: [surface_code(L, q) for q in (2, 3, 5) for L in (5, 7, 9, 11)],
         noise=NoiseModel.phenomenological,
-        ps=_grid(0.015, 0.055, 9),
+        ps=_near("surface_phenom", _grid(0.015, 0.055, 9)),
         max_shots=30_000, max_errors=300),
     Study(
         name="lacross_cc",
@@ -62,7 +85,7 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": 0},
         codes=lambda: [lacross_code(n, 4, q) for q in (2, 3, 5) for n in (12, 16, 20, 24)],
         noise=NoiseModel.code_capacity,
-        ps=_grid(0.015, 0.05, 8),
+        ps=_near("lacross_cc", _grid(0.015, 0.05, 8)),
         max_shots=100_000, max_errors=lambda code, p: 200 if code.n > 400 else 300),
     Study(
         name="lacross_phenom",
@@ -70,7 +93,12 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": "d"},
         codes=lambda: [lacross_code(n, 4, q) for q in (2, 3, 5) for n in (12, 16, 20)],
         noise=NoiseModel.phenomenological,
-        ps=_grid(0.006, 0.022, 9),
+        # Coarse thresholds ~0.0115 (q=2), ~0.0173 (q=3), ~0.013 (q=5, least certain). Points far
+        # above threshold are nearly saturated and the slowest to decode (n=20 spent ~85% of
+        # the coarse pass at p >= 0.016), so each grid stops ~30-40% above its threshold.
+        ps=_by_q({2: [0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.016],
+                  3: [0.012, 0.014, 0.015, 0.016, 0.017, 0.018, 0.019, 0.021],
+                  5: [0.009, 0.010, 0.011, 0.012, 0.013, 0.014, 0.016, 0.018]}),
         max_shots=20_000, max_errors=200),
     Study(
         name="surface_circuit",
