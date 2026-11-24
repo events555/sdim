@@ -116,6 +116,7 @@ def test_builtin_studies_build():
 # -- analysis --------------------------------------------------------------------------------------
 
 def _synthetic(threshold=0.1, sizes=(5, 9, 13), ps=(0.06, 0.08, 0.1, 0.12, 0.14)):
+    """Noiseless curves 0.1 * (p / threshold)^(n/2): every pair crosses exactly at the threshold."""
     rows = []
     for n in sizes:
         for p in ps:
@@ -127,20 +128,65 @@ def _synthetic(threshold=0.1, sizes=(5, 9, 13), ps=(0.06, 0.08, 0.1, 0.12, 0.14)
     return rows
 
 
+def _noisy(seed, threshold=0.1, ds=(5, 9, 13, 17), errors=300):
+    """Binomially sampled curves 0.08 * (p / threshold)^((d+1)/2) on a grid around the threshold."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for d in ds:
+        for p in np.linspace(0.07, 0.13, 7):
+            ler = min(0.75, 0.08 * (p / threshold) ** ((d + 1) / 2))
+            shots = int(min(10**6, errors / ler))
+            e = int(rng.binomial(shots, ler))
+            rows.append({"family": "toy", "noise": "x", "q": 3, "k": 1, "decoder": "d",
+                         "experiment": "ler", "basis": "Z", "n": d * d, "d": d, "code": f"toy{d}",
+                         "p": float(p), "shots": shots, "errors": e, "discards": 0, "ler": e / shots,
+                         "ler_lo": 0.0, "ler_hi": 1.0})
+    return rows
+
+
 def test_crossings_find_a_known_threshold():
     cross = analysis.crossings(_synthetic())
     assert len(cross) == 2
     for c in cross:
-        assert math.isclose(c["p_cross"], 0.1, rel_tol=1e-6)
-        assert c["p_lo"] < 0.1 < c["p_hi"]
+        assert math.isclose(c["p_cross"], 0.1, rel_tol=1e-3)
+        assert c["num_crossings"] == 1
+        assert c["p_lo"] <= 0.1 <= c["p_hi"]
     assert analysis.crossings(_synthetic(ps=(0.02, 0.04)))[0]["p_cross"] is None   # all below
 
 
+def test_joint_fit_recovers_a_known_threshold():
+    # Noisy data, 300 errors per point. The estimate is within 2% and the 95% interval covers the
+    # truth in most runs (20 of 20 when the method was chosen).
+    covered = 0
+    for seed in range(6):
+        fit = analysis.fit_threshold(_noisy(seed), bootstrap=60, seed=seed)
+        assert fit["status"].startswith("ok"), fit["status"]
+        assert abs(fit["p_th"] - 0.1) < 0.002
+        covered += fit["p_lo"] <= 0.1 <= fit["p_hi"]
+    assert covered >= 5
+
+
+def test_joint_fit_reports_a_threshold_outside_the_grid():
+    below = [r for r in _noisy(0) if r["p"] < 0.095]        # every p below the threshold
+    assert analysis.fit_threshold(below, bootstrap=0)["status"] == "above grid"
+    above = [r for r in _noisy(0) if r["p"] > 0.105]
+    assert analysis.fit_threshold(above, bootstrap=0)["status"] == "below grid"
+
+
+def test_noise_does_not_pick_an_early_crossing():
+    # The old method took the first raw sign change; noise made it report a crossing far below the
+    # threshold. Fitted curves cross once, near the truth, even at 50 errors per point.
+    for seed in range(4):
+        for c in analysis.crossings(_noisy(seed, errors=50), bootstrap=0):
+            assert c["num_crossings"] == 1
+            assert abs(c["p_cross"] - 0.1) < 0.015
+
+
 def test_plot_writes_png_and_tables(tmp_path):
-    pngs = analysis.plot_thresholds(_synthetic(), tmp_path)
+    pngs = analysis.plot_thresholds(_noisy(0), tmp_path, bootstrap=20)
     assert len(pngs) == 1 and pngs[0].stat().st_size > 1000
-    assert len(list(tmp_path.glob("*_points.csv"))) == 1
-    assert len(list(tmp_path.glob("*_crossings.csv"))) == 1
+    for kind in ("points", "threshold", "crossings"):
+        assert len(list(tmp_path.glob(f"*_{kind}.csv"))) == 1, kind
 
 
 # -- command line ----------------------------------------------------------------------------------

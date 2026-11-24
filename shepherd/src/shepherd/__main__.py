@@ -114,10 +114,16 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out) if args.out else Path("plots") / path.stem
     pngs = analysis.plot_thresholds(rows, out, logx=not args.linear_x)
+    print("Threshold (joint finite-size-scaling fit, 95% bootstrap interval):")
+    print(analysis.format_table(analysis.thresholds(rows),
+                                ["family", "noise", "q", "decoder", "p_th", "p_lo", "p_hi", "nu",
+                                 "chi2_per_dof", "window", "status"]))
     cross = analysis.crossings(rows)
     if cross:
+        print("\nPairwise crossings of consecutive sizes (diagnostic):")
         print(analysis.format_table(cross, ["family", "noise", "q", "decoder", "code_small",
-                                            "code_large", "p_cross", "p_lo", "p_hi"]))
+                                            "code_large", "p_cross", "p_lo", "p_hi",
+                                            "num_crossings"]))
     print(f"\n{len(pngs)} plots in {out}/")
     return 0
 
