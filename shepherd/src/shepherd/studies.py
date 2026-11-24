@@ -12,6 +12,8 @@ Your own studies: define Study objects in any Python file and run them with
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from shepherd.codes.css import lacross_code, repetition_code, surface_code
@@ -49,6 +51,14 @@ def _near(study: str, base):
     return grid
 
 
+def _large_near_threshold(base, *, min_qudits: int, lo: float, hi: float):
+    """`base`, but codes with more than `min_qudits` qudits only get the points in [lo, hi]."""
+    def grid(code):
+        pts = base(code) if callable(base) else base
+        return [p for p in pts if code.n <= min_qudits or lo <= p <= hi]
+    return grid
+
+
 def _circuit(two_qudit: str):
     return lambda q, p: NoiseModel.circuit_level(q, p, two_qudit=two_qudit)
 
@@ -81,12 +91,18 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         max_shots=30_000, max_errors=300),
     Study(
         name="lacross_cc",
-        description="open-boundary LaCross codes (HGP of 1 + x + x^4), code capacity, q = 2, 3, 5",
+        description="open-boundary LaCross codes (HGP of 1 + x + x^4), n = 12-36, code capacity, "
+                    "q = 2, 3, 5",
         experiment="ler", experiment_params={"rounds": 0},
-        codes=lambda: [lacross_code(n, 4, q) for q in (2, 3, 5) for n in (12, 16, 20, 24)],
+        # n = 28, 32, 36 (1360-2320 qudits) were added because n = 12-24 showed no common
+        # crossing at q = 2, 3. They decode at only ~1-10 shots/s per core near threshold, so they
+        # get just the points in [0.025, 0.045] and at most 20,000 shots each.
+        codes=lambda: [lacross_code(n, 4, q) for q in (2, 3, 5) for n in (12, 16, 20, 24, 28, 32, 36)],
         noise=NoiseModel.code_capacity,
-        ps=_near("lacross_cc", _grid(0.015, 0.05, 8)),
-        max_shots=100_000, max_errors=lambda code, p: 200 if code.n > 400 else 300),
+        ps=_large_near_threshold(_near("lacross_cc", _grid(0.015, 0.05, 8)),
+                                 min_qudits=1000, lo=0.025, hi=0.045),
+        max_shots=lambda code, p: 20_000 if code.n > 1000 else 100_000,
+        max_errors=lambda code, p: 200 if code.n > 400 else 300),
     Study(
         name="lacross_phenom",
         description="open-boundary LaCross codes, phenomenological noise, d rounds, q = 2, 3, 5",
@@ -124,9 +140,36 @@ STUDIES: dict[str, Study] = {s.name: s for s in [
         experiment="ler", experiment_params={"rounds": "d"},
         codes=lambda: [lacross_code(n, 4, 3) for n in (12, 16, 20)],
         noise=_circuit("independent"),
-        ps=_grid(0.0015, 0.005, 6),
+        # Threshold ~0.003 (earlier scans). Points far above it are nearly saturated and decode
+        # at <1 shot/s per core at n = 20, so the grid stops ~1.3x above it.
+        ps=[0.0015, 0.002, 0.0025, 0.003, 0.0035, 0.004],
         max_shots=20_000, max_errors=200),
+
 ]}
+
+
+def _with_decoder(study: Study, decoder: str, *, label: str | None = None,
+                  max_qudits: int | None = None) -> Study:
+    """The same study (codes, grids, budgets) with another decoder, under its own name, so its
+    results go to their own file. `max_qudits` leaves out larger codes."""
+    codes, limit = study.codes, ""
+    if max_qudits is not None:
+        codes = lambda: [c for c in study.codes() if c.n <= max_qudits]
+        limit = f" (only codes up to {max_qudits} qudits)"
+    return replace(study, name=f"{study.name}_{decoder.removeprefix('pymatching_')}",
+                   description=f"{study.description}; decoder {label or decoder}{limit}",
+                   decoders=(decoder,), codes=codes)
+
+
+# Lifted-MWPM (Keppens; registered as pymatching_keppens) versions of the core studies, for
+# comparison with union-find
+# (`shepherd compare surface_cc surface_cc_keppens`). Matching decodes ~100x faster, so these are
+# cheap; for LaCross only n <= 24, since matching cannot represent its hyperedges anyway.
+for _name, _cap in (("rep_phenom", None), ("surface_cc", None), ("surface_phenom", None),
+                    ("lacross_cc", 1000)):
+    _s = _with_decoder(STUDIES[_name], "pymatching_keppens", label="lifted MWPM (pymatching_keppens)",
+                       max_qudits=_cap)
+    STUDIES[_s.name] = _s
 
 
 def get_study(name: str) -> Study:

@@ -4,14 +4,16 @@ python -m shepherd -- run studies and look at their results.
     python -m shepherd list
     python -m shepherd run surface_cc --workers 8                  # resumable; Ctrl-C is safe
     python -m shepherd run surface_cc --workers 8 --max-errors 50  # quick coarse pass first
-    python -m shepherd run lacross_cc --where q=3 --where n=12,16 --ps 0.02,0.03,0.04
+    python -m shepherd run lacross_cc --where q=3 --where code=lacross_n12_l4_open --ps 0.02,0.03
     python -m shepherd run surface_cc --dry-run                    # what would run, what's done
     python -m shepherd status surface_cc                           # per-task shots / errors / LER
     python -m shepherd plot surface_cc                             # PNG + CSV per group, crossings
+    python -m shepherd compare surface_cc surface_cc_keppens       # decoders on the same axes
 
 A STUDY is a built-in name (see `list`) or `path/to/file.py:NAME`. Results go to
 <results>/<study>.jsonl (default results/), plots to <plots>/<study>/ (default plots/).
-`status` and `plot` also take a results file path instead of a study.
+`status`, `plot` and `compare` also take results file paths instead of studies. In --where, `n` is
+the number of qudits; use `code=` to pick a code by name.
 """
 
 from __future__ import annotations
@@ -70,6 +72,13 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--out", default=None, help="output directory (default plots/<stem>)")
             p.add_argument("--linear-x", action="store_true", help="linear p axis")
 
+    cmp_ = sub.add_parser("compare", help="decoders on the same axes, from two or more studies")
+    cmp_.add_argument("targets", nargs="+", help="study names or results files (e.g. surface_cc "
+                                                 "surface_cc_keppens)")
+    cmp_.add_argument("--results", default="results", help="results directory")
+    cmp_.add_argument("--out", default=None, help="output directory (default plots/compare_<first>)")
+    cmp_.add_argument("--linear-x", action="store_true", help="linear p axis")
+
     args = parser.parse_args(argv)
 
     if args.command == "list":
@@ -98,6 +107,21 @@ def main(argv: list[str] | None = None) -> int:
                   max_shots=args.max_shots, max_errors=args.max_errors,
                   decoder_cache_dir=args.decoder_cache)
         print(f"results in {study.results_path(args.results)}")
+        return 0
+
+    if args.command == "compare":
+        paths = [_results_file(t, args.results) for t in args.targets]
+        rows = analysis.load_results(*paths)
+        out = Path(args.out) if args.out else Path("plots") / f"compare_{paths[0].stem}"
+        pngs = analysis.plot_comparison(rows, out, logx=not args.linear_x)
+        if not pngs:
+            print("nothing to compare: each group needs results from at least two decoders")
+            return 1
+        print("Threshold per decoder (joint fit, 95% bootstrap interval):")
+        print(analysis.format_table(analysis.thresholds(rows),
+                                    ["family", "noise", "q", "decoder", "p_th", "p_lo", "p_hi",
+                                     "status"]))
+        print(f"\n{len(pngs)} comparison plots in {out}/")
         return 0
 
     path = _results_file(args.target, args.results)

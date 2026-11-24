@@ -189,6 +189,21 @@ def test_plot_writes_png_and_tables(tmp_path):
         assert len(list(tmp_path.glob(f"*_{kind}.csv"))) == 1, kind
 
 
+def test_comparison_plot_puts_decoders_on_the_same_axes(tmp_path):
+    good = [dict(r, decoder="union_find") for r in _noisy(0)]
+    bad = [dict(r, decoder="pymatching_keppens", errors=int(0.5 * r["shots"]),
+                ler=0.5, ler_lo=0.45, ler_hi=0.55) for r in good]      # same codes, no threshold
+    only_one = [r for r in good if r["d"] == 5]                          # a group with one decoder
+    pngs = analysis.plot_comparison(good + bad, tmp_path, bootstrap=20)
+    assert len(pngs) == 1 and pngs[0].stat().st_size > 1000
+    table = list(tmp_path.glob("*_compare_thresholds.csv"))
+    assert len(table) == 1
+    text = table[0].read_text()
+    assert "union_find" in text and "pymatching_keppens" in text
+    assert analysis._decoder_label("pymatching_keppens") == "lifted MWPM"
+    assert analysis.plot_comparison(only_one, tmp_path / "none", bootstrap=0) == []
+
+
 # -- command line ----------------------------------------------------------------------------------
 
 def test_command_line(tmp_path, capsys):
@@ -211,5 +226,30 @@ def test_command_line(tmp_path, capsys):
     assert "surface_L5" in out and "0.12" in out
     assert main(["plot", str(tmp_path / "results" / "mine.jsonl"), "--out", str(tmp_path / "plots")]) == 0
     assert list((tmp_path / "plots").glob("*.png"))
+    # compare: one decoder only -> nothing to compare (exit code 1), but no crash
+    assert main(["compare", target, "--results", results, "--out", str(tmp_path / "cmp")]) == 1
     with pytest.raises(KeyError):
         get_study("no_such_study")
+
+
+def test_curves_without_a_common_crossing_are_reported_as_such():
+    # The middle size is "too good" (as LaCross n = 16 was at q = 2), so the two pairs cross far
+    # apart, near 0.129 and 0.078: the result must say so instead of quoting one threshold.
+    rows = []
+    for d, scale in ((5, 1.0), (9, 0.6), (13, 1.0)):
+        for p in np.linspace(0.05, 0.14, 10):
+            ler = 0.05 * scale * (p / 0.1) ** (d / 2)
+            rows.append({"family": "toy", "noise": "x", "q": 3, "k": 1, "decoder": "d",
+                         "experiment": "ler", "basis": "Z", "n": d * d, "d": d, "code": f"toy{d}",
+                         "p": float(p), "shots": 10**6, "errors": round(ler * 10**6), "discards": 0,
+                         "ler": ler, "ler_lo": 0.0, "ler_hi": 1.0})
+    pairs = analysis.crossings(rows, bootstrap=0)
+    assert [round(c["p_cross"], 3) for c in pairs] == [0.129, 0.077]
+    fit = analysis.fit_threshold(rows, bootstrap=0)
+    lo, hi = fit["pairwise_range"]
+    assert hi > 1.25 * lo
+    assert "no common crossing" in fit["status"] or "drift" in fit["status"], fit["status"]
+    if "no common crossing" in fit["status"]:
+        assert fit["p_th"] is None
+    # Every result carries the key, also when the fit stops early.
+    assert analysis.fit_threshold(rows[:3], bootstrap=0)["pairwise_range"] is None

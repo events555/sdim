@@ -30,8 +30,8 @@ zooms in around the best point.
 
 The quadratic form only holds near the threshold, so the fit uses only points near it: it starts
 from the median of the pairwise crossings (below) and keeps the points within +-WINDOW (15%) of
-it, widening to +-25% and then +-35% when fewer than 3 points remain for at least 2 sizes (the
-status then says which), and leaving out points above 60% of saturation (1 - 1/q^k). On
+it, widening to +-25% and then +-35% when fewer than 3 points remain for at least 2 sizes or
+the fit lands on the window's edge (the status then says which), and leaving out points above 60% of saturation (1 - 1/q^k). On
 synthetic curves with a known threshold and binomial noise, a 15% window showed no measurable
 bias and its interval covered the truth in 20 of 20 runs; at 30% the estimate was about 1.5% low
 and covered it in 12 of 20. So for a final number, sample at least 3 values of p within 15% of
@@ -39,10 +39,14 @@ the threshold. The 95% interval is a parametric bootstrap: each point's error co
 from Binomial(shots, LER) and the fit repeated; the 2.5th and 97.5th percentiles are kept.
 
 Status: "ok", or "ok (window +-25%)" / "(+-35%)"; ", poor fit" is added when chi^2 per degree of
-freedom exceeds 4, and ", interval clipped by window" when the interval reaches the edge of the
-fitted p range (the fit only searches inside it, so the true interval is wider). Without a usable fit: "above grid" or "below grid" when no pair of sizes crosses
-(the threshold lies outside the sampled p, on the side the curves' order shows), "too few points
-near the crossing", "fit at the window edge", or "too few points".
+freedom exceeds 4, ", interval clipped by window" when the interval reaches the edge of the
+fitted p range (the fit only searches inside it, so the true interval is wider), and ", pairwise
+crossings drift (a-b)" when the crossings of consecutive sizes span more than a factor DRIFT
+(1.25). When the curves have no common crossing at all, so the fit cannot place one, the status is
+"no common crossing (pairwise a-b)" and no threshold is given; quote the range instead. Without a usable fit: "above grid" or "below grid" when no pair of sizes crosses
+(the threshold lies outside the sampled p, on the side the curves' order shows), "no common
+crossing (...)", "too few points near the crossing", "fit at the window edge", or "too few
+points".
 
 Pairwise crossings (`crossings`), a diagnostic
 ---------------------------------------------
@@ -73,6 +77,7 @@ CURVE_KEY = "n"
 WINDOW = 0.15              # second-stage fit: p within +-15% of the first-stage estimate
 SATURATION_CUT = 0.60      # first stage: points below this fraction of 1 - 1/q^k
 BOOTSTRAP = 200
+DRIFT = 1.25               # pairwise crossings spread wider than this ratio are reported as drift
 
 # Categorical series colors, in fixed order (validated light-mode palette).
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
@@ -168,7 +173,8 @@ def fit_threshold(rows: Sequence[dict], *, window: float = WINDOW, bootstrap: in
     """The joint fit for one group's rows (see the module docstring)."""
     rows = [r for r in rows if _kept(r) > 0 and r.get("d") is not None]
     out = {"p_th": None, "p_lo": None, "p_hi": None, "nu": None, "chi2_per_dof": None,
-           "points": 0, "sizes": 0, "window": None, "status": "too few points"}
+           "points": 0, "sizes": 0, "window": None, "pairwise_range": None,
+           "status": "too few points"}
     if len({r["d"] for r in rows}) < 2:
         return out
     q, k = rows[0].get("q") or 2, rows[0].get("k") or 1
@@ -190,26 +196,40 @@ def fit_threshold(rows: Sequence[dict], *, window: float = WINDOW, bootstrap: in
             out["status"] = "above grid" if better > len(common) / 2 else "below grid"
         return out
     p0 = float(np.median(found))
+    spread = (min(found), max(found)) if len(found) >= 2 else None
+    drifting = spread is not None and spread[1] > DRIFT * spread[0]
+    out["pairwise_range"] = spread
+    # Narrowest window first; widen when it holds too few points or the fit lands on its edge.
+    attempt = None
     for frac in (window, 0.25, 0.35):
         win = use & (np.abs(p - p0) <= frac * p0)
-        if _enough(d[win]):
+        if not _enough(d[win]):
+            continue
+        P, D, N, E = p[win], d[win], n[win], e[win]
+        span = (float(P.min()), float(P.max()))
+        pth, nu, chi2 = _fit_scaling(P, D, E / N, _weights(N, E), span)
+        edge = 0.02 * (span[1] - span[0])
+        attempt = (frac, P, D, N, E, span, pth, nu, chi2, edge)
+        if span[0] + edge < pth < span[1] - edge:
             break
-    else:
+    if attempt is None:
         out["status"] = "too few points near the crossing"
-        out["p_th"] = p0
         return out
-    P, D, N, E = p[win], d[win], n[win], e[win]
-    span = (float(P.min()), float(P.max()))
-    pth, nu, chi2 = _fit_scaling(P, D, E / N, _weights(N, E), span)
+    frac, P, D, N, E, span, pth, nu, chi2, edge = attempt
     dof = max(1, len(P) - 5)
     status = "ok" if frac == window else f"ok (window +-{frac:.0%})"
     if chi2 / dof > 4:
         status += ", poor fit"
-    edge = 0.02 * (span[1] - span[0])
     if not span[0] + edge < pth < span[1] - edge:
         status = "fit at the window edge"
+        if drifting:
+            status = f"no common crossing (pairwise {spread[0]:.3g}-{spread[1]:.3g})"
+    elif drifting:
+        status += f", pairwise crossings drift ({spread[0]:.3g}-{spread[1]:.3g})"
     out.update(p_th=float(pth), nu=float(nu), chi2_per_dof=float(chi2 / dof), points=int(len(P)),
                sizes=int(len(np.unique(D))), window=span, status=status)
+    if not status.startswith("ok"):
+        out["p_th"] = None                  # no threshold to report; the status says why
     if bootstrap and status.startswith("ok"):
         rng = np.random.default_rng(seed)
         ph = E / N
@@ -330,8 +350,40 @@ def format_table(rows: Sequence[dict], columns: Sequence[str]) -> str:
 def _title(gkey: tuple, keys: Sequence[str]) -> str:
     g = dict(zip(keys, gkey))
     parts = [str(g.get("family")), str(g.get("noise")).replace("_", " "), f"q = {g.get('q')}",
-             f"decoder: {g.get('decoder')}"]
+             f"decoder: {_decoder_label(str(g.get('decoder')))}"]
     return ", ".join(parts)
+
+
+def _style_axes(ax, rows: Sequence[dict], title: str, logx: bool) -> None:
+    """Shared look of every plot: log axes with plain tick labels at the grid's p values."""
+    from matplotlib.ticker import FixedLocator, FuncFormatter, LogLocator, NullFormatter
+    plain = FuncFormatter(lambda v, _: f"{v:.3g}")
+    ax.set_yscale("log")
+    ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+    ax.yaxis.set_major_formatter(plain)
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    if logx:
+        ax.set_xscale("log")
+    grid_ps = sorted({r["p"] for r in rows if r["p"] > 0})
+    # Label grid values spread out on the log axis (dense points near a threshold would overlap).
+    gap = math.log10(grid_ps[-1] / grid_ps[0]) / 8 if len(grid_ps) > 1 else 1.0
+    ticks: list[float] = []
+    for v in grid_ps:
+        if not ticks or math.log10(v / ticks[-1]) >= gap:
+            ticks.append(v)
+    ax.xaxis.set_major_locator(FixedLocator(ticks))
+    ax.xaxis.set_major_formatter(plain)
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlabel("physical error rate p", color=INK)
+    ax.set_ylabel("logical error rate per shot", color=INK)
+    ax.set_title(title, color=INK, fontsize=10, loc="left")
+    ax.grid(True, which="major", color=GRID, linewidth=0.8)
+    ax.grid(True, which="minor", color=GRID, linewidth=0.4, alpha=0.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(INK_2)
+    ax.tick_params(colors=INK_2, which="both", labelsize=8)
 
 
 def plot_thresholds(rows: Iterable[dict], out_dir: str | Path, *,
@@ -345,7 +397,6 @@ def plot_thresholds(rows: Iterable[dict], out_dir: str | Path, *,
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import FixedLocator, FuncFormatter, LogLocator, NullFormatter
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -353,7 +404,6 @@ def plot_thresholds(rows: Iterable[dict], out_dir: str | Path, *,
     fits = {tuple(t.get(k) for k in group_keys): t
             for t in thresholds(rows, group_keys=group_keys, bootstrap=bootstrap)}
     pairs = crossings(rows, group_keys=group_keys, curve_key=curve_key, bootstrap=bootstrap)
-    plain = FuncFormatter(lambda v, _: f"{v:.3g}")
     written = []
     for gkey, grows in group_rows(rows, group_keys).items():
         cs = curves(grows, curve_key)
@@ -377,30 +427,13 @@ def plot_thresholds(rows: Iterable[dict], out_dir: str | Path, *,
             ax.axvline(fit["p_th"], color=INK_2, linewidth=1, linestyle="--")
             ci = (f" (95%: {fit['p_lo']:.4g}-{fit['p_hi']:.4g})" if fit.get("p_lo") is not None else "")
             note = f" threshold ≈ {fit['p_th']:.4g}{ci}"
+            if "drift" in str(fit.get("status")) and fit.get("pairwise_range"):
+                lo, hi = fit["pairwise_range"]
+                note += f"\n pairs of sizes cross between {lo:.3g} and {hi:.3g} (finite-size drift)"
         else:
             note = f" threshold: {fit.get('status', 'no fit')}"
         ax.text(0.01, 0.02, note, transform=ax.transAxes, color=INK_2, fontsize=8)
-        ax.set_yscale("log")
-        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
-        ax.yaxis.set_major_formatter(plain)
-        ax.yaxis.set_minor_formatter(NullFormatter())
-        if logx:
-            ax.set_xscale("log")
-        grid_ps = sorted({r["p"] for r in grows})
-        step = max(1, math.ceil(len(grid_ps) / 8))          # at most ~8 labeled ticks
-        ax.xaxis.set_major_locator(FixedLocator(grid_ps[::step]))
-        ax.xaxis.set_major_formatter(plain)
-        ax.xaxis.set_minor_formatter(NullFormatter())
-        ax.set_xlabel("physical error rate p", color=INK)
-        ax.set_ylabel("logical error rate per shot", color=INK)
-        ax.set_title(_title(gkey, group_keys), color=INK, fontsize=10, loc="left")
-        ax.grid(True, which="major", color=GRID, linewidth=0.8)
-        ax.grid(True, which="minor", color=GRID, linewidth=0.4, alpha=0.6)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        for side in ("left", "bottom"):
-            ax.spines[side].set_color(INK_2)
-        ax.tick_params(colors=INK_2, which="both", labelsize=8)
+        _style_axes(ax, grows, _title(gkey, group_keys), logx)
         ax.legend(fontsize=8, frameon=False, labelcolor=INK)
         fig.tight_layout()
         stem = "_".join(str(v) for v in gkey).replace("/", "-").replace(" ", "")
@@ -413,5 +446,116 @@ def plot_thresholds(rows: Iterable[dict], out_dir: str | Path, *,
         mine = [c for c in pairs if tuple(c.get(k) for k in group_keys) == gkey]
         if mine:
             write_csv(mine, out_dir / f"{stem}_crossings.csv")
+        written.append(png)
+    return written
+
+
+# -- decoder comparisons -------------------------------------------------------------------------------
+
+COMPARE_KEYS = ("family", "noise", "q", "experiment", "basis")     # GROUP_KEYS without the decoder
+# Display names. The registry names stay as they are: a decoder's name is part of every task's
+# strong_id, so renaming one would orphan the results already collected.
+DECODER_NAMES = {"union_find": "union-find", "pymatching_keppens": "lifted MWPM",
+                 "pymatching": "matching (binarized syndromes)", "none": "no decoding"}
+DECODER_ORDER = ("union_find", "pymatching_keppens", "pymatching", "none")
+LINESTYLES = ["-", "--", ":", "-."]
+
+
+def _decoder_label(name: str) -> str:
+    return DECODER_NAMES.get(name, name)
+
+
+def _threshold_note(fit: dict) -> str:
+    status = str(fit.get("status", ""))
+    if status.startswith("ok") and fit.get("p_th") is not None:
+        ci = f" (95%: {fit['p_lo']:.4g}-{fit['p_hi']:.4g})" if fit.get("p_lo") is not None else ""
+        drift = ""
+        if "drift" in status and fit.get("pairwise_range"):
+            drift = f"; pairs cross {fit['pairwise_range'][0]:.3g}-{fit['pairwise_range'][1]:.3g}"
+        return f"threshold ≈ {fit['p_th']:.4g}{ci}{drift}"
+    if status == "below grid":
+        return "no threshold in range: larger codes are worse at every p sampled"
+    if status == "above grid":
+        return "threshold above the sampled range: larger codes are better at every p"
+    return f"no threshold: {status or 'no fit'}"
+
+
+def plot_comparison(rows: Iterable[dict], out_dir: str | Path, *,
+                    group_keys: Sequence[str] = COMPARE_KEYS, curve_key: str = CURVE_KEY,
+                    logx: bool = True, bootstrap: int = BOOTSTRAP) -> list[Path]:
+    """
+    One PNG per group with two or more decoders: LER against p for every code size and decoder on
+    the same axes. Color is the code size (as in plot_thresholds); line style and marker fill are
+    the decoder (union-find solid with filled markers, then dashed, dotted ... with hollow ones).
+    Each decoder's own joint threshold fit is stated in the corner and written, one row per
+    decoder, to `<stem>_compare_thresholds.csv`. Returns the PNG paths.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = list(rows)
+    written = []
+    for gkey, grows in group_rows(rows, group_keys).items():
+        present = {r["decoder"] for r in grows}
+        decoders = [d for d in DECODER_ORDER if d in present] + sorted(present - set(DECODER_ORDER))
+        if len(decoders) < 2:
+            continue
+        sizes = sorted({r.get(curve_key) for r in grows})
+        color = {n: SERIES[i % len(SERIES)] for i, n in enumerate(sizes)}
+        fig, ax = plt.subplots(figsize=(7.2, 5.0), dpi=150)
+        fig.patch.set_facecolor(SURFACE)
+        ax.set_facecolor(SURFACE)
+        notes = []
+        fits = []
+        for j, dec in enumerate(decoders):
+            drows = [r for r in grows if r["decoder"] == dec]
+            for i, (size, crows) in enumerate(curves(drows, curve_key).items()):
+                pts = [r for r in crows if r["errors"] > 0]
+                if not pts:
+                    continue
+                yerr = [[r["ler"] - r["ler_lo"] for r in pts], [r["ler_hi"] - r["ler"] for r in pts]]
+                ax.errorbar([r["p"] for r in pts], [r["ler"] for r in pts], yerr=yerr,
+                            color=color[size], linestyle=LINESTYLES[j % len(LINESTYLES)],
+                            marker=MARKERS[sizes.index(size) % len(MARKERS)], markersize=5,
+                            markerfacecolor=color[size] if j == 0 else SURFACE,
+                            markeredgecolor=color[size], linewidth=2 if j == 0 else 1.5,
+                            elinewidth=1, capsize=2)
+            fit = fit_threshold(drows, bootstrap=bootstrap)
+            fits.append({**dict(zip(group_keys, gkey)), "decoder": dec, **fit})
+            notes.append(f"{_decoder_label(dec)}: {_threshold_note(fit)}")
+            if str(fit.get("status", "")).startswith("ok") and fit.get("p_th") is not None:
+                ax.axvline(fit["p_th"], color=INK_2, linewidth=0.8, alpha=0.6,
+                           linestyle=LINESTYLES[j % len(LINESTYLES)])
+        ax.text(0.01, 0.02, "\n".join(notes), transform=ax.transAxes, color=INK_2, fontsize=7.5,
+                va="bottom")
+        title = ", ".join([str(dict(zip(group_keys, gkey)).get("family")),
+                           str(dict(zip(group_keys, gkey)).get("noise")).replace("_", " "),
+                           f"q = {dict(zip(group_keys, gkey)).get('q')}", "decoders compared"])
+        _style_axes(ax, grows, title, logx)
+        by_size = {}
+        for r in grows:
+            by_size.setdefault(r.get(curve_key), r)
+        size_handles = [Line2D([], [], color=color[n], marker=MARKERS[i % len(MARKERS)], linewidth=2,
+                               label=f"{by_size[n].get('code')} (d={by_size[n].get('d')})")
+                        for i, n in enumerate(sizes)]
+        dec_handles = [Line2D([], [], color=INK_2, linestyle=LINESTYLES[j % len(LINESTYLES)],
+                              marker="o", markerfacecolor=INK_2 if j == 0 else SURFACE,
+                              markeredgecolor=INK_2, linewidth=2 if j == 0 else 1.5,
+                              label=_decoder_label(d)) for j, d in enumerate(decoders)]
+        first = ax.legend(handles=size_handles, fontsize=7.5, frameon=False, labelcolor=INK,
+                          loc="upper left", title="code", title_fontsize=7.5)
+        ax.add_artist(first)
+        ax.legend(handles=dec_handles, fontsize=7.5, frameon=False, labelcolor=INK,
+                  loc="lower right", title="decoder", title_fontsize=7.5)
+        fig.tight_layout()
+        stem = "_".join(str(v) for v in gkey).replace("/", "-").replace(" ", "") + "_compare"
+        png = out_dir / f"{stem}.png"
+        fig.savefig(png, facecolor=SURFACE)
+        plt.close(fig)
+        write_csv(fits, out_dir / f"{stem}_thresholds.csv")
         written.append(png)
     return written
